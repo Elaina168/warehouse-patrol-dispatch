@@ -964,6 +964,8 @@ describe("task queue display", () => {
     const [snapshot] = buildTaskSnapshots(result, 8, runtimeStates);
 
     expect(snapshot.status).toBe("pending");
+    expect(buildTaskQueueMetricRows(snapshot)).toContainEqual({ label: "状态", value: "等待分配" });
+    expect(buildTaskQueueMetricRows(snapshot)).toContainEqual({ label: "执行机器人", value: "等待分配" });
   });
 
   it("uses runtime timing fields and keeps completed task details available", () => {

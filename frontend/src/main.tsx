@@ -50,6 +50,7 @@ export type TaskSnapshot = {
   task: Task;
   assignedRobotId: string | null;
   releaseTime: number;
+  isReleased: boolean;
   completionTime: number | null;
   status: TaskRuntimeStatus;
   locked: boolean;
@@ -1403,6 +1404,7 @@ export function buildTaskSnapshots(result: DispatchResult, time: number, runtime
       task,
       assignedRobotId,
       releaseTime,
+      isReleased: time >= releaseTime,
       completionTime,
       status,
       locked,
@@ -1456,14 +1458,15 @@ export function taskTimingFields(snapshot: TaskSnapshot): { release: string; dea
 }
 
 export function buildTaskQueueMetricRows(snapshot: TaskSnapshot): Array<{ label: string; value: string }> {
+  const waitingForAssignment = snapshot.status === "pending" && snapshot.isReleased && snapshot.assignedRobotId === null;
   const completion = snapshot.completionTime == null
     ? "未完成"
     : snapshot.status === "done"
       ? `T=${snapshot.completionTime}`
       : `预计 T=${snapshot.completionTime}`;
   return [
-    { label: "状态", value: taskStatusLabel(snapshot.status) },
-    { label: "执行机器人", value: snapshot.assignedRobotId ?? "未分配" },
+    { label: "状态", value: waitingForAssignment ? "等待分配" : taskStatusLabel(snapshot.status) },
+    { label: "执行机器人", value: snapshot.assignedRobotId ?? (waitingForAssignment ? "等待分配" : "未分配") },
     { label: "任务类型", value: taskTypeLabel(snapshot.task.type) },
     { label: "优先级", value: String(snapshot.task.priority) },
     { label: "锁定状态", value: snapshot.locked ? "已锁定" : "可重分配" },
