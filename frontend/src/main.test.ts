@@ -60,7 +60,15 @@ import {
   buildSeededPressureSummaryText,
   buildSeededPressureSummaryRows
 } from "./main";
-import type { DispatchResult, Scenario, SessionResult, Task } from "./domain/types";
+import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, Task } from "./domain/types";
+
+describe("robot charging runtime status contract", () => {
+  it("declares toCharge and charging runtime statuses", () => {
+    const statuses: RobotRuntimeStatus[] = ["toCharge", "charging"];
+
+    expect(statuses).toEqual(["toCharge", "charging"]);
+  });
+});
 
 describe("session reset state", () => {
   it("clears the transient conflict alert and its resolved state", () => {

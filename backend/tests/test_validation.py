@@ -1,6 +1,9 @@
 from fastapi.testclient import TestClient
+import pytest
+from pydantic import ValidationError
 
 from backend.app.main import app
+from backend.app.schemas import Robot, Scenario
 from backend.tests.helpers import scenario_payload
 
 
@@ -29,6 +32,62 @@ def test_robot_move_ticks_defaults_for_legacy_scenarios_and_rejects_invalid_valu
     )
 
     assert invalid_response.status_code == 422
+
+
+def test_charging_contract_defaults_for_legacy_scenarios() -> None:
+    scenario = Scenario.model_validate(scenario_payload())
+
+    assert scenario.chargeTime == 4
+    assert scenario.zones.charging == []
+    assert [robot.batteryCapacity for robot in scenario.robots] == [100, 100]
+
+
+def test_robot_rejects_battery_above_capacity() -> None:
+    with pytest.raises(ValidationError, match="battery must be <= batteryCapacity"):
+        Robot.model_validate(
+            {
+                "id": "R1",
+                "name": "电量校验机器人",
+                "start": [0, 0],
+                "battery": 101,
+                "batteryCapacity": 100,
+                "load": 1,
+            }
+        )
+
+
+def test_session_create_rejects_charging_cell_outside_map() -> None:
+    client = TestClient(app)
+    scenario = scenario_payload()
+    scenario["zones"]["charging"] = [[6, 4]]
+
+    response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "充电区 1 坐标超出地图范围：(6, 4)" in response.json()["detail"]
+
+
+def test_session_create_rejects_charging_cell_on_fixed_obstacle() -> None:
+    client = TestClient(app)
+    scenario = scenario_payload()
+    scenario["zones"]["charging"] = [[2, 1]]
+
+    response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "充电区 1 位于障碍或封锁单元：(2, 1)" in response.json()["detail"]
 
 
 def test_session_add_task_rejects_dynamic_task_id_collision() -> None:

@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Cell = tuple[int, int]
 NonNegativeInt = Annotated[int, Field(ge=0)]
@@ -42,8 +42,15 @@ class Robot(ApiModel):
     name: str
     start: Cell
     battery: NonNegativeInt
+    batteryCapacity: PositiveInt = 100
     load: NonNegativeInt
     moveTicks: int = Field(default=1, ge=1, le=4)
+
+    @model_validator(mode="after")
+    def validate_battery_capacity(self) -> "Robot":
+        if self.battery > self.batteryCapacity:
+            raise ValueError("battery must be <= batteryCapacity")
+        return self
 
 
 class DynamicEvent(ApiModel):
@@ -57,6 +64,7 @@ class Zones(ApiModel):
     warehouse: list[Cell]
     inspection: list[Cell]
     delivery: list[Cell]
+    charging: list[Cell] = Field(default_factory=list)
 
 
 class Scenario(ApiModel):
@@ -70,6 +78,7 @@ class Scenario(ApiModel):
     robots: list[Robot]
     tasks: list[Task]
     dynamic: DynamicEvent
+    chargeTime: PositiveInt = 4
 
 
 class DispatchOptions(ApiModel):
@@ -201,12 +210,21 @@ class EventItem(ApiModel):
     text: str
 
 
+class ChargingVisit(ApiModel):
+    robotId: str
+    station: Cell
+    departureTime: int
+    arrivalTime: int
+    completionTime: int
+
+
 class RobotRuntimeState(ApiModel):
     robotId: str
     name: str
     position: Cell
-    status: Literal["idle", "waiting", "toPickup", "delivering", "inspecting", "failed"]
+    status: Literal["idle", "waiting", "toPickup", "delivering", "inspecting", "toCharge", "charging", "failed"]
     battery: int
+    batteryCapacity: PositiveInt = 100
     load: int
     moveTicks: int
     currentTaskId: str | None = None
@@ -246,6 +264,7 @@ class DispatchResult(ApiModel):
     metrics: Metrics
     failureReasons: dict[str, str] = Field(default_factory=dict)
     failureDetails: dict[str, TaskFailureDetail] = Field(default_factory=dict)
+    chargingVisits: list[ChargingVisit] = Field(default_factory=list)
     eventLog: list[EventItem]
     tasks: list[Task]
 

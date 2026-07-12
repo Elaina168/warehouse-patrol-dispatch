@@ -152,6 +152,7 @@ def _named_cells(scenario: Scenario) -> list[tuple[str, Cell]]:
     cells.extend((f"仓储区 {index + 1}", cell) for index, cell in enumerate(scenario.zones.warehouse))
     cells.extend((f"巡检区 {index + 1}", cell) for index, cell in enumerate(scenario.zones.inspection))
     cells.extend((f"投递区 {index + 1}", cell) for index, cell in enumerate(scenario.zones.delivery))
+    cells.extend((f"充电区 {index + 1}", cell) for index, cell in enumerate(scenario.zones.charging))
     cells.extend((f"机器人 {robot.id} 起点", robot.start) for robot in scenario.robots)
     cells.extend(
         (f"动态封锁 {index + 1}", cell)
@@ -164,6 +165,7 @@ def _named_cells(scenario: Scenario) -> list[tuple[str, Cell]]:
 
 def _base_required_walkable_cells(scenario: Scenario) -> list[tuple[str, Cell]]:
     cells: list[tuple[str, Cell]] = []
+    cells.extend((f"充电区 {index + 1}", cell) for index, cell in enumerate(scenario.zones.charging))
     cells.extend((f"机器人 {robot.id} 起点", robot.start) for robot in scenario.robots)
     for task in scenario.tasks:
         cells.extend((f"任务 {task.id} 目标 {index + 1}", cell) for index, cell in enumerate(task_waypoints(task)))
