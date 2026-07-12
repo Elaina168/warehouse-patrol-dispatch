@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Keep the discrete grid model; robots never traverse more than one grid edge in a tick.
-- `moveTicks` is a required integer from `1` through `3` and means ticks per moved grid cell.
+- `moveTicks` is an integer from `1` through `4` and means ticks per moved grid cell; omitted legacy values default to `1`.
 - `serviceTime` remains independent from `moveTicks` and is added only after the final task waypoint is reached.
 - Frontend playback rate changes request cadence only; it must not change dispatch time or `moveTicks`.
 - Runtime block, failure, restore, manual-task and random-task flows must continue to trigger backend replanning.
@@ -60,7 +60,7 @@ class Robot(ApiModel):
     start: Cell
     battery: NonNegativeInt
     load: NonNegativeInt
-    moveTicks: int = Field(ge=1, le=3)
+    moveTicks: int = Field(default=1, ge=1, le=4)
 
 class RobotRuntimeState(ApiModel):
     robotId: str
