@@ -719,6 +719,7 @@ function App() {
                   {replanStatus ? (
                     <ReplanStatusPanel
                       status={replanStatus}
+                      robotStates={session?.robotStates ?? []}
                       conflictAlert={latestConflictAlert}
                       conflictResolved={latestConflictResolved}
                     />
@@ -989,10 +990,12 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function ReplanStatusPanel({
   status,
+  robotStates,
   conflictAlert,
   conflictResolved
 }: {
   status: ReplanStatus | null;
+  robotStates: SessionResult["robotStates"];
   conflictAlert: ConflictAlert | null;
   conflictResolved: boolean;
 }) {
@@ -1006,6 +1009,7 @@ function ReplanStatusPanel({
         <Metric label="锁定任务" value={`${status.lockedTaskCount} 个`} />
         <Metric label="未分配任务" value={`${status.unassignedTaskCount} 个`} />
         <Metric label="故障机器人" value={`${status.failedRobotCount} 台`} />
+        <Metric label="充电机器人" value={`${robotStates.filter((item) => item.status === "toCharge" || item.status === "charging").length} 台`} />
       </div>
       {conflictAlert ? (
         <div className={`conflict-alert ${conflictResolved ? "resolved" : ""}`}>

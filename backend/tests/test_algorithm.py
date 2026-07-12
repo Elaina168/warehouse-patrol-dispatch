@@ -2006,3 +2006,17 @@ def test_dispatch_charges_low_battery_robot_before_task() -> None:
     assert payload["chargingVisits"] == [
         {"robotId": "R1", "station": [0, 0], "departureTime": 0, "arrivalTime": 1, "completionTime": 3}
     ]
+
+
+def test_dispatch_explains_when_battery_capacity_cannot_finish_and_return() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "charge-capacity-failure", "name": "charge-capacity-failure", "description": "capacity", "width": 5, "height": 1,
+        "obstacles": [], "zones": {"warehouse": [], "inspection": [[4, 0]], "delivery": [], "charging": [[0, 0]]},
+        "robots": [{"id": "R1", "name": "R1", "start": [1, 0], "battery": 5, "batteryCapacity": 5, "load": 1}],
+        "tasks": [{"id": "T1", "type": "inspection", "title": "T1", "priority": 1, "targets": [[4, 0]]}],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+    response = client.post("/api/dispatch", json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}})
+    assert response.status_code == 200
+    assert "电池容量不足" in response.json()["failureReasons"]["T1"]

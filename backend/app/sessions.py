@@ -667,6 +667,8 @@ def _advance_session(session: DispatchSession, target_time: int) -> None:
             for visit in result.chargingVisits:
                 if visit.robotId != robot.id:
                     continue
+                if visit.departureTime + 1 == tick_time:
+                    _record_session_event(session, tick_time, f"{robot.id} 前往充电桩")
                 if visit.arrivalTime == tick_time:
                     _record_session_event(session, tick_time, f"{robot.id} 开始充电")
                 if visit.completionTime == tick_time:

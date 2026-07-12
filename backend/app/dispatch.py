@@ -1292,6 +1292,22 @@ def task_failure_reason(
             return f"没有可用机器人满足载重 {demand}"
         candidate_robots = capable_robots
 
+    battery_feasible_robot_ids = [
+        robot.id
+        for robot in candidate_robots
+        if task_charge_decision(scenario, robot, robot.start, robot.battery, task, extra_blocked) is not None
+    ]
+    if not battery_feasible_robot_ids:
+        path_reachable_robot_ids = [
+            robot.id
+            for robot in candidate_robots
+            if math.isfinite(task_distance(scenario, robot.start, task, extra_blocked))
+        ]
+        if path_reachable_robot_ids:
+            if scenario.zones.charging:
+                return "电池容量不足以完成任务并到达充电桩"
+            return "剩余电量不足且无可达充电桩"
+
     reachable_robot_ids = [
         robot.id
         for robot in candidate_robots

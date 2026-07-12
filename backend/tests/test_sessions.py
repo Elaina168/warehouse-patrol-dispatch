@@ -5641,4 +5641,4 @@ def test_session_charge_events_and_post_charge_energy_are_tick_accurate() -> Non
     payload = client.post(f"/api/sessions/{created.json()['sessionId']}/tick", json={"currentTime": 6}).json()
     state = payload["robotStates"][0]
     assert state["battery"] == 5
-    assert [event["text"] for event in payload["result"]["eventLog"] if "充电" in event["text"]] == ["R1 开始充电", "R1 完成充电"]
+    assert [event["text"] for event in payload["result"]["eventLog"] if "充电" in event["text"]] == ["R1 前往充电桩", "R1 开始充电", "R1 完成充电"]
