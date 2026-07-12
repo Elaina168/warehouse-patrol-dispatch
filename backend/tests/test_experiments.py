@@ -1,0 +1,591 @@
+from fastapi.testclient import TestClient
+
+from backend.app.main import app
+from backend.tests.helpers import frontend_demo_scenario
+
+
+def crossing_delivery_scenario() -> dict:
+    return {
+        "id": "crossing-delivery",
+        "name": "crossing-delivery",
+        "description": "two robots crossing in one aisle with a bypass row",
+        "width": 5,
+        "height": 2,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [[0, 0], [4, 0]],
+            "inspection": [],
+            "delivery": [[0, 0], [4, 0]],
+        },
+        "robots": [
+            {"id": "R1", "name": "R1", "start": [0, 0], "battery": 90, "load": 1},
+            {"id": "R2", "name": "R2", "start": [4, 0], "battery": 90, "load": 1},
+        ],
+        "tasks": [
+            {
+                "id": "D1",
+                "type": "delivery",
+                "title": "D1",
+                "priority": 2,
+                "pickup": [0, 0],
+                "dropoff": [4, 0],
+                "demand": 1,
+            },
+            {
+                "id": "D2",
+                "type": "delivery",
+                "title": "D2",
+                "priority": 2,
+                "pickup": [4, 0],
+                "dropoff": [0, 0],
+                "demand": 1,
+            },
+        ],
+        "dynamic": {
+            "triggerTime": 0,
+            "blockedCells": [],
+            "failedRobots": [],
+            "tasks": [],
+        },
+    }
+
+
+def test_conflict_avoidance_experiment_returns_baseline_and_avoidance_cases() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/experiments/conflict-avoidance",
+        json={
+            "scenario": crossing_delivery_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    cases = {case["label"]: case for case in payload["cases"]}
+
+    assert payload["scenarioId"] == "crossing-delivery"
+    assert set(cases) == {"withoutConflictAvoidance", "withConflictAvoidance"}
+    assert cases["withoutConflictAvoidance"]["options"]["avoidConflicts"] is False
+    assert cases["withConflictAvoidance"]["options"]["avoidConflicts"] is True
+    assert cases["withoutConflictAvoidance"]["result"]["metrics"]["conflictCount"] > 0
+    assert cases["withConflictAvoidance"]["result"]["metrics"]["conflictCount"] == 0
+    assert cases["withoutConflictAvoidance"]["result"]["metrics"]["assignedTaskCount"] == 2
+    assert cases["withConflictAvoidance"]["result"]["metrics"]["assignedTaskCount"] == 2
+
+
+def test_conflict_avoidance_experiment_uses_real_narrow_aisle_scenario() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/experiments/conflict-avoidance",
+        json={
+            "scenario": frontend_demo_scenario("narrow-aisle"),
+            "options": {"avoidConflicts": True, "includeDynamic": True},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    cases = {case["label"]: case for case in payload["cases"]}
+    without_avoidance = cases["withoutConflictAvoidance"]["result"]
+    with_avoidance = cases["withConflictAvoidance"]["result"]
+    without_task_ids = {task["id"] for task in without_avoidance["tasks"]}
+    with_task_ids = {task["id"] for task in with_avoidance["tasks"]}
+    without_assigned_ids = {
+        task["id"] for assignment in without_avoidance["assignments"] for task in assignment["tasks"]
+    }
+    with_assigned_ids = {task["id"] for assignment in with_avoidance["assignments"] for task in assignment["tasks"]}
+
+    assert payload["scenarioId"] == "narrow-aisle"
+    assert without_avoidance["dynamicTriggerTime"] == 10
+    assert with_avoidance["dynamicTriggerTime"] == 10
+    assert without_task_ids == {"T1", "T2", "T3", "E1"}
+    assert with_task_ids == without_task_ids
+    assert without_assigned_ids == without_task_ids
+    assert with_assigned_ids == without_task_ids
+    assert without_avoidance["metrics"]["assignedTaskCount"] == 4
+    assert with_avoidance["metrics"]["assignedTaskCount"] == 4
+    assert without_avoidance["metrics"]["conflictCount"] > 0
+    assert with_avoidance["metrics"]["conflictCount"] == 0
+    assert without_avoidance["conflicts"]
+    assert with_avoidance["conflicts"] == []
+    assert without_avoidance["metrics"]["failureCount"] == 0
+    assert with_avoidance["metrics"]["failureCount"] == 0
+
+
+def dynamic_replanning_scenario() -> dict:
+    scenario = crossing_delivery_scenario()
+    scenario["id"] = "dynamic-replanning"
+    scenario["name"] = "dynamic-replanning"
+    scenario["description"] = "dynamic emergency task comparison"
+    scenario["zones"]["inspection"] = [[2, 1]]
+    scenario["dynamic"] = {
+        "triggerTime": 3,
+        "blockedCells": [],
+        "failedRobots": [],
+        "tasks": [
+            {
+                "id": "E-DYN",
+                "type": "emergency",
+                "title": "E-DYN",
+                "priority": 5,
+                "target": [2, 1],
+            }
+        ],
+    }
+    return scenario
+
+
+def test_dynamic_replanning_experiment_returns_static_and_dynamic_cases() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/experiments/dynamic-replanning",
+        json={
+            "scenario": dynamic_replanning_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": True},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    cases = {case["label"]: case for case in payload["cases"]}
+
+    assert payload["scenarioId"] == "dynamic-replanning"
+    assert set(cases) == {"withoutDynamicReplanning", "withDynamicReplanning"}
+    assert cases["withoutDynamicReplanning"]["options"]["includeDynamic"] is False
+    assert cases["withDynamicReplanning"]["options"]["includeDynamic"] is True
+    without_task_ids = {task["id"] for task in cases["withoutDynamicReplanning"]["result"]["tasks"]}
+    with_task_ids = {task["id"] for task in cases["withDynamicReplanning"]["result"]["tasks"]}
+    assert "E-DYN" not in without_task_ids
+    assert "E-DYN" in with_task_ids
+    assert cases["withoutDynamicReplanning"]["result"]["dynamicTriggerTime"] is None
+    assert cases["withDynamicReplanning"]["result"]["dynamicTriggerTime"] == 3
+    assert cases["withDynamicReplanning"]["result"]["metrics"]["assignedTaskCount"] > cases[
+        "withoutDynamicReplanning"
+    ]["result"]["metrics"]["assignedTaskCount"]
+
+
+def test_dynamic_replanning_experiment_uses_real_campus_dynamic_task() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/experiments/dynamic-replanning",
+        json={
+            "scenario": frontend_demo_scenario("campus-warehouse"),
+            "options": {"avoidConflicts": True, "includeDynamic": True},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    cases = {case["label"]: case for case in payload["cases"]}
+    without_dynamic = cases["withoutDynamicReplanning"]["result"]
+    with_dynamic = cases["withDynamicReplanning"]["result"]
+    without_task_ids = {task["id"] for task in without_dynamic["tasks"]}
+    with_task_ids = {task["id"] for task in with_dynamic["tasks"]}
+    without_assigned_ids = {
+        task["id"] for assignment in without_dynamic["assignments"] for task in assignment["tasks"]
+    }
+    with_assigned_ids = {task["id"] for assignment in with_dynamic["assignments"] for task in assignment["tasks"]}
+
+    assert payload["scenarioId"] == "campus-warehouse"
+    assert without_dynamic["dynamicTriggerTime"] is None
+    assert with_dynamic["dynamicTriggerTime"] == 12
+    assert "E1" not in without_task_ids
+    assert "E1" in with_task_ids
+    assert "E1" not in without_assigned_ids
+    assert "E1" in with_assigned_ids
+    assert without_dynamic["metrics"]["assignedTaskCount"] == 4
+    assert with_dynamic["metrics"]["assignedTaskCount"] == 5
+    assert without_dynamic["metrics"]["conflictCount"] == 0
+    assert with_dynamic["metrics"]["conflictCount"] == 0
+    assert without_dynamic["metrics"]["failureCount"] == 0
+    assert with_dynamic["metrics"]["failureCount"] == 0
+    assert with_dynamic["metrics"]["totalDistance"] > without_dynamic["metrics"]["totalDistance"]
+
+
+def replan_window_scenario() -> dict:
+    scenario = crossing_delivery_scenario()
+    scenario["id"] = "replan-window"
+    scenario["name"] = "replan-window"
+    scenario["description"] = "rolling assignment window comparison"
+    scenario["zones"]["inspection"] = [[1, 1], [2, 1], [3, 1]]
+    scenario["tasks"].append(
+        {
+            "id": "FUTURE-12",
+            "type": "inspection",
+            "title": "FUTURE-12",
+            "priority": 1,
+            "releaseTime": 12,
+            "deadline": 40,
+            "targets": [[2, 1]],
+        }
+    )
+    return scenario
+
+
+def test_replan_window_experiment_returns_one_case_per_window() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/experiments/replan-window",
+        json={
+            "scenario": replan_window_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+            "windows": [4, 24],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    cases = {case["label"]: case for case in payload["cases"]}
+
+    assert payload["scenarioId"] == "replan-window"
+    assert set(cases) == {"window-4", "window-24"}
+    assert cases["window-4"]["options"]["assignmentReplanWindow"] == 4
+    assert cases["window-24"]["options"]["assignmentReplanWindow"] == 24
+    window_4_task_ids = {
+        task["id"]
+        for assignment in cases["window-4"]["result"]["assignments"]
+        for task in assignment["tasks"]
+    }
+    window_24_task_ids = {
+        task["id"]
+        for assignment in cases["window-24"]["result"]["assignments"]
+        for task in assignment["tasks"]
+    }
+    assert "FUTURE-12" not in window_4_task_ids
+    assert "FUTURE-12" in window_24_task_ids
+    assert cases["window-4"]["result"]["metrics"]["assignedTaskCount"] < cases["window-24"]["result"]["metrics"][
+        "assignedTaskCount"
+    ]
+
+
+def test_replan_window_experiment_uses_real_campus_dynamic_task_timing() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/experiments/replan-window",
+        json={
+            "scenario": frontend_demo_scenario("campus-warehouse"),
+            "options": {"avoidConflicts": True, "includeDynamic": True},
+            "windows": [4, 24],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    cases = {case["label"]: case for case in payload["cases"]}
+    window_4 = cases["window-4"]["result"]
+    window_24 = cases["window-24"]["result"]
+    window_4_assigned_ids = {task["id"] for assignment in window_4["assignments"] for task in assignment["tasks"]}
+    window_24_assigned_ids = {task["id"] for assignment in window_24["assignments"] for task in assignment["tasks"]}
+
+    assert payload["scenarioId"] == "campus-warehouse"
+    assert window_4["dynamicTriggerTime"] == 12
+    assert window_24["dynamicTriggerTime"] == 12
+    assert "E1" in {task["id"] for task in window_4["tasks"]}
+    assert "E1" not in window_4_assigned_ids
+    assert "E1" in window_24_assigned_ids
+    assert window_4["metrics"]["assignedTaskCount"] == 4
+    assert window_24["metrics"]["assignedTaskCount"] == 5
+    assert window_4["metrics"]["conflictCount"] == 0
+    assert window_24["metrics"]["conflictCount"] == 0
+    assert window_4["metrics"]["failureCount"] == 0
+    assert window_24["metrics"]["failureCount"] == 0
+
+
+def scaled_scenario(label: str, robot_count: int, task_count: int) -> dict:
+    width = 8
+    robots = [
+        {
+            "id": f"R{index + 1}",
+            "name": f"R{index + 1}",
+            "start": [0, index],
+            "battery": 90,
+            "load": 1,
+        }
+        for index in range(robot_count)
+    ]
+    inspection_cells = [[width - 1, index] for index in range(task_count)]
+    return {
+        "id": f"scale-{label}",
+        "name": f"scale-{label}",
+        "description": f"{robot_count} robots and {task_count} tasks",
+        "width": width,
+        "height": max(robot_count, task_count),
+        "obstacles": [],
+        "zones": {
+            "warehouse": [robot["start"] for robot in robots],
+            "inspection": inspection_cells,
+            "delivery": [],
+        },
+        "robots": robots,
+        "tasks": [
+            {
+                "id": f"T{index + 1}",
+                "type": "inspection",
+                "title": f"T{index + 1}",
+                "priority": 1 + (index % 3),
+                "releaseTime": 0,
+                "deadline": 40,
+                "targets": [cell],
+            }
+            for index, cell in enumerate(inspection_cells)
+        ],
+        "dynamic": {
+            "triggerTime": 0,
+            "blockedCells": [],
+            "failedRobots": [],
+            "tasks": [],
+        },
+    }
+
+
+def test_scale_experiment_returns_one_case_per_supplied_scenario() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/experiments/scale",
+        json={
+            "cases": [
+                {"label": "small", "scenario": scaled_scenario("small", robot_count=2, task_count=2)},
+                {"label": "medium", "scenario": scaled_scenario("medium", robot_count=4, task_count=4)},
+            ],
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    cases = {case["label"]: case for case in payload["cases"]}
+
+    assert set(cases) == {"small", "medium"}
+    assert cases["small"]["scenarioId"] == "scale-small"
+    assert cases["medium"]["scenarioId"] == "scale-medium"
+    assert cases["small"]["options"]["avoidConflicts"] is True
+    assert cases["medium"]["options"]["includeDynamic"] is False
+    assert cases["small"]["result"]["metrics"]["assignedTaskCount"] == 2
+    assert cases["medium"]["result"]["metrics"]["assignedTaskCount"] == 4
+    assert cases["medium"]["result"]["metrics"]["totalDistance"] >= cases["small"]["result"]["metrics"][
+        "totalDistance"
+    ]
+
+
+def test_scale_experiment_accepts_real_fixed_demo_scenarios() -> None:
+    client = TestClient(app)
+    fixed_scenario_ids = ["campus-warehouse", "narrow-aisle", "robot-failure"]
+
+    response = client.post(
+        "/api/experiments/scale",
+        json={
+            "cases": [
+                {"label": scenario_id, "scenario": frontend_demo_scenario(scenario_id)}
+                for scenario_id in fixed_scenario_ids
+            ],
+            "options": {"avoidConflicts": True, "includeDynamic": True},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    cases = {case["label"]: case for case in payload["cases"]}
+
+    assert list(cases) == fixed_scenario_ids
+    for scenario_id in fixed_scenario_ids:
+        result = cases[scenario_id]["result"]
+        assert cases[scenario_id]["scenarioId"] == scenario_id
+        assert cases[scenario_id]["options"]["avoidConflicts"] is True
+        assert cases[scenario_id]["options"]["includeDynamic"] is True
+        assert result["dynamicTriggerTime"] is not None
+        assert result["metrics"]["assignedTaskCount"] == len(result["tasks"])
+        assert result["metrics"]["conflictCount"] == 0
+        assert result["metrics"]["failureCount"] == 0
+        assert result["failureDetails"] == {}
+
+    assert len(cases["robot-failure"]["result"]["paths"]) > len(cases["campus-warehouse"]["result"]["paths"])
+    assert cases["campus-warehouse"]["result"]["metrics"]["assignedTaskCount"] > cases["narrow-aisle"]["result"][
+        "metrics"
+    ]["assignedTaskCount"]
+
+
+def test_seeded_pressure_experiment_returns_compact_performance_cases() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/experiments/seeded-pressure",
+        json={"options": {"avoidConflicts": True, "includeDynamic": True, "assignmentReplanWindow": 120}},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    cases = {case["label"]: case for case in payload["cases"]}
+    summary = payload["summary"]
+
+    assert list(cases) == ["seed-17", "seed-29", "seed-31"]
+    assert summary["caseCount"] == 3
+    assert summary["largestRobotCount"] == 8
+    assert summary["largestTaskCount"] == 27
+    assert summary["totalTaskCount"] == 65
+    assert summary["totalAssignedTaskCount"] == 65
+    assert summary["stableCaseCount"] == 3
+    assert summary["stableRatePercent"] == 100
+    assert summary["completionRatePercent"] == 100
+    assert summary["planningTimeBudgetMs"] == 2000
+    assert summary["withinPlanningTimeBudgetCount"] == 3
+    assert summary["withinPlanningTimeBudgetRatePercent"] == 100
+    assert summary["maxConflictCount"] == 0
+    assert summary["totalDeadlineMissCount"] == 0
+    assert summary["totalFailureCount"] == 0
+    assert summary["totalDistance"] == sum(case["totalDistance"] for case in cases.values())
+    assert summary["maxMakespan"] == max(case["makespan"] for case in cases.values())
+    assert summary["averageDistancePerTask"] == round(summary["totalDistance"] / summary["totalTaskCount"], 1)
+    assert summary["averageReplanTimeMs"] > 0
+    assert summary["averageReplanTimeMs"] <= summary["maxReplanTimeMs"]
+    assert summary["maxReplanTimeMs"] >= 0
+    assert cases["seed-17"]["seed"] == 17
+    assert cases["seed-29"]["robotCount"] == 6
+    assert cases["seed-31"]["robotCount"] == 8
+    assert cases["seed-17"]["taskCount"] == 15
+    assert cases["seed-29"]["taskCount"] == 23
+    assert cases["seed-31"]["taskCount"] == 27
+    for case in cases.values():
+        assert case["options"]["avoidConflicts"] is True
+        assert case["options"]["includeDynamic"] is True
+        assert case["options"]["assignmentReplanWindow"] == 120
+        assert case["scenarioId"].startswith("seeded-pressure-")
+        assert case["dynamicTaskCount"] == 3
+        assert case["obstacleCount"] >= 6
+        assert case["assignedTaskCount"] == case["taskCount"]
+        assert case["stable"] is True
+        assert case["completionRatePercent"] == 100
+        assert case["conflictCount"] == 0
+        assert case["deadlineMissCount"] == 0
+        assert case["failureCount"] == 0
+        assert case["totalDistance"] > 0
+        assert case["averageDistancePerTask"] == round(case["totalDistance"] / case["taskCount"], 1)
+        assert case["makespan"] > 0
+        assert case["replanTimeMs"] < 2000
+        assert case["withinPlanningTimeBudget"] is True
+
+    assert cases["seed-17"]["assignedTaskCount"] < cases["seed-29"]["assignedTaskCount"]
+    assert cases["seed-29"]["assignedTaskCount"] < cases["seed-31"]["assignedTaskCount"]
+
+
+def test_seeded_pressure_experiment_can_run_extended_stability_cases() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/experiments/seeded-pressure",
+        json={
+            "caseSet": "extended",
+            "options": {"avoidConflicts": True, "includeDynamic": True, "assignmentReplanWindow": 120},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    cases = {case["label"]: case for case in payload["cases"]}
+    summary = payload["summary"]
+
+    assert list(cases) == ["seed-17", "seed-29", "seed-31", "seed-37", "seed-43", "seed-53", "seed-67"]
+    assert summary["caseCount"] == 7
+    assert summary["largestRobotCount"] == 8
+    assert summary["largestTaskCount"] == 33
+    assert summary["totalTaskCount"] == 189
+    assert summary["totalAssignedTaskCount"] == 189
+    assert summary["stableCaseCount"] == 7
+    assert summary["stableRatePercent"] == 100
+    assert summary["completionRatePercent"] == 100
+    assert summary["planningTimeBudgetMs"] == 2000
+    assert summary["withinPlanningTimeBudgetCount"] == 7
+    assert summary["withinPlanningTimeBudgetRatePercent"] == 100
+    assert summary["maxConflictCount"] == 0
+    assert summary["totalDeadlineMissCount"] == 0
+    assert summary["totalFailureCount"] == 0
+    assert summary["totalDistance"] == sum(case["totalDistance"] for case in cases.values())
+    assert summary["maxMakespan"] == max(case["makespan"] for case in cases.values())
+    assert summary["averageDistancePerTask"] == round(summary["totalDistance"] / summary["totalTaskCount"], 1)
+    assert summary["averageReplanTimeMs"] > 0
+    assert summary["averageReplanTimeMs"] <= summary["maxReplanTimeMs"]
+    assert summary["maxReplanTimeMs"] < 2000
+    assert cases["seed-37"]["taskCount"] == 29
+    assert cases["seed-43"]["taskCount"] == 31
+    assert cases["seed-53"]["taskCount"] == 31
+    assert cases["seed-67"]["taskCount"] == 33
+    for case in cases.values():
+        assert case["assignedTaskCount"] == case["taskCount"]
+        assert case["stable"] is True
+        assert case["completionRatePercent"] == 100
+        assert case["conflictCount"] == 0
+        assert case["deadlineMissCount"] == 0
+        assert case["failureCount"] == 0
+        assert case["averageDistancePerTask"] == round(case["totalDistance"] / case["taskCount"], 1)
+        assert case["withinPlanningTimeBudget"] is True
+
+
+def test_online_pressure_experiment_returns_runtime_flow_summary() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/experiments/online-pressure",
+        json={"options": {"avoidConflicts": True, "includeDynamic": True, "assignmentReplanWindow": 120}},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    cases = {case["label"]: case for case in payload["cases"]}
+    summary = payload["summary"]
+
+    assert list(cases) == ["seed-17-online-flow"]
+    assert summary["caseCount"] == 1
+    assert summary["stableCaseCount"] == 1
+    assert summary["stableRatePercent"] == 100
+    assert summary["completionRatePercent"] == 100
+    assert summary["maxConflictCount"] == 0
+    assert summary["totalFailureCount"] == 0
+    assert summary["totalRuntimeEventCount"] == 6
+    assert summary["totalManualTaskCount"] == 2
+    assert summary["totalStreamTaskCount"] == 0
+    assert summary["totalCoveredTaskCount"] == summary["totalTaskCount"]
+    assert summary["totalCompletedTaskCount"] > 0
+    assert summary["maxReplanTimeMs"] > 0
+
+    case = cases["seed-17-online-flow"]
+    assert case["seed"] == 17
+    assert case["scenarioId"] == "seeded-pressure-seed-17"
+    assert case["options"]["avoidConflicts"] is True
+    assert case["options"]["includeDynamic"] is True
+    assert case["options"]["assignmentReplanWindow"] == 120
+    assert case["robotCount"] == 4
+    assert case["baseTaskCount"] == 12
+    assert case["scenarioDynamicTaskCount"] == 3
+    assert case["manualTaskCount"] == 2
+    assert case["streamTaskCount"] == 0
+    assert case["runtimeEventCount"] == 6
+    assert case["runtimeEventEvidence"] == [
+        "manualTask",
+        "blockedCell",
+        "failedRobot",
+        "restoredRobot",
+        "clearedBlockedCell",
+        "generatedTask",
+    ]
+    assert case["tickCount"] == 20
+    assert case["coveredTaskCount"] == case["taskCount"]
+    assert case["completedTaskCount"] > 0
+    assert case["assignedTaskCount"] > 0
+    assert case["stable"] is True
+    assert case["completionRatePercent"] == 100
+    assert case["conflictCount"] == 0
+    assert case["deadlineMissCount"] == 0
+    assert case["failureCount"] == 0
+    assert case["totalDistance"] > 0
+    assert case["averageDistancePerTask"] == round(case["totalDistance"] / case["taskCount"], 1)
+    assert case["makespan"] > 0
+    assert case["replanTimeMs"] > 0
+    assert case["metricsHistoryCount"] >= 10
+    assert case["eventLogCount"] >= 6

@@ -1,0 +1,23 @@
+{
+  "name": "warehouse-patrol-dispatch",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Competition prototype and future full-stack app for warehouse logistics and patrol robot dispatch.",
+  "scripts": {
+    "dev": ".\\.tools\\powershell\\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1",
+    "dev:no-browser": ".\\.tools\\powershell\\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -NoBrowser",
+    "dev:stop": ".\\.tools\\powershell\\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/stop-dev.ps1",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:build": "npm --prefix frontend run build",
+    "frontend:test": "npm --prefix frontend run test",
+    "backend:dev": ".\\.tools\\powershell\\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev-backend.ps1",
+    "backend:test": ".\\.venv\\Scripts\\python.exe -m pytest backend/tests",
+    "check": "npm run frontend:build && npm run frontend:test && npm run backend:test"
+  },
+  "engines": {
+    "node": ">=20.19.0",
+    "npm": ">=10.0.0",
+    "python": ">=3.11"
+  }
+}
