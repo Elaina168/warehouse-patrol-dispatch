@@ -1861,6 +1861,7 @@ function getTaskSnapshotStatus(
 ): TaskRuntimeStatus {
   if (time < releaseTime) return "pending";
   if (completionTime !== null && time >= completionTime) return "done";
+  if (runtimeState?.status === "pending") return "pending";
   if (runtimeState?.status === "unassigned") return "unassigned";
   return getTaskRuntimeStatus(task, assignedRobotId, releaseTime, completionTime, time);
 }
