@@ -37,6 +37,66 @@ def test_assignment_prefers_faster_robot_when_grid_distance_is_equal() -> None:
     assert assignment["robotId"] == "R2"
 
 
+def test_timed_path_expands_each_move_by_robot_duration() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "timed-speed-path",
+            "name": "timed-speed-path",
+            "description": "robot movement duration should expand the timed path",
+            "width": 2,
+            "height": 1,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [[1, 0]], "delivery": []},
+            "robots": [],
+            "tasks": [],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+
+    path = dispatch_module.astar_timed(
+        scenario,
+        (0, 0),
+        (1, 0),
+        0,
+        dispatch_module.Reservations(),
+        move_ticks=3,
+    )
+
+    assert path == [(0, 0), (0, 0), (0, 0), (1, 0)]
+
+
+def test_avoidance_respects_slow_robot_intermediate_start_cell_occupancy() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "slow-start-occupancy",
+            "name": "slow-start-occupancy",
+            "description": "another robot must wait while the slow robot still occupies its start cell",
+            "width": 2,
+            "height": 2,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [[0, 0], [1, 0]], "delivery": []},
+            "robots": [
+                {"id": "R1", "name": "slow", "start": [0, 0], "battery": 90, "load": 1, "moveTicks": 3},
+                {"id": "R2", "name": "fast", "start": [0, 1], "battery": 90, "load": 1, "moveTicks": 1},
+            ],
+            "tasks": [
+                {"id": "T1", "type": "inspection", "title": "slow move", "priority": 2, "targets": [[1, 0]]},
+                {"id": "T2", "type": "inspection", "title": "shared start", "priority": 2, "targets": [[0, 0]]},
+            ],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+    tasks = {task.id: task for task in scenario.tasks}
+    assignments = [Assignment(robotId="R1", tasks=[tasks["T1"]]), Assignment(robotId="R2", tasks=[tasks["T2"]])]
+
+    paths, failures = build_paths(scenario, scenario.robots, assignments, True, [], [])
+
+    assert failures == []
+    assert paths["R1"][:4] == [(0, 0), (0, 0), (0, 0), (1, 0)]
+    assert paths["R2"][1] != (0, 0)
+    assert dispatch_module.detect_conflicts(paths) == []
+
+
 def test_dispatch_api_returns_schedulable_result() -> None:
     client = TestClient(app)
     response = client.post(

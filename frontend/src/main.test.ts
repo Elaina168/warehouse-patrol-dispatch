@@ -43,6 +43,7 @@ import {
   filterInitialScenarioTaskLabels,
   shouldDisplayConflictMarker,
   robotColorForIndex,
+  robotMoveDurationLabel,
   routeHintsAfterSessionUpdate,
   parseCoordinateInput,
   resetSessionConflictState,
@@ -82,6 +83,12 @@ describe("session reset state", () => {
 
     expect(alert).toBeNull();
     expect(resolved).toBe(false);
+  });
+});
+
+describe("robot movement duration", () => {
+  it("formats the configured ticks per grid cell", () => {
+    expect(robotMoveDurationLabel(3)).toBe("每格耗时 3 tick");
   });
 });
 
@@ -749,6 +756,7 @@ describe("timeline navigation", () => {
         status: "idle",
         battery: 90,
         load: 0,
+        moveTicks: 1,
         currentTaskId: null
       }
     ];
