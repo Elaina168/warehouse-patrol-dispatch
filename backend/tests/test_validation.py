@@ -4,6 +4,33 @@ from backend.app.main import app
 from backend.tests.helpers import scenario_payload
 
 
+def test_robot_move_ticks_defaults_for_legacy_scenarios_and_rejects_invalid_values() -> None:
+    client = TestClient(app)
+
+    legacy_response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario_payload(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert legacy_response.status_code == 200
+    assert [state["moveTicks"] for state in legacy_response.json()["robotStates"]] == [1, 1]
+
+    invalid_scenario = scenario_payload()
+    invalid_scenario["robots"][0]["moveTicks"] = 5
+    invalid_response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": invalid_scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert invalid_response.status_code == 422
+
+
 def test_session_add_task_rejects_dynamic_task_id_collision() -> None:
     client = TestClient(app)
     create_response = client.post(

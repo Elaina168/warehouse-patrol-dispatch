@@ -43,6 +43,7 @@ import {
   filterInitialScenarioTaskLabels,
   shouldDisplayConflictMarker,
   robotColorForIndex,
+  robotMoveDurationLabel,
   routeHintsAfterSessionUpdate,
   parseCoordinateInput,
   resetSessionConflictState,
@@ -82,6 +83,12 @@ describe("session reset state", () => {
 
     expect(alert).toBeNull();
     expect(resolved).toBe(false);
+  });
+});
+
+describe("robot movement duration", () => {
+  it("formats the configured ticks per grid cell", () => {
+    expect(robotMoveDurationLabel(3)).toBe("每格耗时 3 tick");
   });
 });
 
@@ -749,6 +756,7 @@ describe("timeline navigation", () => {
         status: "idle",
         battery: 90,
         load: 0,
+        moveTicks: 1,
         currentTaskId: null
       }
     ];
@@ -905,6 +913,61 @@ describe("dispatch options", () => {
 });
 
 describe("task queue display", () => {
+  it("keeps capacity-deferred tasks pending instead of showing them as scheduling failures", () => {
+    const task: DispatchResult["tasks"][number] = {
+      id: "DEFERRED",
+      type: "inspection",
+      title: "等待可用机器人",
+      priority: 2,
+      targets: [[2, 0]]
+    };
+    const result = {
+      scenarioId: "capacity-deferred",
+      avoidConflicts: true,
+      includeDynamic: true,
+      dynamicTriggerTime: null,
+      extraBlocked: [],
+      unavailableRobotIds: [],
+      assignments: [],
+      paths: {},
+      conflicts: [],
+      metrics: {
+        makespan: 0,
+        totalDistance: 0,
+        conflictCount: 0,
+        loadBalance: 0,
+        assignedTaskCount: 0,
+        deadlineMissCount: 0,
+        averageLateness: 0,
+        failureCount: 0,
+        replanTimeMs: 1
+      },
+      failureReasons: {},
+      failureDetails: {},
+      eventLog: [],
+      tasks: [task]
+    } satisfies DispatchResult;
+    const runtimeStates: SessionResult["taskStates"] = [
+      {
+        taskId: "DEFERRED",
+        status: "pending",
+        assignedRobotId: null,
+        releaseTime: 0,
+        completionTime: null,
+        locked: false,
+        failureReason: null,
+        failureCategory: null,
+        recoveryAction: null
+      }
+    ];
+
+    const [snapshot] = buildTaskSnapshots(result, 8, runtimeStates);
+
+    expect(snapshot.status).toBe("pending");
+    expect(buildTaskQueueMetricRows(snapshot)).toContainEqual({ label: "状态", value: "等待分配" });
+    expect(buildTaskQueueMetricRows(snapshot)).toContainEqual({ label: "执行机器人", value: "等待分配" });
+  });
+
   it("uses runtime timing fields and keeps completed task details available", () => {
     const task: DispatchResult["tasks"][number] = {
       id: "T1",

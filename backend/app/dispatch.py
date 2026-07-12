@@ -162,14 +162,34 @@ def is_reserved(cell: Cell, time_index: int, previous: Cell, reservations: Reser
 
 
 def reconstruct_timed(came_from: dict[str, str], current_key: str) -> list[Cell]:
-    path: list[Cell] = []
+    states: list[tuple[Cell, int]] = []
     cursor: str | None = current_key
     while cursor:
-        cell_part = cursor.split("@")[0]
+        cell_part, time_text = cursor.rsplit("@", 1)
         x_text, y_text = cell_part.split(",")
-        path.insert(0, (int(x_text), int(y_text)))
+        states.insert(0, ((int(x_text), int(y_text)), int(time_text)))
         cursor = came_from.get(cursor)
+    if not states:
+        return []
+
+    path = [states[0][0]]
+    for (previous_cell, previous_time), (cell, time_index) in zip(states, states[1:]):
+        path.extend([previous_cell] * max(0, time_index - previous_time - 1))
+        path.append(cell)
     return path
+
+
+def movement_is_reserved(
+    start: Cell,
+    goal: Cell,
+    start_time: int,
+    move_ticks: int,
+    reservations: Reservations,
+) -> bool:
+    for time_index in range(start_time + 1, start_time + move_ticks):
+        if f"{cell_key(start)}@{time_index}" in reservations.vertices:
+            return True
+    return is_reserved(goal, start_time + move_ticks, start, reservations)
 
 
 def astar_timed(
@@ -179,14 +199,17 @@ def astar_timed(
     start_time: int,
     reservations: Reservations,
     extra_blocked: list[Cell] | None = None,
+    move_ticks: int = 1,
 ) -> list[Cell]:
     blocked = make_blocked_set(scenario, extra_blocked)
     if not is_walkable(start, scenario, blocked) or not is_walkable(goal, scenario, blocked):
         return []
 
-    max_time = start_time + scenario.width * scenario.height * 4
+    max_time = start_time + scenario.width * scenario.height * 4 * move_ticks
     start_state_key = timed_key(start, start_time)
-    heap: list[tuple[int, int, int, Cell, str]] = [(manhattan(start, goal), start_time, 0, start, start_state_key)]
+    heap: list[tuple[int, int, int, Cell, str]] = [
+        (manhattan(start, goal) * move_ticks, start_time, 0, start, start_state_key)
+    ]
     came_from: dict[str, str] = {}
     best: dict[str, int] = {start_state_key: 0}
     closed: set[str] = set()
@@ -200,18 +223,24 @@ def astar_timed(
         closed.add(current_key)
 
         for next_cell in neighbors(current_cell, scenario, blocked, include_wait=True):
-            next_time = current_time + 1
-            if is_reserved(next_cell, next_time, current_cell, reservations):
+            duration = 1 if same_cell(next_cell, current_cell) else move_ticks
+            next_time = current_time + duration
+            reserved = (
+                is_reserved(next_cell, next_time, current_cell, reservations)
+                if duration == 1
+                else movement_is_reserved(current_cell, next_cell, current_time, duration, reservations)
+            )
+            if reserved:
                 continue
             next_key = timed_key(next_cell, next_time)
-            tentative = current_g + 1
+            tentative = current_g + duration
             if tentative >= best.get(next_key, math.inf):
                 continue
             came_from[next_key] = current_key
             best[next_key] = tentative
             heapq.heappush(
                 heap,
-                (tentative + manhattan(next_cell, goal), next_time, tentative, next_cell, next_key),
+                (tentative + manhattan(next_cell, goal) * move_ticks, next_time, tentative, next_cell, next_key),
             )
 
     return []
@@ -261,6 +290,20 @@ def task_distance(
         total += distance
         cursor = point
     return total
+
+
+def robot_task_travel_time(
+    scenario: Scenario,
+    robot: Robot,
+    start: Cell,
+    task: Task,
+    extra_blocked: list[Cell],
+    distance_cache: DistanceCache | None = None,
+) -> float:
+    distance = task_distance(scenario, start, task, extra_blocked, distance_cache)
+    if not math.isfinite(distance):
+        return math.inf
+    return distance * robot.moveTicks
 
 
 def task_release_time(task: Task) -> int:
@@ -406,13 +449,21 @@ def assign_tasks_beam_search(
                 if task.type == "delivery" and robot.load < (task.demand or 1):
                     continue
 
-                cost = task_distance(scenario, robot_state.cursor, task, extra_blocked, distance_cache)
-                if not math.isfinite(cost):
+                distance = task_distance(scenario, robot_state.cursor, task, extra_blocked, distance_cache)
+                if not math.isfinite(distance):
                     continue
+                travel_time = robot_task_travel_time(
+                    scenario,
+                    robot,
+                    robot_state.cursor,
+                    task,
+                    extra_blocked,
+                    distance_cache,
+                )
 
                 current_time = robot_state.time
                 start_time = max(current_time, task_release_time(task))
-                finish_time = start_time + int(cost) + task_service_time(task)
+                finish_time = start_time + int(travel_time) + task_service_time(task)
                 battery_penalty = max(0, 45 - robot.battery)
                 wait_penalty = max(0, task_release_time(task) - current_time) * 0.25
                 switch_penalty = assignment_switch_penalty(task, robot.id, preferred_task_robot_ids, active_robot_ids)
@@ -422,7 +473,7 @@ def assign_tasks_beam_search(
                 next_robot = next_candidate.robots[robot_index]
                 next_robot.tasks.append(task)
                 next_robot.time = finish_time
-                next_robot.distance += int(cost)
+                next_robot.distance += int(distance)
                 next_robot.penalty += battery_penalty + wait_penalty + switch_penalty + deadline_penalty(task, finish_time)
                 if waypoints:
                     next_robot.cursor = waypoints[-1]
@@ -460,10 +511,22 @@ def join_paths(base: list[Cell], segment: list[Cell]) -> list[Cell]:
     return [*base, *segment[1:]]
 
 
+def expand_path_by_move_ticks(path: list[Cell], move_ticks: int) -> list[Cell]:
+    if not path:
+        return []
+    expanded = [path[0]]
+    for previous, cell in zip(path, path[1:]):
+        if not same_cell(previous, cell):
+            expanded.extend([previous] * (move_ticks - 1))
+        expanded.append(cell)
+    return expanded
+
+
 def plan_robot_path(
     scenario: Scenario,
     start: Cell,
     tasks: list[Task],
+    move_ticks: int,
     avoid_conflicts: bool,
     reservations: Reservations,
     extra_blocked: list[Cell],
@@ -484,9 +547,17 @@ def plan_robot_path(
                 else extra_blocked
             )
             segment = (
-                astar_timed(scenario, cursor, waypoint, len(path) - 1, reservations, segment_blocked)
+                astar_timed(
+                    scenario,
+                    cursor,
+                    waypoint,
+                    len(path) - 1,
+                    reservations,
+                    segment_blocked,
+                    move_ticks,
+                )
                 if avoid_conflicts
-                else astar(scenario, cursor, waypoint, segment_blocked)
+                else expand_path_by_move_ticks(astar(scenario, cursor, waypoint, segment_blocked), move_ticks)
             )
             if not segment:
                 return path, True
@@ -551,6 +622,7 @@ def has_future_vertex_reservation(
 def append_parking_step(
     scenario: Scenario,
     path: list[Cell],
+    move_ticks: int,
     reservations: Reservations,
     extra_blocked: list[Cell],
     delayed_blocked: list[Cell] | None = None,
@@ -562,7 +634,8 @@ def append_parking_step(
 
     delayed_blocked = delayed_blocked or []
     final_cell = path[-1]
-    next_time = len(path)
+    start_time = len(path) - 1
+    next_time = start_time + 1
     if not has_future_vertex_reservation(final_cell, next_time, reservations, horizon_padding):
         return path
 
@@ -571,17 +644,28 @@ def append_parking_step(
         blocked_cells_at_time(extra_blocked, delayed_blocked, delayed_block_time, next_time),
     )
     for candidate in neighbors(final_cell, scenario, blocked):
-        if is_reserved(candidate, next_time, final_cell, reservations):
+        segment = astar_timed(
+            scenario,
+            final_cell,
+            candidate,
+            start_time,
+            reservations,
+            blocked_cells_at_time(extra_blocked, delayed_blocked, delayed_block_time, start_time),
+            move_ticks,
+        )
+        if not segment:
             continue
-        if not can_hold_cell(candidate, next_time + 1, reservations, horizon_padding):
+        arrival_time = start_time + len(segment) - 1
+        if not can_hold_cell(candidate, arrival_time + 1, reservations, horizon_padding):
             continue
-        return [*path, candidate]
+        return join_paths(path, segment)
     return path
 
 
 def plan_idle_robot_parking_path(
     scenario: Scenario,
     start: Cell,
+    move_ticks: int,
     reservations: Reservations,
     extra_blocked: list[Cell],
     delayed_blocked: list[Cell] | None = None,
@@ -599,7 +683,7 @@ def plan_idle_robot_parking_path(
         key=lambda cell: (manhattan(start, cell), cell),
     )
     for candidate in candidates:
-        path = astar_timed(scenario, start, candidate, 0, reservations, blocked_cells)
+        path = astar_timed(scenario, start, candidate, 0, reservations, blocked_cells, move_ticks)
         if path and can_hold_cell(candidate, len(path), reservations, horizon_padding):
             return path
     return [start]
@@ -636,10 +720,10 @@ def static_assignment_distance(
     cursor = robot.start
     total = 0.0
     for task in tasks:
-        distance = task_distance(scenario, cursor, task, extra_blocked)
-        if not math.isfinite(distance):
+        travel_time = robot_task_travel_time(scenario, robot, cursor, task, extra_blocked)
+        if not math.isfinite(travel_time):
             return math.inf
-        total += distance
+        total += travel_time
         waypoints = task_waypoints(task)
         if waypoints:
             cursor = waypoints[-1]
@@ -724,6 +808,7 @@ def build_paths_for_order(
             path = plan_idle_robot_parking_path(
                 scenario,
                 robot.start,
+                robot.moveTicks,
                 reservations,
                 extra_blocked,
                 delayed_blocked,
@@ -735,6 +820,7 @@ def build_paths_for_order(
                 scenario,
                 robot.start,
                 assigned,
+                robot.moveTicks,
                 avoid_conflicts,
                 reservations,
                 extra_blocked,
@@ -745,6 +831,7 @@ def build_paths_for_order(
             path = append_parking_step(
                 scenario,
                 path,
+                robot.moveTicks,
                 reservations,
                 extra_blocked,
                 delayed_blocked,

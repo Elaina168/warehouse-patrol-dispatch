@@ -171,6 +171,44 @@ def test_integrated_demo_avoidance_keeps_idle_robot_out_of_active_task_path() ->
     assert payload["metricsHistory"][-1]["activeConflictCount"] == 0
 
 
+def test_online_session_reports_slow_robot_position_and_keeps_service_time_independent() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "online-speed-progress",
+        "name": "online-speed-progress",
+        "description": "slow movement and service time should use separate ticks",
+        "width": 2,
+        "height": 1,
+        "obstacles": [],
+        "zones": {"warehouse": [], "inspection": [[1, 0]], "delivery": []},
+        "robots": [
+            {"id": "R1", "name": "slow", "start": [0, 0], "battery": 90, "load": 1, "moveTicks": 3},
+        ],
+        "tasks": [
+            {"id": "T1", "type": "inspection", "title": "slow inspection", "priority": 2, "targets": [[1, 0]], "serviceTime": 2},
+        ],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+    create_response = client.post(
+        "/api/sessions",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}},
+    )
+
+    assert create_response.status_code == 200
+    session_id = create_response.json()["sessionId"]
+    second_tick = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 2}).json()
+    arrival_tick = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 3}).json()
+    completion_tick = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 5}).json()
+
+    second_robot = next(state for state in second_tick["robotStates"] if state["robotId"] == "R1")
+    assert second_robot["position"] == [0, 0]
+    assert second_robot["moveTicks"] == 3
+    assert next(state for state in arrival_tick["taskStates"] if state["taskId"] == "T1")["status"] == "running"
+    completion_state = next(state for state in completion_tick["taskStates"] if state["taskId"] == "T1")
+    assert completion_state["completionTime"] == 5
+    assert completion_state["status"] == "completed"
+
+
 def test_session_api_accepts_manual_task() -> None:
     client = TestClient(app)
     create_response = client.post(

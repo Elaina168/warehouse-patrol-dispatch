@@ -50,6 +50,7 @@ export type TaskSnapshot = {
   task: Task;
   assignedRobotId: string | null;
   releaseTime: number;
+  isReleased: boolean;
   completionTime: number | null;
   status: TaskRuntimeStatus;
   locked: boolean;
@@ -1266,9 +1267,10 @@ function MapBoard({
                 <span className="robot-tooltip">
                   <strong>{robotState.id} · {robotState.name}</strong>
                   <span>位置 ({robotState.position[0]}, {robotState.position[1]}) · {robotState.status}</span>
-                  <span>任务 {currentTask ?? "无"}</span>
-                  <span>电量 {robotState.battery}% · 载重 {robotState.load}</span>
-                  <span>进度 {Math.round(robotState.progress * 100)}%</span>
+                   <span>任务 {currentTask ?? "无"}</span>
+                   <span>电量 {robotState.battery}% · 载重 {robotState.load}</span>
+                   <span>{robotMoveDurationLabel(runtimeState?.moveTicks ?? robot?.moveTicks ?? 1)}</span>
+                   <span>进度 {Math.round(robotState.progress * 100)}%</span>
                 </span>
               ) : null}
             </span>
@@ -1402,6 +1404,7 @@ export function buildTaskSnapshots(result: DispatchResult, time: number, runtime
       task,
       assignedRobotId,
       releaseTime,
+      isReleased: time >= releaseTime,
       completionTime,
       status,
       locked,
@@ -1455,14 +1458,15 @@ export function taskTimingFields(snapshot: TaskSnapshot): { release: string; dea
 }
 
 export function buildTaskQueueMetricRows(snapshot: TaskSnapshot): Array<{ label: string; value: string }> {
+  const waitingForAssignment = snapshot.status === "pending" && snapshot.isReleased && snapshot.assignedRobotId === null;
   const completion = snapshot.completionTime == null
     ? "未完成"
     : snapshot.status === "done"
       ? `T=${snapshot.completionTime}`
       : `预计 T=${snapshot.completionTime}`;
   return [
-    { label: "状态", value: taskStatusLabel(snapshot.status) },
-    { label: "执行机器人", value: snapshot.assignedRobotId ?? "未分配" },
+    { label: "状态", value: waitingForAssignment ? "等待分配" : taskStatusLabel(snapshot.status) },
+    { label: "执行机器人", value: snapshot.assignedRobotId ?? (waitingForAssignment ? "等待分配" : "未分配") },
     { label: "任务类型", value: taskTypeLabel(snapshot.task.type) },
     { label: "优先级", value: String(snapshot.task.priority) },
     { label: "锁定状态", value: snapshot.locked ? "已锁定" : "可重分配" },
@@ -1860,6 +1864,7 @@ function getTaskSnapshotStatus(
 ): TaskRuntimeStatus {
   if (time < releaseTime) return "pending";
   if (completionTime !== null && time >= completionTime) return "done";
+  if (runtimeState?.status === "pending") return "pending";
   if (runtimeState?.status === "unassigned") return "unassigned";
   return getTaskRuntimeStatus(task, assignedRobotId, releaseTime, completionTime, time);
 }
@@ -2076,6 +2081,10 @@ function robotRuntimeStatusLabel(status: SessionResult["robotStates"][number]["s
   if (status === "delivering") return "配送中";
   if (status === "inspecting") return "巡检中";
   return "空闲";
+}
+
+export function robotMoveDurationLabel(moveTicks: number): string {
+  return `每格耗时 ${moveTicks} tick`;
 }
 
 function formatCells(cells: Cell[]): string {
@@ -2645,7 +2654,12 @@ function isRobot(value: unknown): value is Scenario["robots"][number] {
     && isString(value.name)
     && isCell(value.start)
     && isFiniteNumber(value.battery)
-    && isFiniteNumber(value.load);
+    && isFiniteNumber(value.load)
+    && (value.moveTicks === undefined || isMoveTicks(value.moveTicks));
+}
+
+function isMoveTicks(value: unknown): value is number {
+  return isNonNegativeInteger(value) && value >= 1 && value <= 4;
 }
 
 function isDynamicEvent(value: unknown): value is Scenario["dynamic"] {

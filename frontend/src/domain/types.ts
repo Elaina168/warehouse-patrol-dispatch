@@ -60,6 +60,7 @@ export type Robot = {
   start: Cell;
   battery: number;
   load: number;
+  moveTicks?: number;
 };
 
 export type DynamicEvent = {
@@ -155,6 +156,7 @@ export type RobotRuntimeState = {
   status: RobotRuntimeStatus;
   battery: number;
   load: number;
+  moveTicks: number;
   currentTaskId: string | null;
 };
 

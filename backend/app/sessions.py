@@ -920,6 +920,7 @@ def _build_robot_states(session: DispatchSession, result: DispatchResult) -> lis
                 status=status,
                 battery=max(0, robot.battery - session.robot_travelled_distance.get(robot.id, 0)),
                 load=robot.load,
+                moveTicks=robot.moveTicks,
                 currentTaskId=current_task_id,
             )
         )

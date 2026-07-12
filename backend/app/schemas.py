@@ -43,6 +43,7 @@ class Robot(ApiModel):
     start: Cell
     battery: NonNegativeInt
     load: NonNegativeInt
+    moveTicks: int = Field(default=1, ge=1, le=4)
 
 
 class DynamicEvent(ApiModel):
@@ -207,6 +208,7 @@ class RobotRuntimeState(ApiModel):
     status: Literal["idle", "waiting", "toPickup", "delivering", "inspecting", "failed"]
     battery: int
     load: int
+    moveTicks: int
     currentTaskId: str | None = None
 
 
