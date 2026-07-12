@@ -1975,3 +1975,34 @@ def test_deadline_metrics_report_late_tasks() -> None:
     payload = response.json()
     assert payload["metrics"]["deadlineMissCount"] == 1
     assert payload["metrics"]["averageLateness"] > 0
+
+
+def test_dispatch_charges_low_battery_robot_before_task() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "charging-before-task",
+        "name": "charging-before-task",
+        "description": "low battery robot must charge before assignment",
+        "width": 4,
+        "height": 1,
+        "obstacles": [],
+        "zones": {"warehouse": [], "inspection": [[3, 0]], "delivery": [], "charging": [[0, 0]]},
+        "chargeTime": 2,
+        "robots": [
+            {"id": "R1", "name": "R1", "start": [1, 0], "battery": 1, "batteryCapacity": 8, "load": 1},
+        ],
+        "tasks": [
+            {"id": "T1", "type": "inspection", "title": "inspection", "priority": 1, "targets": [[3, 0]]},
+        ],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+
+    response = client.post("/api/dispatch", json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assignments"][0]["robotId"] == "R1"
+    assert payload["assignments"][0]["tasks"][0]["id"] == "T1"
+    assert payload["chargingVisits"] == [
+        {"robotId": "R1", "station": [0, 0], "departureTime": 0, "arrivalTime": 1, "completionTime": 3}
+    ]
