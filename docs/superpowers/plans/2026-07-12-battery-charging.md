@@ -45,7 +45,7 @@
 - Consumes: `Scenario`, `Zones`, `Robot`, `RobotRuntimeState`, `DispatchResult`。
 - Produces: `Scenario.chargeTime`, `Zones.charging`, `Robot.batteryCapacity`, `ChargingVisit`, `DispatchResult.chargingVisits`，以及 `toCharge`/`charging` 运行状态。
 
-- [ ] **Step 1: 写失败的后端模式和契约测试**
+- [x] **Step 1: 写失败的后端模式和契约测试**
 
 ```python
 def test_scenario_defaults_charge_time_and_empty_charging_zone() -> None:
@@ -61,13 +61,13 @@ def test_robot_rejects_battery_above_capacity() -> None:
 
 在 `test_api_contract.py` 增加 `Zones`、`Robot`、`ChargingVisit` 和 `RobotRuntimeState` 的字段一致性断言；在 `test_validation.py` 断言充电格超出地图范围或位于固定障碍时被拒绝；前端测试断言 `toCharge`、`charging` 可被类型与状态标签接受。
 
-- [ ] **Step 2: 运行失败测试确认缺少字段**
+- [x] **Step 2: 运行失败测试确认缺少字段**
 
 Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/test_validation.py backend/tests/test_api_contract.py -q`
 
 Expected: FAIL，因为 `chargeTime`、`charging`、`batteryCapacity`、`ChargingVisit` 尚未定义。
 
-- [ ] **Step 3: 实现 Pydantic 与 TypeScript 契约**
+- [x] **Step 3: 实现 Pydantic 与 TypeScript 契约**
 
 ```python
 class Zones(ApiModel):
@@ -95,7 +95,7 @@ class Robot(ApiModel):
 
 从 `pydantic` 导入 `model_validator`，在 `Scenario` 添加 `chargeTime: PositiveInt = 4`；创建 `ChargingVisit(robotId, station, departureTime, arrivalTime, completionTime)`；在 `DispatchResult` 添加默认空列表 `chargingVisits`。将前端 `Zones` 的 `charging` 设为可选字段、`Scenario.chargeTime` 和 `Robot.batteryCapacity` 设为可选字段，并把运行状态联合类型扩展为 `"toCharge" | "charging"`。在 `validation.py` 的命名坐标、固定障碍检查和场景可达性输入中纳入 `zones.charging`，保证它既不越界也不位于障碍。
 
-- [ ] **Step 4: 更新前端导入校验与运行时默认值**
+- [x] **Step 4: 更新前端导入校验与运行时默认值**
 
 ```ts
 const chargingCells = scenario.zones.charging ?? [];
@@ -105,7 +105,7 @@ const batteryCapacity = runtimeState?.batteryCapacity ?? robot.batteryCapacity ?
 
 在 `isScenario()`、`assertScenarioCellsInside()` 和前端场景归一化路径中接受缺失的 `charging`/`chargeTime`，但校验显式充电格均为地图内坐标；不得为旧导入场景补写机器人起点作为充电格。
 
-- [ ] **Step 5: 运行目标测试并提交**
+- [x] **Step 5: 运行目标测试并提交**
 
 Run: `npm --prefix frontend run test -- main.test.ts; .\.venv\Scripts\python.exe -m pytest backend/tests/test_validation.py backend/tests/test_api_contract.py -q`
 
