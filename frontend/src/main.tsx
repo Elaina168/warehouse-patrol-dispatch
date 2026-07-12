@@ -1270,7 +1270,7 @@ function MapBoard({
                   <strong>{robotState.id} · {robotState.name}</strong>
                   <span>位置 ({robotState.position[0]}, {robotState.position[1]}) · {robotState.status}</span>
                    <span>任务 {currentTask ?? "无"}</span>
-                    <span>电量 {robotState.battery}/{runtimeState?.batteryCapacity ?? robot.batteryCapacity ?? 100} · 载重 {robotState.load}</span>
+                     <span>电量 {robotState.battery}/{runtimeState?.batteryCapacity ?? robot?.batteryCapacity ?? 100} · 载重 {robotState.load}</span>
                    <span>{robotMoveDurationLabel(runtimeState?.moveTicks ?? robot?.moveTicks ?? 1)}</span>
                    <span>进度 {Math.round(robotState.progress * 100)}%</span>
                 </span>
