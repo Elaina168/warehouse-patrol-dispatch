@@ -7,6 +7,36 @@ from backend.app.schemas import Assignment, DispatchOptions, Scenario
 from backend.tests.helpers import scenario_payload, seeded_pressure_scenario
 
 
+def test_assignment_prefers_faster_robot_when_grid_distance_is_equal() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "speed-aware-assignment",
+        "name": "speed-aware-assignment",
+        "description": "equal grid distance should prefer the faster robot",
+        "width": 5,
+        "height": 1,
+        "obstacles": [],
+        "zones": {"warehouse": [], "inspection": [[2, 0]], "delivery": []},
+        "robots": [
+            {"id": "R1", "name": "slow", "start": [0, 0], "battery": 90, "load": 1, "moveTicks": 4},
+            {"id": "R2", "name": "fast", "start": [4, 0], "battery": 90, "load": 1, "moveTicks": 1},
+        ],
+        "tasks": [
+            {"id": "T1", "type": "inspection", "title": "equal distance", "priority": 2, "targets": [[2, 0]]},
+        ],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+
+    response = client.post(
+        "/api/dispatch",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}},
+    )
+
+    assert response.status_code == 200
+    assignment = next(item for item in response.json()["assignments"] if item["tasks"])
+    assert assignment["robotId"] == "R2"
+
+
 def test_dispatch_api_returns_schedulable_result() -> None:
     client = TestClient(app)
     response = client.post(

@@ -263,6 +263,20 @@ def task_distance(
     return total
 
 
+def robot_task_travel_time(
+    scenario: Scenario,
+    robot: Robot,
+    start: Cell,
+    task: Task,
+    extra_blocked: list[Cell],
+    distance_cache: DistanceCache | None = None,
+) -> float:
+    distance = task_distance(scenario, start, task, extra_blocked, distance_cache)
+    if not math.isfinite(distance):
+        return math.inf
+    return distance * robot.moveTicks
+
+
 def task_release_time(task: Task) -> int:
     return task.releaseTime if task.releaseTime is not None else 0
 
@@ -406,13 +420,21 @@ def assign_tasks_beam_search(
                 if task.type == "delivery" and robot.load < (task.demand or 1):
                     continue
 
-                cost = task_distance(scenario, robot_state.cursor, task, extra_blocked, distance_cache)
-                if not math.isfinite(cost):
+                distance = task_distance(scenario, robot_state.cursor, task, extra_blocked, distance_cache)
+                if not math.isfinite(distance):
                     continue
+                travel_time = robot_task_travel_time(
+                    scenario,
+                    robot,
+                    robot_state.cursor,
+                    task,
+                    extra_blocked,
+                    distance_cache,
+                )
 
                 current_time = robot_state.time
                 start_time = max(current_time, task_release_time(task))
-                finish_time = start_time + int(cost) + task_service_time(task)
+                finish_time = start_time + int(travel_time) + task_service_time(task)
                 battery_penalty = max(0, 45 - robot.battery)
                 wait_penalty = max(0, task_release_time(task) - current_time) * 0.25
                 switch_penalty = assignment_switch_penalty(task, robot.id, preferred_task_robot_ids, active_robot_ids)
@@ -422,7 +444,7 @@ def assign_tasks_beam_search(
                 next_robot = next_candidate.robots[robot_index]
                 next_robot.tasks.append(task)
                 next_robot.time = finish_time
-                next_robot.distance += int(cost)
+                next_robot.distance += int(distance)
                 next_robot.penalty += battery_penalty + wait_penalty + switch_penalty + deadline_penalty(task, finish_time)
                 if waypoints:
                     next_robot.cursor = waypoints[-1]
@@ -636,10 +658,10 @@ def static_assignment_distance(
     cursor = robot.start
     total = 0.0
     for task in tasks:
-        distance = task_distance(scenario, cursor, task, extra_blocked)
-        if not math.isfinite(distance):
+        travel_time = robot_task_travel_time(scenario, robot, cursor, task, extra_blocked)
+        if not math.isfinite(travel_time):
             return math.inf
-        total += distance
+        total += travel_time
         waypoints = task_waypoints(task)
         if waypoints:
             cursor = waypoints[-1]
