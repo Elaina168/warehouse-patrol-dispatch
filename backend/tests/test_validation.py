@@ -90,6 +90,17 @@ def test_session_create_rejects_charging_cell_on_fixed_obstacle() -> None:
     assert "充电区 1 位于障碍或封锁单元：(2, 1)" in response.json()["detail"]
 
 
+def test_session_rejects_runtime_block_on_charging_cell() -> None:
+    client = TestClient(app)
+    scenario = scenario_payload()
+    scenario["zones"]["charging"] = [[1, 0]]
+    created = client.post("/api/sessions", json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}})
+    assert created.status_code == 200
+    response = client.post(f"/api/sessions/{created.json()['sessionId']}/blocked-cells", json={"cell": [1, 0], "currentTime": 0})
+    assert response.status_code == 409
+    assert "充电地块" in response.json()["detail"]
+
+
 def test_session_add_task_rejects_dynamic_task_id_collision() -> None:
     client = TestClient(app)
     create_response = client.post(
