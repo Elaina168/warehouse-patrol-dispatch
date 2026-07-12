@@ -47,13 +47,18 @@
         [3, 9],
         [10, 9],
         [13, 8]
+      ],
+      "charging": [
+        [0, 9],
+        [13, 0]
       ]
     },
+    "chargeTime": 4,
     "robots": [
-      { "id": "R1", "name": "左侧搬运车", "start": [0, 4], "battery": 92, "load": 2, "moveTicks": 1 },
-      { "id": "R2", "name": "右侧搬运车", "start": [13, 4], "battery": 88, "load": 2, "moveTicks": 2 },
-      { "id": "R3", "name": "巡检车", "start": [6, 4], "battery": 80, "load": 1, "moveTicks": 3 },
-      { "id": "R4", "name": "备用协作车", "start": [13, 9], "battery": 84, "load": 2, "moveTicks": 4 }
+      { "id": "R1", "name": "左侧搬运车", "start": [0, 4], "battery": 92, "batteryCapacity": 100, "load": 2, "moveTicks": 1 },
+      { "id": "R2", "name": "右侧搬运车", "start": [13, 4], "battery": 88, "batteryCapacity": 100, "load": 2, "moveTicks": 2 },
+      { "id": "R3", "name": "巡检车", "start": [6, 4], "battery": 80, "batteryCapacity": 100, "load": 1, "moveTicks": 3 },
+      { "id": "R4", "name": "备用协作车", "start": [13, 9], "battery": 84, "batteryCapacity": 100, "load": 2, "moveTicks": 4 }
     ],
     "tasks": [
       { "id": "T1", "type": "delivery", "title": "左库到右端补货", "priority": 3, "pickup": [0, 4], "dropoff": [10, 9], "demand": 1, "serviceTime": 2, "deadline": 32 },

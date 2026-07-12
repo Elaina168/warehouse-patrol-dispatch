@@ -175,6 +175,8 @@ def add_blocked_cell(session_id: str, request: AddBlockRequest) -> SessionResult
         raise HTTPException(status_code=422, detail=f"封锁单元超出地图范围：{cell[0]},{cell[1]}")
     if cell in session.scenario.obstacles:
         raise HTTPException(status_code=409, detail=f"封锁单元已是固定障碍：{cell[0]},{cell[1]}")
+    if cell in session.scenario.zones.charging:
+        raise HTTPException(status_code=409, detail=f"封锁单元是充电地块：{cell[0]},{cell[1]}")
     is_active_dynamic_block_request = (
         session.options.includeDynamic
         and current_time >= session.scenario.dynamic.triggerTime
@@ -656,18 +658,20 @@ def _advance_session(session: DispatchSession, target_time: int) -> None:
         while len(history) <= target_time:
             next_position = path_at(path, len(history)) or history[-1]
             history.append(next_position)
-        session.robot_travelled_distance[robot.id] = session.robot_travelled_distance.get(
-            robot.id,
-            0,
-        ) + _path_distance_between(path, session.current_time, target_time)
-        session.robot_battery_levels[robot.id] = max(
-            0,
-            session.robot_battery_levels.get(robot.id, robot.battery)
-            - _path_distance_between(path, session.current_time, target_time),
-        )
-        for visit in result.chargingVisits:
-            if visit.robotId == robot.id and session.current_time < visit.completionTime <= target_time:
-                session.robot_battery_levels[robot.id] = robot.batteryCapacity
+        for tick_time in range(session.current_time + 1, target_time + 1):
+            previous = history[tick_time - 1]
+            current = history[tick_time]
+            if current != previous:
+                session.robot_travelled_distance[robot.id] = session.robot_travelled_distance.get(robot.id, 0) + 1
+                session.robot_battery_levels[robot.id] = max(0, session.robot_battery_levels.get(robot.id, robot.battery) - 1)
+            for visit in result.chargingVisits:
+                if visit.robotId != robot.id:
+                    continue
+                if visit.arrivalTime == tick_time:
+                    _record_session_event(session, tick_time, f"{robot.id} 开始充电")
+                if visit.completionTime == tick_time:
+                    session.robot_battery_levels[robot.id] = robot.batteryCapacity
+                    _record_session_event(session, tick_time, f"{robot.id} 完成充电")
         position = history[target_time]
         session.robot_positions[robot.id] = position
 

@@ -1168,6 +1168,7 @@ function MapBoard({
     [result.tasks, scenario]
   );
   const taskCells = useMemo(() => collectTaskCells(taskLabelTasks), [taskLabelTasks]);
+  const chargingCells = useMemo(() => new Set((scenario.zones.charging ?? []).map(cellKey)), [scenario.zones.charging]);
   const useRuntimeRobotSnapshot = shouldUseRuntimeRobotSnapshot(time, sessionCurrentTime, robotStates);
   const occupied = useMemo(
     () => useRuntimeRobotSnapshot ? getCellsFromRobotStates(robotStates) : getCellsOnPaths(result.paths, time),
@@ -1213,6 +1214,7 @@ function MapBoard({
         obstacles.has(key) ? "obstacle" : "",
         blocked.has(key) ? "blocked" : "",
         taskCells.has(key) ? "task-cell" : "",
+        chargingCells.has(key) ? "charging-cell" : "",
         displayedConflict ? "conflict-cell" : "",
         mapPickTarget && !obstacles.has(key) ? "map-pickable-cell" : "",
         robotId ? "robot-cell" : "",
@@ -1250,7 +1252,7 @@ function MapBoard({
               onOpenContextMenu({ cell, action, robotId, x: event.clientX, y: event.clientY });
               return;
             }
-            const action = mapContextAction(cell, blocked, obstacles, taskCells, occupiedKeys);
+            const action = mapContextAction(cell, blocked, obstacles, taskCells, occupiedKeys, chargingCells);
             if (!action) {
               onCloseContextMenu();
               return;
@@ -1268,13 +1270,13 @@ function MapBoard({
                   <strong>{robotState.id} · {robotState.name}</strong>
                   <span>位置 ({robotState.position[0]}, {robotState.position[1]}) · {robotState.status}</span>
                    <span>任务 {currentTask ?? "无"}</span>
-                   <span>电量 {robotState.battery}% · 载重 {robotState.load}</span>
+                    <span>电量 {robotState.battery}/{runtimeState?.batteryCapacity ?? robot.batteryCapacity ?? 100} · 载重 {robotState.load}</span>
                    <span>{robotMoveDurationLabel(runtimeState?.moveTicks ?? robot?.moveTicks ?? 1)}</span>
                    <span>进度 {Math.round(robotState.progress * 100)}%</span>
                 </span>
               ) : null}
             </span>
-          ) : taskCells.get(key)}
+          ) : (taskCells.get(key) ?? (chargingCells.has(key) ? "充" : null))}
           {displayedConflict ? (
             <span className="conflict-marker active">
               <TriangleAlert size={14} aria-hidden="true" />
@@ -2076,6 +2078,8 @@ function allowsRobotRecovery(action: RecoveryAction): boolean {
 
 function robotRuntimeStatusLabel(status: SessionResult["robotStates"][number]["status"]): string {
   if (status === "failed") return "故障";
+  if (status === "toCharge") return "前往充电";
+  if (status === "charging") return "充电中";
   if (status === "waiting") return "等待释放";
   if (status === "toPickup") return "前往取货";
   if (status === "delivering") return "配送中";
@@ -2123,10 +2127,11 @@ export function mapContextAction(
   blocked: ReadonlySet<string>,
   obstacles: ReadonlySet<string>,
   taskCells: CellKeyLookup,
-  occupied: ReadonlySet<string>
+  occupied: ReadonlySet<string>,
+  charging: ReadonlySet<string>
 ): MapContextAction | null {
   const key = cellKey(cell);
-  if (obstacles.has(key) || taskCells.has(key) || occupied.has(key)) return null;
+  if (obstacles.has(key) || taskCells.has(key) || occupied.has(key) || charging.has(key)) return null;
   return blocked.has(key) ? "unblock" : "block";
 }
 

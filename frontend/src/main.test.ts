@@ -418,11 +418,12 @@ describe("map cell selection", () => {
   });
 
   it("only exposes a context action for an unoccupied non-task cell", () => {
-    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(), new Set())).toBe("block");
-    expect(mapContextAction([2, 2], new Set(["2,2"]), new Set(), new Set(), new Set())).toBe("unblock");
-    expect(mapContextAction([2, 2], new Set(), new Set(["2,2"]), new Set(), new Set())).toBeNull();
-    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(["2,2"]), new Set())).toBeNull();
-    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(), new Set(["2,2"]))).toBeNull();
+    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(), new Set(), new Set())).toBe("block");
+    expect(mapContextAction([2, 2], new Set(["2,2"]), new Set(), new Set(), new Set(), new Set())).toBe("unblock");
+    expect(mapContextAction([2, 2], new Set(), new Set(["2,2"]), new Set(), new Set(), new Set())).toBeNull();
+    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(["2,2"]), new Set(), new Set())).toBeNull();
+    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(), new Set(["2,2"]), new Set())).toBeNull();
+    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(), new Set(), new Set(["2,2"]))).toBeNull();
   });
 
   it("uses robot context actions for failure and recovery", () => {

@@ -920,6 +920,13 @@ input {
   border-color: #5e8b2f;
 }
 
+.cell.charging-cell {
+  background: #39a8a2;
+  border-color: #237d78;
+  color: #ffffff;
+  font-weight: 700;
+}
+
 .cell.conflict-cell {
   outline: 3px solid var(--conflict);
   background: #dc5b43;

@@ -5624,3 +5624,21 @@ def test_session_robot_failure_releases_locked_tasks_for_reassignment() -> None:
         assert state["assignedRobotId"] != failed_robot_id
         assert state["status"] != "unassigned"
     assert any("释放锁定任务" in event["text"] for event in payload["result"]["eventLog"])
+
+
+def test_session_charge_events_and_post_charge_energy_are_tick_accurate() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "charge-session", "name": "charge-session", "description": "charge", "width": 4, "height": 1,
+        "obstacles": [], "zones": {"warehouse": [], "inspection": [[3, 0]], "delivery": [], "charging": [[0, 0]]},
+        "chargeTime": 2,
+        "robots": [{"id": "R1", "name": "R1", "start": [1, 0], "battery": 1, "batteryCapacity": 8, "load": 1}],
+        "tasks": [{"id": "T1", "type": "inspection", "title": "T1", "priority": 1, "targets": [[3, 0]]}],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+    created = client.post("/api/sessions", json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}})
+    assert created.status_code == 200
+    payload = client.post(f"/api/sessions/{created.json()['sessionId']}/tick", json={"currentTime": 6}).json()
+    state = payload["robotStates"][0]
+    assert state["battery"] == 5
+    assert [event["text"] for event in payload["result"]["eventLog"] if "充电" in event["text"]] == ["R1 开始充电", "R1 完成充电"]
