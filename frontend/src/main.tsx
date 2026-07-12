@@ -2613,7 +2613,7 @@ function taskTimingLabel(task: Task): string {
   return `到达 T=${release} · 截止 T=${deadline}`;
 }
 
-function parseScenario(value: unknown): Scenario {
+export function parseScenario(value: unknown): Scenario {
   if (!isScenario(value)) {
     throw new Error("JSON 必须是 Scenario 对象，并包含 id、name、description、width、height、obstacles、zones、robots、tasks、dynamic");
   }
@@ -2641,11 +2641,13 @@ function isScenario(value: unknown): value is Scenario {
     && value.zones.inspection.every(isCell)
     && Array.isArray(value.zones.delivery)
     && value.zones.delivery.every(isCell)
+    && (value.zones.charging === undefined || (Array.isArray(value.zones.charging) && value.zones.charging.every(isCell)))
     && Array.isArray(value.robots)
     && value.robots.every(isRobot)
     && Array.isArray(value.tasks)
     && value.tasks.every(isTask)
-    && isDynamicEvent(value.dynamic);
+    && isDynamicEvent(value.dynamic)
+    && (value.chargeTime === undefined || isPositiveInteger(value.chargeTime));
 }
 
 function isRobot(value: unknown): value is Scenario["robots"][number] {
@@ -2654,12 +2656,17 @@ function isRobot(value: unknown): value is Scenario["robots"][number] {
     && isString(value.name)
     && isCell(value.start)
     && isFiniteNumber(value.battery)
+    && (value.batteryCapacity === undefined || (isPositiveInteger(value.batteryCapacity) && value.battery <= value.batteryCapacity))
     && isFiniteNumber(value.load)
     && (value.moveTicks === undefined || isMoveTicks(value.moveTicks));
 }
 
 function isMoveTicks(value: unknown): value is number {
   return isNonNegativeInteger(value) && value >= 1 && value <= 4;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return isNonNegativeInteger(value) && value >= 1;
 }
 
 function isDynamicEvent(value: unknown): value is Scenario["dynamic"] {
@@ -2702,6 +2709,7 @@ function assertScenarioCellsInside(scenario: Scenario): void {
     ...scenario.zones.warehouse,
     ...scenario.zones.inspection,
     ...scenario.zones.delivery,
+    ...(scenario.zones.charging ?? []),
     ...scenario.robots.map((robot) => robot.start),
     ...scenario.dynamic.blockedCells,
     ...scenario.tasks.flatMap(taskWaypoints),

@@ -45,6 +45,7 @@ import {
   robotColorForIndex,
   robotMoveDurationLabel,
   routeHintsAfterSessionUpdate,
+  parseScenario,
   parseCoordinateInput,
   resetSessionConflictState,
   RIGHTBAR_EVENT_LOG_CLASS,
@@ -60,6 +61,7 @@ import {
   buildSeededPressureSummaryText,
   buildSeededPressureSummaryRows
 } from "./main";
+import { scenarios } from "./domain/scenarios";
 import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, Task } from "./domain/types";
 
 describe("robot charging runtime status contract", () => {
@@ -67,6 +69,37 @@ describe("robot charging runtime status contract", () => {
     const statuses: RobotRuntimeStatus[] = ["toCharge", "charging"];
 
     expect(statuses).toEqual(["toCharge", "charging"]);
+  });
+});
+
+describe("charging scenario import", () => {
+  it("accepts legacy scenarios without charging fields", () => {
+    const scenario = structuredClone(scenarios[0]);
+    delete scenario.zones.charging;
+    delete scenario.chargeTime;
+
+    const parsed = parseScenario(scenario);
+    expect(parsed.id).toBe(scenarios[0].id);
+    expect(parsed.zones.charging).toBeUndefined();
+    expect(parsed.chargeTime).toBeUndefined();
+  });
+
+  it("rejects invalid explicit charging fields", () => {
+    const invalidChargingShape = structuredClone(scenarios[0]) as unknown as { zones: { charging: unknown } };
+    invalidChargingShape.zones.charging = ["invalid"];
+    expect(() => parseScenario(invalidChargingShape)).toThrow("JSON 必须是 Scenario 对象");
+
+    const invalidCharging = structuredClone(scenarios[0]);
+    invalidCharging.zones.charging = [[invalidCharging.width, 0]];
+    expect(() => parseScenario(invalidCharging)).toThrow("坐标超出地图范围");
+
+    const invalidChargeTime = structuredClone(scenarios[0]);
+    invalidChargeTime.chargeTime = 0;
+    expect(() => parseScenario(invalidChargeTime)).toThrow("JSON 必须是 Scenario 对象");
+
+    const invalidBatteryCapacity = structuredClone(scenarios[0]);
+    invalidBatteryCapacity.robots[0].batteryCapacity = 1;
+    expect(() => parseScenario(invalidBatteryCapacity)).toThrow("JSON 必须是 Scenario 对象");
   });
 });
 
