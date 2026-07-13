@@ -1329,11 +1329,13 @@ def _release_locks_for_active_higher_priority_task(
         return
 
     tasks_by_id = {existing.id: existing for existing in _all_tasks(session)}
+    charging_robot_ids = _charging_robot_ids_at(session, event_time)
     candidate_task_ids = [
         task_id
         for task_id in session.locked_task_robot_ids
         if task_id not in session.completed_task_ids
         and task.priority > tasks_by_id.get(task_id, task).priority
+        and session.locked_task_robot_ids[task_id] not in charging_robot_ids
     ]
     if not candidate_task_ids:
         return
@@ -1371,6 +1373,17 @@ def _release_locks_for_active_higher_priority_task(
         f"T={event_time} 高优先级任务 {task.id} 评分更优，释放低优先级锁定任务："
         f"{', '.join(sorted(candidate_task_ids))}"
     )
+
+
+def _charging_robot_ids_at(session: DispatchSession, current_time: int) -> set[str]:
+    result = session.last_result
+    if result is None:
+        return set()
+    return {
+        visit.robotId
+        for visit in result.chargingVisits
+        if visit.departureTime <= current_time < visit.completionTime
+    }
 
 
 def _preemption_plan_score(result: DispatchResult, trigger_task_id: str) -> tuple[float, ...]:

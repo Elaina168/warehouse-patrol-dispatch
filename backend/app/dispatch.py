@@ -1304,6 +1304,12 @@ def task_failure_reason(
             if math.isfinite(task_distance(scenario, robot.start, task, extra_blocked))
         ]
         if path_reachable_robot_ids:
+            battery_reachable_without_blocked = any(
+                task_charge_decision(scenario, robot, robot.start, robot.battery, task, []) is not None
+                for robot in candidate_robots
+            )
+            if extra_blocked and battery_reachable_without_blocked:
+                return f"通往充电桩的路线被动态封锁，当前动态封锁 {len(extra_blocked)} 个单元"
             if scenario.zones.charging:
                 return "电池容量不足以完成任务并到达充电桩"
             return "剩余电量不足且无可达充电桩"
@@ -1450,6 +1456,21 @@ def task_recovery_classification(
                 return "temporary", "relaxLocksOrReplan", [], []
             return "permanent", "addCapableRobotOrReduceDemand", [], []
 
+    if scoped_active_robots and not any(
+        task_charge_decision(scenario, robot, robot.start, robot.battery, task, extra_blocked) is not None
+        for robot in scoped_active_robots
+    ):
+        if any(math.isfinite(task_distance(scenario, robot.start, task, extra_blocked)) for robot in scoped_active_robots):
+            charge_recovering_blocked_cells = recovering_charge_blocked_cells(
+                scenario,
+                task,
+                scoped_active_robots,
+                extra_blocked,
+            )
+            if charge_recovering_blocked_cells:
+                return "temporary", "clearBlockedCells", charge_recovering_blocked_cells, []
+            return "permanent", "fixMapOrTaskTarget", [], []
+
     if any(math.isfinite(task_distance(scenario, robot.start, task, extra_blocked)) for robot in scoped_active_robots):
         return "temporary", "relaxLocksOrReplan", [], []
     if locked_robot_id is not None and reachable_unlocked_active_robot_ids(
@@ -1496,6 +1517,31 @@ def task_recovery_classification(
         )
         return "temporary", "clearBlockedCellsAndRestoreRobot", unavailable_recovering_blocked_cells, unavailable_without_blocked
     return "permanent", "fixMapOrTaskTarget", [], []
+
+
+def recovering_charge_blocked_cells(
+    scenario: Scenario,
+    task: Task,
+    robots: list[Robot],
+    extra_blocked: list[Cell],
+) -> list[Cell]:
+    if not extra_blocked:
+        return []
+
+    cells: list[Cell] = []
+    for blocked_cell in extra_blocked:
+        remaining_blocked = [cell for cell in extra_blocked if cell != blocked_cell]
+        if any(
+            task_charge_decision(scenario, robot, robot.start, robot.battery, task, remaining_blocked) is not None
+            for robot in robots
+        ):
+            cells.append(blocked_cell)
+    if cells:
+        return cells
+
+    if any(task_charge_decision(scenario, robot, robot.start, robot.battery, task, []) is not None for robot in robots):
+        return extra_blocked
+    return []
 
 
 def recovering_blocked_cells(

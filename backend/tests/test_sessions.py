@@ -5642,3 +5642,93 @@ def test_session_charge_events_and_post_charge_energy_are_tick_accurate() -> Non
     state = payload["robotStates"][0]
     assert state["battery"] == 5
     assert [event["text"] for event in payload["result"]["eventLog"] if "充电" in event["text"]] == ["R1 前往充电桩", "R1 开始充电", "R1 完成充电"]
+
+
+def test_session_does_not_assign_new_task_to_charging_robot() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "charging-busy-session",
+        "name": "charging-busy-session",
+        "description": "charging robot must stay unavailable",
+        "width": 5,
+        "height": 1,
+        "obstacles": [],
+        "zones": {"warehouse": [], "inspection": [[3, 0], [4, 0]], "delivery": [], "charging": [[0, 0]]},
+        "chargeTime": 3,
+        "robots": [{"id": "R1", "name": "R1", "start": [1, 0], "battery": 1, "batteryCapacity": 10, "load": 1}],
+        "tasks": [{"id": "T1", "type": "inspection", "title": "T1", "priority": 1, "targets": [[3, 0]]}],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+    created = client.post("/api/sessions", json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}})
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    charging = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 1})
+    assert charging.status_code == 200
+    assert charging.json()["robotStates"][0]["status"] == "charging"
+
+    response = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={
+            "task": {
+                "id": "T2",
+                "type": "inspection",
+                "title": "T2",
+                "priority": 5,
+                "releaseTime": 1,
+                "targets": [[4, 0]],
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    states = {state["taskId"]: state for state in payload["taskStates"]}
+    assert payload["robotStates"][0]["status"] == "charging"
+    assert payload["robotStates"][0]["currentTaskId"] == "T1"
+    assert states["T1"]["assignedRobotId"] == "R1"
+    assert states["T1"]["status"] == "running"
+    assert states["T2"]["assignedRobotId"] is None
+    assert states["T2"]["status"] == "pending"
+
+
+def test_session_reports_runtime_blocked_charge_route_as_clearable_failure() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "blocked-charge-route-session",
+        "name": "blocked-charge-route-session",
+        "description": "runtime block prevents reaching charger",
+        "width": 5,
+        "height": 2,
+        "obstacles": [],
+        "zones": {"warehouse": [], "inspection": [[4, 0]], "delivery": [], "charging": [[0, 0]]},
+        "chargeTime": 2,
+        "robots": [{"id": "R1", "name": "R1", "start": [2, 0], "battery": 2, "batteryCapacity": 10, "load": 1}],
+        "tasks": [{"id": "T1", "type": "inspection", "title": "T1", "priority": 1, "targets": [[4, 0]]}],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+    created = client.post("/api/sessions", json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}})
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    blocked = client.post(f"/api/sessions/{session_id}/blocked-cells", json={"cell": [1, 0], "currentTime": 0})
+
+    assert blocked.status_code == 200
+    blocked_payload = blocked.json()
+    task_state = next(state for state in blocked_payload["taskStates"] if state["taskId"] == "T1")
+    details = blocked_payload["result"]["failureDetails"]["T1"]
+    assert task_state["status"] == "unassigned"
+    assert task_state["recoveryAction"] == "clearBlockedCells"
+    assert details["category"] == "temporary"
+    assert details["recoveryAction"] == "clearBlockedCells"
+    assert details["blockingCells"] == [[1, 0]]
+    assert "充电" in details["reason"]
+
+    recovered = client.post(f"/api/sessions/{session_id}/blocked-cells/remove", json={"cell": [1, 0], "currentTime": 0})
+
+    assert recovered.status_code == 200
+    recovered_payload = recovered.json()
+    recovered_state = next(state for state in recovered_payload["taskStates"] if state["taskId"] == "T1")
+    assert recovered_state["failureReason"] is None
+    assert recovered_state["recoveryAction"] is None
+    assert recovered_payload["result"]["chargingVisits"]

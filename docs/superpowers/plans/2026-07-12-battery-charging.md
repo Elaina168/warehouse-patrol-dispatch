@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.13、FastAPI、Pydantic、pytest、React 19、TypeScript、Vite、Vitest。
 
+**Current status:** 本计划主体已在 `codex/battery-charging` 分支实现。后续收尾修复已补充覆盖：充电中或前往充电的机器人不会被新增高优先级任务抢占；运行时封锁充电路线时，失败详情会返回可恢复的 `clearBlockedCells` 动作，并在解除封锁后恢复规划。下方未勾选步骤保留为原始执行计划格式，不再表示当前实现缺失。
+
 ## Global Constraints
 
 - 所有源文件保持 UTF-8；新增代码注释使用中文。
