@@ -188,6 +188,71 @@ describe("live metrics", () => {
     expect(buildLiveMetrics(result, 2, runtimeStates).liveDeadlineMissCount).toBe(0);
   });
 
+  it("keeps completed session deadline misses visible from backend history", () => {
+    const task: DispatchResult["tasks"][number] = {
+      id: "LATE",
+      type: "inspection",
+      title: "LATE",
+      priority: 1,
+      releaseTime: 0,
+      deadline: 0,
+      targets: [[1, 0]]
+    };
+    const result = {
+      scenarioId: "completed-deadline-miss",
+      avoidConflicts: true,
+      includeDynamic: false,
+      dynamicTriggerTime: null,
+      extraBlocked: [],
+      unavailableRobotIds: [],
+      assignments: [],
+      paths: { R1: [[0, 0]] },
+      conflicts: [],
+      metrics: {
+        makespan: 0,
+        totalDistance: 0,
+        conflictCount: 0,
+        loadBalance: 0,
+        assignedTaskCount: 0,
+        deadlineMissCount: 1,
+        averageLateness: 1,
+        failureCount: 0,
+        replanTimeMs: 0
+      },
+      failureReasons: {},
+      failureDetails: {},
+      eventLog: [],
+      tasks: [task]
+    } satisfies DispatchResult;
+    const runtimeStates: SessionResult["taskStates"] = [
+      {
+        taskId: "LATE",
+        status: "completed",
+        assignedRobotId: "R1",
+        releaseTime: 0,
+        completionTime: 1,
+        locked: false,
+        failureReason: null,
+        failureCategory: null,
+        recoveryAction: null
+      }
+    ];
+    const metricsHistory: SessionResult["metricsHistory"] = [
+      {
+        time: 2,
+        completedTaskCount: 1,
+        activeTaskCount: 0,
+        pendingTaskCount: 0,
+        travelledDistance: 1,
+        activeConflictCount: 0,
+        deadlineMissCount: 1,
+        replanTimeMs: 0
+      }
+    ];
+
+    expect(buildLiveMetrics(result, 2, runtimeStates, metricsHistory).liveDeadlineMissCount).toBe(1);
+  });
+
   it("replays task status from the selected time instead of the latest backend status", () => {
     const task: DispatchResult["tasks"][number] = {
       id: "RUNNING",

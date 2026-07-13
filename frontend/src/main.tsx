@@ -169,8 +169,8 @@ function App() {
   const scenario = importedScenario ?? scenarios[0];
 
   const liveMetrics = useMemo(
-    () => result ? buildLiveMetrics(result, time, session?.taskStates) : null,
-    [result, session?.taskStates, time]
+    () => result ? buildLiveMetrics(result, time, session?.taskStates, session?.metricsHistory) : null,
+    [result, session?.metricsHistory, session?.taskStates, time]
   );
 
   const taskSnapshots = useMemo(
@@ -1483,8 +1483,14 @@ export function buildTaskQueueMetricRows(snapshot: TaskSnapshot): Array<{ label:
   ];
 }
 
-export function buildLiveMetrics(result: DispatchResult, time: number, runtimeStates: SessionResult["taskStates"] | undefined): LiveMetrics {
+export function buildLiveMetrics(
+  result: DispatchResult,
+  time: number,
+  runtimeStates: SessionResult["taskStates"] | undefined,
+  metricsHistory?: SessionResult["metricsHistory"]
+): LiveMetrics {
   const snapshots = buildTaskSnapshots(result, time, runtimeStates);
+  const backendSnapshot = getVisibleMetricsHistory(metricsHistory, time).at(-1);
   return {
     completedTaskCount: snapshots.filter((snapshot) => snapshot.status === "done").length,
     activeTaskCount: snapshots.filter((snapshot) => snapshot.status === "active").length,
@@ -1493,7 +1499,7 @@ export function buildLiveMetrics(result: DispatchResult, time: number, runtimeSt
     activeConflictCount: result.conflictStates !== undefined
       ? result.conflictStates.filter((conflict) => isConflictStateActiveAtTime(conflict, time)).length
       : result.conflicts.filter((conflict) => conflict.time === time).length,
-    liveDeadlineMissCount: snapshots.filter((snapshot) => {
+    liveDeadlineMissCount: backendSnapshot?.deadlineMissCount ?? snapshots.filter((snapshot) => {
       const deadline = snapshot.task.deadline;
       return deadline != null && snapshot.status !== "done" && snapshot.status !== "pending" && time > deadline;
     }).length
