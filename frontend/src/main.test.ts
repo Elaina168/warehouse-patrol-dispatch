@@ -45,6 +45,7 @@ import {
   robotColorForIndex,
   robotMoveDurationLabel,
   routeHintsAfterSessionUpdate,
+  parseScenario,
   parseCoordinateInput,
   resetSessionConflictState,
   RIGHTBAR_EVENT_LOG_CLASS,
@@ -60,7 +61,47 @@ import {
   buildSeededPressureSummaryText,
   buildSeededPressureSummaryRows
 } from "./main";
-import type { DispatchResult, Scenario, SessionResult, Task } from "./domain/types";
+import { scenarios } from "./domain/scenarios";
+import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, Task } from "./domain/types";
+
+describe("robot charging runtime status contract", () => {
+  it("declares toCharge and charging runtime statuses", () => {
+    const statuses: RobotRuntimeStatus[] = ["toCharge", "charging"];
+
+    expect(statuses).toEqual(["toCharge", "charging"]);
+  });
+});
+
+describe("charging scenario import", () => {
+  it("accepts legacy scenarios without charging fields", () => {
+    const scenario = structuredClone(scenarios[0]);
+    delete scenario.zones.charging;
+    delete scenario.chargeTime;
+
+    const parsed = parseScenario(scenario);
+    expect(parsed.id).toBe(scenarios[0].id);
+    expect(parsed.zones.charging).toBeUndefined();
+    expect(parsed.chargeTime).toBeUndefined();
+  });
+
+  it("rejects invalid explicit charging fields", () => {
+    const invalidChargingShape = structuredClone(scenarios[0]) as unknown as { zones: { charging: unknown } };
+    invalidChargingShape.zones.charging = ["invalid"];
+    expect(() => parseScenario(invalidChargingShape)).toThrow("JSON 必须是 Scenario 对象");
+
+    const invalidCharging = structuredClone(scenarios[0]);
+    invalidCharging.zones.charging = [[invalidCharging.width, 0]];
+    expect(() => parseScenario(invalidCharging)).toThrow("坐标超出地图范围");
+
+    const invalidChargeTime = structuredClone(scenarios[0]);
+    invalidChargeTime.chargeTime = 0;
+    expect(() => parseScenario(invalidChargeTime)).toThrow("JSON 必须是 Scenario 对象");
+
+    const invalidBatteryCapacity = structuredClone(scenarios[0]);
+    invalidBatteryCapacity.robots[0].batteryCapacity = 1;
+    expect(() => parseScenario(invalidBatteryCapacity)).toThrow("JSON 必须是 Scenario 对象");
+  });
+});
 
 describe("session reset state", () => {
   it("clears the transient conflict alert and its resolved state", () => {
@@ -145,6 +186,71 @@ describe("live metrics", () => {
     ];
 
     expect(buildLiveMetrics(result, 2, runtimeStates).liveDeadlineMissCount).toBe(0);
+  });
+
+  it("keeps completed session deadline misses visible from backend history", () => {
+    const task: DispatchResult["tasks"][number] = {
+      id: "LATE",
+      type: "inspection",
+      title: "LATE",
+      priority: 1,
+      releaseTime: 0,
+      deadline: 0,
+      targets: [[1, 0]]
+    };
+    const result = {
+      scenarioId: "completed-deadline-miss",
+      avoidConflicts: true,
+      includeDynamic: false,
+      dynamicTriggerTime: null,
+      extraBlocked: [],
+      unavailableRobotIds: [],
+      assignments: [],
+      paths: { R1: [[0, 0]] },
+      conflicts: [],
+      metrics: {
+        makespan: 0,
+        totalDistance: 0,
+        conflictCount: 0,
+        loadBalance: 0,
+        assignedTaskCount: 0,
+        deadlineMissCount: 1,
+        averageLateness: 1,
+        failureCount: 0,
+        replanTimeMs: 0
+      },
+      failureReasons: {},
+      failureDetails: {},
+      eventLog: [],
+      tasks: [task]
+    } satisfies DispatchResult;
+    const runtimeStates: SessionResult["taskStates"] = [
+      {
+        taskId: "LATE",
+        status: "completed",
+        assignedRobotId: "R1",
+        releaseTime: 0,
+        completionTime: 1,
+        locked: false,
+        failureReason: null,
+        failureCategory: null,
+        recoveryAction: null
+      }
+    ];
+    const metricsHistory: SessionResult["metricsHistory"] = [
+      {
+        time: 2,
+        completedTaskCount: 1,
+        activeTaskCount: 0,
+        pendingTaskCount: 0,
+        travelledDistance: 1,
+        activeConflictCount: 0,
+        deadlineMissCount: 1,
+        replanTimeMs: 0
+      }
+    ];
+
+    expect(buildLiveMetrics(result, 2, runtimeStates, metricsHistory).liveDeadlineMissCount).toBe(1);
   });
 
   it("replays task status from the selected time instead of the latest backend status", () => {
@@ -377,11 +483,12 @@ describe("map cell selection", () => {
   });
 
   it("only exposes a context action for an unoccupied non-task cell", () => {
-    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(), new Set())).toBe("block");
-    expect(mapContextAction([2, 2], new Set(["2,2"]), new Set(), new Set(), new Set())).toBe("unblock");
-    expect(mapContextAction([2, 2], new Set(), new Set(["2,2"]), new Set(), new Set())).toBeNull();
-    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(["2,2"]), new Set())).toBeNull();
-    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(), new Set(["2,2"]))).toBeNull();
+    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(), new Set(), new Set())).toBe("block");
+    expect(mapContextAction([2, 2], new Set(["2,2"]), new Set(), new Set(), new Set(), new Set())).toBe("unblock");
+    expect(mapContextAction([2, 2], new Set(), new Set(["2,2"]), new Set(), new Set(), new Set())).toBeNull();
+    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(["2,2"]), new Set(), new Set())).toBeNull();
+    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(), new Set(["2,2"]), new Set())).toBeNull();
+    expect(mapContextAction([2, 2], new Set(), new Set(), new Set(), new Set(), new Set(["2,2"]))).toBeNull();
   });
 
   it("uses robot context actions for failure and recovery", () => {

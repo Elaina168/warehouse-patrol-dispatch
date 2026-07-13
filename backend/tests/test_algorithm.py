@@ -1975,3 +1975,92 @@ def test_deadline_metrics_report_late_tasks() -> None:
     payload = response.json()
     assert payload["metrics"]["deadlineMissCount"] == 1
     assert payload["metrics"]["averageLateness"] > 0
+
+
+def test_dispatch_charges_low_battery_robot_before_task() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "charging-before-task",
+        "name": "charging-before-task",
+        "description": "low battery robot must charge before assignment",
+        "width": 4,
+        "height": 1,
+        "obstacles": [],
+        "zones": {"warehouse": [], "inspection": [[3, 0]], "delivery": [], "charging": [[0, 0]]},
+        "chargeTime": 2,
+        "robots": [
+            {"id": "R1", "name": "R1", "start": [1, 0], "battery": 1, "batteryCapacity": 8, "load": 1},
+        ],
+        "tasks": [
+            {"id": "T1", "type": "inspection", "title": "inspection", "priority": 1, "targets": [[3, 0]]},
+        ],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+
+    response = client.post("/api/dispatch", json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assignments"][0]["robotId"] == "R1"
+    assert payload["assignments"][0]["tasks"][0]["id"] == "T1"
+    assert payload["chargingVisits"] == [
+        {"robotId": "R1", "station": [0, 0], "departureTime": 0, "arrivalTime": 1, "completionTime": 3}
+    ]
+
+
+def test_dispatch_explains_when_battery_capacity_cannot_finish_and_return() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "charge-capacity-failure", "name": "charge-capacity-failure", "description": "capacity", "width": 5, "height": 1,
+        "obstacles": [], "zones": {"warehouse": [], "inspection": [[4, 0]], "delivery": [], "charging": [[0, 0]]},
+        "robots": [{"id": "R1", "name": "R1", "start": [1, 0], "battery": 5, "batteryCapacity": 5, "load": 1}],
+        "tasks": [{"id": "T1", "type": "inspection", "title": "T1", "priority": 1, "targets": [[4, 0]]}],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+    response = client.post("/api/dispatch", json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}})
+    assert response.status_code == 200
+    assert "电池容量不足" in response.json()["failureReasons"]["T1"]
+
+
+def test_charging_station_reservations_avoid_conflicts_for_two_robots() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "shared-charger", "name": "shared-charger", "description": "shared", "width": 5, "height": 2,
+        "obstacles": [], "zones": {"warehouse": [], "inspection": [], "delivery": [[4, 0], [4, 1]], "charging": [[0, 0]]},
+        "chargeTime": 2,
+        "robots": [
+            {"id": "R1", "name": "R1", "start": [1, 0], "battery": 1, "batteryCapacity": 8, "load": 1},
+            {"id": "R2", "name": "R2", "start": [1, 1], "battery": 2, "batteryCapacity": 10, "load": 2},
+        ],
+        "tasks": [
+            {"id": "T1", "type": "delivery", "title": "T1", "priority": 2, "pickup": [3, 0], "dropoff": [4, 0], "demand": 1},
+            {"id": "T2", "type": "delivery", "title": "T2", "priority": 1, "pickup": [3, 1], "dropoff": [4, 1], "demand": 2},
+        ], "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+    response = client.post("/api/dispatch", json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}})
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["chargingVisits"]) == 2
+    assert payload["conflicts"] == []
+
+
+def test_dynamic_block_reroutes_low_battery_robot_to_alternate_charger() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "alternate-charger", "name": "alternate-charger", "description": "dynamic charging route", "width": 5, "height": 2,
+        "obstacles": [], "zones": {"warehouse": [], "inspection": [[4, 0]], "delivery": [], "charging": [[0, 0], [0, 1]]},
+        "chargeTime": 2,
+        "robots": [{"id": "R1", "name": "R1", "start": [2, 0], "battery": 3, "batteryCapacity": 10, "load": 1}],
+        "tasks": [{"id": "T1", "type": "inspection", "title": "T1", "priority": 1, "targets": [[4, 0]]}],
+        "dynamic": {"triggerTime": 0, "blockedCells": [[1, 0]], "failedRobots": [], "tasks": []},
+    }
+
+    response = client.post("/api/dispatch", json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": True}})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assignments"][0]["tasks"][0]["id"] == "T1"
+    assert payload["chargingVisits"] == [
+        {"robotId": "R1", "station": [0, 1], "departureTime": 0, "arrivalTime": 3, "completionTime": 5}
+    ]
+    assert payload["conflicts"] == []

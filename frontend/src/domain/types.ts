@@ -3,7 +3,7 @@ export type Cell = [number, number];
 export type TaskType = "inspection" | "delivery" | "emergency";
 export type ConflictType = "vertex" | "edge";
 export type ConflictStatus = "active" | "resolved";
-export type RobotRuntimeStatus = "idle" | "waiting" | "toPickup" | "delivering" | "inspecting" | "failed";
+export type RobotRuntimeStatus = "idle" | "waiting" | "toPickup" | "delivering" | "inspecting" | "toCharge" | "charging" | "failed";
 export type TaskRuntimeStatus = "pending" | "running" | "completed" | "unassigned";
 export type TaskFailureCategory = "temporary" | "permanent";
 
@@ -59,6 +59,7 @@ export type Robot = {
   name: string;
   start: Cell;
   battery: number;
+  batteryCapacity?: number;
   load: number;
   moveTicks?: number;
 };
@@ -74,6 +75,7 @@ export type Zones = {
   warehouse: Cell[];
   inspection: Cell[];
   delivery: Cell[];
+  charging?: Cell[];
 };
 
 export type Scenario = {
@@ -87,6 +89,7 @@ export type Scenario = {
   robots: Robot[];
   tasks: Task[];
   dynamic: DynamicEvent;
+  chargeTime?: number;
 };
 
 export type Assignment = {
@@ -139,6 +142,14 @@ export type EventItem = {
   text: string;
 };
 
+export type ChargingVisit = {
+  robotId: string;
+  station: Cell;
+  departureTime: number;
+  arrivalTime: number;
+  completionTime: number;
+};
+
 export type RecoveryAction =
   | "addCapableRobotOrReduceDemand"
   | "clearBlockedCells"
@@ -155,6 +166,7 @@ export type RobotRuntimeState = {
   position: Cell;
   status: RobotRuntimeStatus;
   battery: number;
+  batteryCapacity?: number;
   load: number;
   moveTicks: number;
   currentTaskId: string | null;
@@ -194,6 +206,7 @@ export type DispatchResult = {
   metrics: Metrics;
   failureReasons: Record<string, string>;
   failureDetails: Record<string, TaskFailureDetail>;
+  chargingVisits?: ChargingVisit[];
   eventLog: EventItem[];
   tasks: Task[];
 };

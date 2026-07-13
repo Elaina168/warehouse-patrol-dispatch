@@ -169,8 +169,8 @@ function App() {
   const scenario = importedScenario ?? scenarios[0];
 
   const liveMetrics = useMemo(
-    () => result ? buildLiveMetrics(result, time, session?.taskStates) : null,
-    [result, session?.taskStates, time]
+    () => result ? buildLiveMetrics(result, time, session?.taskStates, session?.metricsHistory) : null,
+    [result, session?.metricsHistory, session?.taskStates, time]
   );
 
   const taskSnapshots = useMemo(
@@ -719,6 +719,7 @@ function App() {
                   {replanStatus ? (
                     <ReplanStatusPanel
                       status={replanStatus}
+                      robotStates={session?.robotStates ?? []}
                       conflictAlert={latestConflictAlert}
                       conflictResolved={latestConflictResolved}
                     />
@@ -989,10 +990,12 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function ReplanStatusPanel({
   status,
+  robotStates,
   conflictAlert,
   conflictResolved
 }: {
   status: ReplanStatus | null;
+  robotStates: SessionResult["robotStates"];
   conflictAlert: ConflictAlert | null;
   conflictResolved: boolean;
 }) {
@@ -1006,6 +1009,7 @@ function ReplanStatusPanel({
         <Metric label="锁定任务" value={`${status.lockedTaskCount} 个`} />
         <Metric label="未分配任务" value={`${status.unassignedTaskCount} 个`} />
         <Metric label="故障机器人" value={`${status.failedRobotCount} 台`} />
+        <Metric label="充电机器人" value={`${robotStates.filter((item) => item.status === "toCharge" || item.status === "charging").length} 台`} />
       </div>
       {conflictAlert ? (
         <div className={`conflict-alert ${conflictResolved ? "resolved" : ""}`}>
@@ -1168,6 +1172,7 @@ function MapBoard({
     [result.tasks, scenario]
   );
   const taskCells = useMemo(() => collectTaskCells(taskLabelTasks), [taskLabelTasks]);
+  const chargingCells = useMemo(() => new Set((scenario.zones.charging ?? []).map(cellKey)), [scenario.zones.charging]);
   const useRuntimeRobotSnapshot = shouldUseRuntimeRobotSnapshot(time, sessionCurrentTime, robotStates);
   const occupied = useMemo(
     () => useRuntimeRobotSnapshot ? getCellsFromRobotStates(robotStates) : getCellsOnPaths(result.paths, time),
@@ -1213,6 +1218,7 @@ function MapBoard({
         obstacles.has(key) ? "obstacle" : "",
         blocked.has(key) ? "blocked" : "",
         taskCells.has(key) ? "task-cell" : "",
+        chargingCells.has(key) ? "charging-cell" : "",
         displayedConflict ? "conflict-cell" : "",
         mapPickTarget && !obstacles.has(key) ? "map-pickable-cell" : "",
         robotId ? "robot-cell" : "",
@@ -1250,7 +1256,7 @@ function MapBoard({
               onOpenContextMenu({ cell, action, robotId, x: event.clientX, y: event.clientY });
               return;
             }
-            const action = mapContextAction(cell, blocked, obstacles, taskCells, occupiedKeys);
+            const action = mapContextAction(cell, blocked, obstacles, taskCells, occupiedKeys, chargingCells);
             if (!action) {
               onCloseContextMenu();
               return;
@@ -1268,13 +1274,13 @@ function MapBoard({
                   <strong>{robotState.id} · {robotState.name}</strong>
                   <span>位置 ({robotState.position[0]}, {robotState.position[1]}) · {robotState.status}</span>
                    <span>任务 {currentTask ?? "无"}</span>
-                   <span>电量 {robotState.battery}% · 载重 {robotState.load}</span>
+                     <span>电量 {robotState.battery}/{runtimeState?.batteryCapacity ?? robot?.batteryCapacity ?? 100} · 载重 {robotState.load}</span>
                    <span>{robotMoveDurationLabel(runtimeState?.moveTicks ?? robot?.moveTicks ?? 1)}</span>
                    <span>进度 {Math.round(robotState.progress * 100)}%</span>
                 </span>
               ) : null}
             </span>
-          ) : taskCells.get(key)}
+          ) : (taskCells.get(key) ?? (chargingCells.has(key) ? "充" : null))}
           {displayedConflict ? (
             <span className="conflict-marker active">
               <TriangleAlert size={14} aria-hidden="true" />
@@ -1477,8 +1483,14 @@ export function buildTaskQueueMetricRows(snapshot: TaskSnapshot): Array<{ label:
   ];
 }
 
-export function buildLiveMetrics(result: DispatchResult, time: number, runtimeStates: SessionResult["taskStates"] | undefined): LiveMetrics {
+export function buildLiveMetrics(
+  result: DispatchResult,
+  time: number,
+  runtimeStates: SessionResult["taskStates"] | undefined,
+  metricsHistory?: SessionResult["metricsHistory"]
+): LiveMetrics {
   const snapshots = buildTaskSnapshots(result, time, runtimeStates);
+  const backendSnapshot = getVisibleMetricsHistory(metricsHistory, time).at(-1);
   return {
     completedTaskCount: snapshots.filter((snapshot) => snapshot.status === "done").length,
     activeTaskCount: snapshots.filter((snapshot) => snapshot.status === "active").length,
@@ -1487,7 +1499,7 @@ export function buildLiveMetrics(result: DispatchResult, time: number, runtimeSt
     activeConflictCount: result.conflictStates !== undefined
       ? result.conflictStates.filter((conflict) => isConflictStateActiveAtTime(conflict, time)).length
       : result.conflicts.filter((conflict) => conflict.time === time).length,
-    liveDeadlineMissCount: snapshots.filter((snapshot) => {
+    liveDeadlineMissCount: backendSnapshot?.deadlineMissCount ?? snapshots.filter((snapshot) => {
       const deadline = snapshot.task.deadline;
       return deadline != null && snapshot.status !== "done" && snapshot.status !== "pending" && time > deadline;
     }).length
@@ -2076,6 +2088,8 @@ function allowsRobotRecovery(action: RecoveryAction): boolean {
 
 function robotRuntimeStatusLabel(status: SessionResult["robotStates"][number]["status"]): string {
   if (status === "failed") return "故障";
+  if (status === "toCharge") return "前往充电";
+  if (status === "charging") return "充电中";
   if (status === "waiting") return "等待释放";
   if (status === "toPickup") return "前往取货";
   if (status === "delivering") return "配送中";
@@ -2123,10 +2137,11 @@ export function mapContextAction(
   blocked: ReadonlySet<string>,
   obstacles: ReadonlySet<string>,
   taskCells: CellKeyLookup,
-  occupied: ReadonlySet<string>
+  occupied: ReadonlySet<string>,
+  charging: ReadonlySet<string>
 ): MapContextAction | null {
   const key = cellKey(cell);
-  if (obstacles.has(key) || taskCells.has(key) || occupied.has(key)) return null;
+  if (obstacles.has(key) || taskCells.has(key) || occupied.has(key) || charging.has(key)) return null;
   return blocked.has(key) ? "unblock" : "block";
 }
 
@@ -2613,7 +2628,7 @@ function taskTimingLabel(task: Task): string {
   return `到达 T=${release} · 截止 T=${deadline}`;
 }
 
-function parseScenario(value: unknown): Scenario {
+export function parseScenario(value: unknown): Scenario {
   if (!isScenario(value)) {
     throw new Error("JSON 必须是 Scenario 对象，并包含 id、name、description、width、height、obstacles、zones、robots、tasks、dynamic");
   }
@@ -2641,11 +2656,13 @@ function isScenario(value: unknown): value is Scenario {
     && value.zones.inspection.every(isCell)
     && Array.isArray(value.zones.delivery)
     && value.zones.delivery.every(isCell)
+    && (value.zones.charging === undefined || (Array.isArray(value.zones.charging) && value.zones.charging.every(isCell)))
     && Array.isArray(value.robots)
     && value.robots.every(isRobot)
     && Array.isArray(value.tasks)
     && value.tasks.every(isTask)
-    && isDynamicEvent(value.dynamic);
+    && isDynamicEvent(value.dynamic)
+    && (value.chargeTime === undefined || isPositiveInteger(value.chargeTime));
 }
 
 function isRobot(value: unknown): value is Scenario["robots"][number] {
@@ -2654,12 +2671,17 @@ function isRobot(value: unknown): value is Scenario["robots"][number] {
     && isString(value.name)
     && isCell(value.start)
     && isFiniteNumber(value.battery)
+    && (value.batteryCapacity === undefined || (isPositiveInteger(value.batteryCapacity) && value.battery <= value.batteryCapacity))
     && isFiniteNumber(value.load)
     && (value.moveTicks === undefined || isMoveTicks(value.moveTicks));
 }
 
 function isMoveTicks(value: unknown): value is number {
   return isNonNegativeInteger(value) && value >= 1 && value <= 4;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return isNonNegativeInteger(value) && value >= 1;
 }
 
 function isDynamicEvent(value: unknown): value is Scenario["dynamic"] {
@@ -2702,6 +2724,7 @@ function assertScenarioCellsInside(scenario: Scenario): void {
     ...scenario.zones.warehouse,
     ...scenario.zones.inspection,
     ...scenario.zones.delivery,
+    ...(scenario.zones.charging ?? []),
     ...scenario.robots.map((robot) => robot.start),
     ...scenario.dynamic.blockedCells,
     ...scenario.tasks.flatMap(taskWaypoints),

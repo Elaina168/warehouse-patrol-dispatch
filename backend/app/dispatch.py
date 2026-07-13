@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from backend.app.schemas import (
     Assignment,
     Cell,
+    ChargingVisit,
     Conflict,
     ConflictState,
     DispatchOptions,
@@ -41,6 +42,7 @@ class Reservations:
 class RobotAssignmentState:
     robot: Robot
     cursor: Cell
+    battery: int
     time: int = 0
     distance: int = 0
     penalty: float = 0
@@ -57,6 +59,7 @@ class PathPlanningCandidate:
     paths: dict[str, list[Cell]]
     failures: list[str]
     order: list[str]
+    charging_visits: list[ChargingVisit] = field(default_factory=list)
 
 
 DistanceCache = dict[tuple[Cell, Cell], float]
@@ -292,6 +295,60 @@ def task_distance(
     return total
 
 
+def nearest_charge_station(
+    scenario: Scenario,
+    start: Cell,
+    extra_blocked: list[Cell],
+    distance_cache: DistanceCache | None = None,
+) -> tuple[Cell, float] | None:
+    candidates = [
+        (station, segment_distance(scenario, start, station, extra_blocked, distance_cache))
+        for station in scenario.zones.charging
+    ]
+    reachable = [(station, distance) for station, distance in candidates if math.isfinite(distance)]
+    if not reachable:
+        return None
+    return min(reachable, key=lambda item: (item[1], item[0]))
+
+
+def task_charge_decision(
+    scenario: Scenario,
+    robot: Robot,
+    start: Cell,
+    battery: int,
+    task: Task,
+    extra_blocked: list[Cell],
+    distance_cache: DistanceCache | None = None,
+) -> tuple[Cell | None, float, int] | None:
+    direct_distance = task_distance(scenario, start, task, extra_blocked, distance_cache)
+    if not math.isfinite(direct_distance):
+        return None
+    if not scenario.zones.charging:
+        if battery < direct_distance:
+            return None
+        return None, direct_distance, battery - int(direct_distance)
+
+    waypoints = task_waypoints(task)
+    endpoint = waypoints[-1] if waypoints else start
+    direct_return = nearest_charge_station(scenario, endpoint, extra_blocked, distance_cache)
+    if direct_return is not None and battery >= direct_distance + direct_return[1]:
+        return None, direct_distance, battery - int(direct_distance)
+
+    choices: list[tuple[Cell, float, float, float]] = []
+    for station in scenario.zones.charging:
+        to_station = segment_distance(scenario, start, station, extra_blocked, distance_cache)
+        task_after_charge = task_distance(scenario, station, task, extra_blocked, distance_cache)
+        return_after_charge = nearest_charge_station(scenario, endpoint, extra_blocked, distance_cache)
+        if not math.isfinite(to_station) or not math.isfinite(task_after_charge) or return_after_charge is None:
+            continue
+        if battery >= to_station and robot.batteryCapacity >= task_after_charge + return_after_charge[1]:
+            choices.append((station, to_station, task_after_charge, return_after_charge[1]))
+    if not choices:
+        return None
+    station, to_station, task_after_charge, _ = min(choices, key=lambda item: (item[1] + item[2], item[0]))
+    return station, to_station + task_after_charge, robot.batteryCapacity - int(task_after_charge)
+
+
 def robot_task_travel_time(
     scenario: Scenario,
     robot: Robot,
@@ -384,6 +441,7 @@ def clone_assignment_candidate(candidate: AssignmentCandidate) -> AssignmentCand
             RobotAssignmentState(
                 robot=state.robot,
                 cursor=state.cursor,
+                battery=state.battery,
                 time=state.time,
                 distance=state.distance,
                 penalty=state.penalty,
@@ -420,7 +478,7 @@ def assign_tasks_beam_search(
     distance_cache: DistanceCache = {}
     candidates = [
         AssignmentCandidate(
-            robots=[RobotAssignmentState(robot=robot, cursor=robot.start) for robot in active_robots]
+            robots=[RobotAssignmentState(robot=robot, cursor=robot.start, battery=robot.battery) for robot in active_robots]
         )
     ]
     locked_task_order = {task_id: index for index, task_id in enumerate(locked_task_robot_ids)}
@@ -449,17 +507,21 @@ def assign_tasks_beam_search(
                 if task.type == "delivery" and robot.load < (task.demand or 1):
                     continue
 
-                distance = task_distance(scenario, robot_state.cursor, task, extra_blocked, distance_cache)
-                if not math.isfinite(distance):
-                    continue
-                travel_time = robot_task_travel_time(
+                charge_decision = task_charge_decision(
                     scenario,
                     robot,
                     robot_state.cursor,
+                    robot_state.battery,
                     task,
                     extra_blocked,
                     distance_cache,
                 )
+                if charge_decision is None:
+                    continue
+                charge_station, distance, next_battery = charge_decision
+                travel_time = distance * robot.moveTicks
+                if charge_station is not None:
+                    travel_time += scenario.chargeTime
 
                 current_time = robot_state.time
                 start_time = max(current_time, task_release_time(task))
@@ -474,6 +536,7 @@ def assign_tasks_beam_search(
                 next_robot.tasks.append(task)
                 next_robot.time = finish_time
                 next_robot.distance += int(distance)
+                next_robot.battery = next_battery
                 next_robot.penalty += battery_penalty + wait_penalty + switch_penalty + deadline_penalty(task, finish_time)
                 if waypoints:
                     next_robot.cursor = waypoints[-1]
@@ -524,6 +587,7 @@ def expand_path_by_move_ticks(path: list[Cell], move_ticks: int) -> list[Cell]:
 
 def plan_robot_path(
     scenario: Scenario,
+    robot: Robot,
     start: Cell,
     tasks: list[Task],
     move_ticks: int,
@@ -532,14 +596,54 @@ def plan_robot_path(
     extra_blocked: list[Cell],
     delayed_blocked: list[Cell] | None = None,
     delayed_block_time: int | None = None,
+    charging_visits: list[ChargingVisit] | None = None,
 ) -> tuple[list[Cell], bool]:
     path = [start]
     cursor = start
+    battery = robot.battery
+    charging_visits = charging_visits if charging_visits is not None else []
+    distance_cache: DistanceCache = {}
     delayed_blocked = delayed_blocked or []
     for task_index, task in enumerate(tasks):
         release_time = task_release_time(task)
         while len(path) - 1 < release_time:
             path.append(cursor)
+        charge_decision = task_charge_decision(
+            scenario,
+            robot,
+            cursor,
+            battery,
+            task,
+            extra_blocked,
+            distance_cache,
+        )
+        if charge_decision is None:
+            return path, True
+        charge_station, _, next_battery = charge_decision
+        if charge_station is not None:
+            departure_time = len(path) - 1
+            segment = (
+                astar_timed(scenario, cursor, charge_station, departure_time, reservations, extra_blocked, move_ticks)
+                if avoid_conflicts
+                else expand_path_by_move_ticks(astar(scenario, cursor, charge_station, extra_blocked), move_ticks)
+            )
+            if not segment:
+                return path, True
+            path = join_paths(path, segment)
+            cursor = charge_station
+            arrival_time = len(path) - 1
+            for _ in range(scenario.chargeTime):
+                path.append(cursor)
+            charging_visits.append(
+                ChargingVisit(
+                    robotId=robot.id,
+                    station=charge_station,
+                    departureTime=departure_time,
+                    arrivalTime=arrival_time,
+                    completionTime=arrival_time + scenario.chargeTime,
+                )
+            )
+            battery = robot.batteryCapacity
         for waypoint in task_waypoints(task):
             segment_blocked = (
                 merge_cells(extra_blocked, delayed_blocked)
@@ -565,6 +669,7 @@ def plan_robot_path(
             cursor = waypoint
         for _ in range(task_service_time(task)):
             path.append(cursor)
+        battery = next_battery
         next_tasks = tasks[task_index + 1 : task_index + 2]
         next_waypoints = task_waypoints(next_tasks[0]) if next_tasks else []
         if next_waypoints and same_cell(cursor, next_waypoints[0]):
@@ -789,6 +894,7 @@ def build_paths_for_order(
     reservations = Reservations()
     paths: dict[str, list[Cell]] = {}
     failures: list[str] = []
+    all_charging_visits: list[ChargingVisit] = []
     tasks_by_robot = {assignment.robotId: assignment.tasks for assignment in assignments}
     horizon_padding = max(12, scenario.width * scenario.height * 4)
 
@@ -816,8 +922,10 @@ def build_paths_for_order(
             )
             failed = False
         else:
+            charging_visits: list[ChargingVisit] = []
             path, failed = plan_robot_path(
                 scenario,
+                robot,
                 robot.start,
                 assigned,
                 robot.moveTicks,
@@ -826,6 +934,7 @@ def build_paths_for_order(
                 extra_blocked,
                 delayed_blocked,
                 delayed_block_time,
+                charging_visits,
             )
         if avoid_conflicts and assigned and not failed:
             path = append_parking_step(
@@ -839,6 +948,7 @@ def build_paths_for_order(
                 horizon_padding,
             )
         paths[robot.id] = path
+        all_charging_visits.extend(charging_visits if assigned else [])
         if failed:
             failures.append(f"{robot.id} 存在不可达任务")
         if avoid_conflicts:
@@ -849,6 +959,7 @@ def build_paths_for_order(
         paths=ordered_paths,
         failures=failures,
         order=[robot.id for robot in planning_order],
+        charging_visits=all_charging_visits,
     )
 
 
@@ -881,7 +992,8 @@ def build_paths(
     locked_task_robot_ids: dict[str, str] | None = None,
     delayed_blocked: list[Cell] | None = None,
     delayed_block_time: int | None = None,
-) -> tuple[dict[str, list[Cell]], list[str]]:
+    include_charging_visits: bool = False,
+) -> tuple[dict[str, list[Cell]], list[str]] | tuple[dict[str, list[Cell]], list[str], list[ChargingVisit]]:
     locked_task_robot_ids = locked_task_robot_ids or {}
     tasks_by_robot = {assignment.robotId: assignment.tasks for assignment in assignments}
     best_candidate: PathPlanningCandidate | None = None
@@ -911,7 +1023,9 @@ def build_paths(
         if avoid_conflicts and score[0] == 0 and score[1] == 0 and score[2] == 0:
             break
     if best_candidate is None:
-        return {}, []
+        return ({}, [], []) if include_charging_visits else ({}, [])
+    if include_charging_visits:
+        return best_candidate.paths, best_candidate.failures, best_candidate.charging_visits
     return best_candidate.paths, best_candidate.failures
 
 
@@ -1178,6 +1292,28 @@ def task_failure_reason(
             return f"没有可用机器人满足载重 {demand}"
         candidate_robots = capable_robots
 
+    battery_feasible_robot_ids = [
+        robot.id
+        for robot in candidate_robots
+        if task_charge_decision(scenario, robot, robot.start, robot.battery, task, extra_blocked) is not None
+    ]
+    if not battery_feasible_robot_ids:
+        path_reachable_robot_ids = [
+            robot.id
+            for robot in candidate_robots
+            if math.isfinite(task_distance(scenario, robot.start, task, extra_blocked))
+        ]
+        if path_reachable_robot_ids:
+            battery_reachable_without_blocked = any(
+                task_charge_decision(scenario, robot, robot.start, robot.battery, task, []) is not None
+                for robot in candidate_robots
+            )
+            if extra_blocked and battery_reachable_without_blocked:
+                return f"通往充电桩的路线被动态封锁，当前动态封锁 {len(extra_blocked)} 个单元"
+            if scenario.zones.charging:
+                return "电池容量不足以完成任务并到达充电桩"
+            return "剩余电量不足且无可达充电桩"
+
     reachable_robot_ids = [
         robot.id
         for robot in candidate_robots
@@ -1320,6 +1456,21 @@ def task_recovery_classification(
                 return "temporary", "relaxLocksOrReplan", [], []
             return "permanent", "addCapableRobotOrReduceDemand", [], []
 
+    if scoped_active_robots and not any(
+        task_charge_decision(scenario, robot, robot.start, robot.battery, task, extra_blocked) is not None
+        for robot in scoped_active_robots
+    ):
+        if any(math.isfinite(task_distance(scenario, robot.start, task, extra_blocked)) for robot in scoped_active_robots):
+            charge_recovering_blocked_cells = recovering_charge_blocked_cells(
+                scenario,
+                task,
+                scoped_active_robots,
+                extra_blocked,
+            )
+            if charge_recovering_blocked_cells:
+                return "temporary", "clearBlockedCells", charge_recovering_blocked_cells, []
+            return "permanent", "fixMapOrTaskTarget", [], []
+
     if any(math.isfinite(task_distance(scenario, robot.start, task, extra_blocked)) for robot in scoped_active_robots):
         return "temporary", "relaxLocksOrReplan", [], []
     if locked_robot_id is not None and reachable_unlocked_active_robot_ids(
@@ -1366,6 +1517,31 @@ def task_recovery_classification(
         )
         return "temporary", "clearBlockedCellsAndRestoreRobot", unavailable_recovering_blocked_cells, unavailable_without_blocked
     return "permanent", "fixMapOrTaskTarget", [], []
+
+
+def recovering_charge_blocked_cells(
+    scenario: Scenario,
+    task: Task,
+    robots: list[Robot],
+    extra_blocked: list[Cell],
+) -> list[Cell]:
+    if not extra_blocked:
+        return []
+
+    cells: list[Cell] = []
+    for blocked_cell in extra_blocked:
+        remaining_blocked = [cell for cell in extra_blocked if cell != blocked_cell]
+        if any(
+            task_charge_decision(scenario, robot, robot.start, robot.battery, task, remaining_blocked) is not None
+            for robot in robots
+        ):
+            cells.append(blocked_cell)
+    if cells:
+        return cells
+
+    if any(task_charge_decision(scenario, robot, robot.start, robot.battery, task, []) is not None for robot in robots):
+        return extra_blocked
+    return []
 
 
 def recovering_blocked_cells(
@@ -1532,7 +1708,7 @@ def run_dispatch(
         assignment_replan_window,
         task_limit_per_robot,
     )
-    paths, path_failures = build_paths(
+    paths, path_failures, charging_visits = build_paths(
         scenario,
         scenario.robots,
         assignments,
@@ -1542,6 +1718,7 @@ def run_dispatch(
         locked_task_robot_ids,
         delayed_blocked,
         delayed_block_time,
+        True,
     )
     assigned_task_ids = {
         task.id
@@ -1613,6 +1790,7 @@ def run_dispatch(
         metrics=metrics,
         failureReasons=failure_reasons,
         failureDetails=failure_details,
+        chargingVisits=charging_visits,
         eventLog=event_log,
         tasks=tasks,
     )

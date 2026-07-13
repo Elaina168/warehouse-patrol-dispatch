@@ -127,6 +127,7 @@ def _response_schema_ref(openapi: dict[str, Any], path: str, method: str) -> str
 def test_frontend_types_match_backend_api_model_fields() -> None:
     model_pairs: list[tuple[str, type[BaseModel]]] = [
         ("Robot", schemas.Robot),
+        ("ChargingVisit", schemas.ChargingVisit),
         ("DynamicEvent", schemas.DynamicEvent),
         ("Zones", schemas.Zones),
         ("Scenario", schemas.Scenario),

@@ -74,6 +74,7 @@ class DispatchSession:
     robot_positions: dict[str, Cell] = field(default_factory=dict)
     robot_path_history: dict[str, list[Cell]] = field(default_factory=dict)
     robot_travelled_distance: dict[str, int] = field(default_factory=dict)
+    robot_battery_levels: dict[str, int] = field(default_factory=dict)
     completed_task_ids: set[str] = field(default_factory=set)
     task_completion_times: dict[str, int] = field(default_factory=dict)
     task_payload_positions: dict[str, Cell] = field(default_factory=dict)
@@ -114,6 +115,7 @@ def create_session(request: CreateSessionRequest) -> SessionResult:
         robot_positions={robot.id: robot.start for robot in request.scenario.robots},
         robot_path_history={robot.id: [robot.start] for robot in request.scenario.robots},
         robot_travelled_distance={robot.id: 0 for robot in request.scenario.robots},
+        robot_battery_levels={robot.id: robot.battery for robot in request.scenario.robots},
     )
     _sessions[session_id] = session
     return _build_result(session)
@@ -173,6 +175,8 @@ def add_blocked_cell(session_id: str, request: AddBlockRequest) -> SessionResult
         raise HTTPException(status_code=422, detail=f"封锁单元超出地图范围：{cell[0]},{cell[1]}")
     if cell in session.scenario.obstacles:
         raise HTTPException(status_code=409, detail=f"封锁单元已是固定障碍：{cell[0]},{cell[1]}")
+    if cell in session.scenario.zones.charging:
+        raise HTTPException(status_code=409, detail=f"封锁单元是充电地块：{cell[0]},{cell[1]}")
     is_active_dynamic_block_request = (
         session.options.includeDynamic
         and current_time >= session.scenario.dynamic.triggerTime
@@ -377,6 +381,7 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.robot_positions = {robot.id: robot.start for robot in scenario.robots}
     session.robot_path_history = {robot.id: [robot.start] for robot in scenario.robots}
     session.robot_travelled_distance = {robot.id: 0 for robot in scenario.robots}
+    session.robot_battery_levels = {robot.id: robot.battery for robot in scenario.robots}
     session.completed_task_ids.clear()
     session.task_completion_times.clear()
     session.task_payload_positions.clear()
@@ -484,6 +489,13 @@ def _build_result(session: DispatchSession) -> SessionResult:
     _sync_completed_task_states(session, task_states)
     snapshot = _build_metric_snapshot(session, result, task_states)
     _record_metric_snapshot(session, snapshot)
+    result = result.model_copy(
+        update={
+            "metrics": result.metrics.model_copy(
+                update={"deadlineMissCount": snapshot.deadlineMissCount}
+            )
+        }
+    )
 
     return SessionResult(
         sessionId=session.session_id,
@@ -573,7 +585,10 @@ def _build_effective_dispatch_input(session: DispatchSession) -> tuple[Scenario,
     dynamic_active = _is_scenario_dynamic_active(session)
 
     scenario.robots = [
-        robot.model_copy(update={"start": session.robot_positions.get(robot.id, robot.start)})
+        robot.model_copy(update={
+            "start": session.robot_positions.get(robot.id, robot.start),
+            "battery": session.robot_battery_levels.get(robot.id, robot.battery),
+        })
         for robot in scenario.robots
     ]
     scenario.tasks = [
@@ -650,10 +665,22 @@ def _advance_session(session: DispatchSession, target_time: int) -> None:
         while len(history) <= target_time:
             next_position = path_at(path, len(history)) or history[-1]
             history.append(next_position)
-        session.robot_travelled_distance[robot.id] = session.robot_travelled_distance.get(
-            robot.id,
-            0,
-        ) + _path_distance_between(path, session.current_time, target_time)
+        for tick_time in range(session.current_time + 1, target_time + 1):
+            previous = history[tick_time - 1]
+            current = history[tick_time]
+            if current != previous:
+                session.robot_travelled_distance[robot.id] = session.robot_travelled_distance.get(robot.id, 0) + 1
+                session.robot_battery_levels[robot.id] = max(0, session.robot_battery_levels.get(robot.id, robot.battery) - 1)
+            for visit in result.chargingVisits:
+                if visit.robotId != robot.id:
+                    continue
+                if visit.departureTime + 1 == tick_time:
+                    _record_session_event(session, tick_time, f"{robot.id} 前往充电桩")
+                if visit.arrivalTime == tick_time:
+                    _record_session_event(session, tick_time, f"{robot.id} 开始充电")
+                if visit.completionTime == tick_time:
+                    session.robot_battery_levels[robot.id] = robot.batteryCapacity
+                    _record_session_event(session, tick_time, f"{robot.id} 完成充电")
         position = history[target_time]
         session.robot_positions[robot.id] = position
 
@@ -818,6 +845,16 @@ def _restore_absolute_result(
     conflicts = [conflict.model_copy(update={"time": conflict.time + current_time}) for conflict in result.conflicts]
     conflict_states = _build_conflict_states(conflicts, absolute_paths, current_time)
     event_log = [event.model_copy(update={"time": event.time + current_time}) for event in result.eventLog]
+    charging_visits = [
+        visit.model_copy(
+            update={
+                "departureTime": visit.departureTime + current_time,
+                "arrivalTime": visit.arrivalTime + current_time,
+                "completionTime": visit.completionTime + current_time,
+            }
+        )
+        for visit in result.chargingVisits
+    ]
     dynamic_trigger_time = (
         result.dynamicTriggerTime + current_time if result.dynamicTriggerTime is not None else None
     )
@@ -832,6 +869,7 @@ def _restore_absolute_result(
             "conflictStates": conflict_states,
             "metrics": metrics,
             "eventLog": event_log,
+            "chargingVisits": charging_visits,
             "tasks": tasks,
         }
     )
@@ -904,8 +942,20 @@ def _build_robot_states(session: DispatchSession, result: DispatchResult) -> lis
         position = path_at(result.paths.get(robot.id, []), session.current_time) or session.robot_positions.get(robot.id, robot.start)
         current_task = _current_task(session, result, robot.id, session.current_time)
         current_task_id = current_task.id if current_task is not None else None
+        charging_visit = next(
+            (
+                visit
+                for visit in result.chargingVisits
+                if visit.robotId == robot.id and visit.departureTime <= session.current_time < visit.completionTime
+            ),
+            None,
+        )
         if robot.id in result.unavailableRobotIds:
             status = "failed"
+        elif charging_visit is not None and session.current_time >= charging_visit.arrivalTime:
+            status = "charging"
+        elif charging_visit is not None:
+            status = "toCharge"
         elif current_task is not None:
             status = _robot_task_status(current_task, result.paths.get(robot.id, []), session.current_time)
         elif _has_future_task(result, robot.id, session.current_time):
@@ -918,7 +968,8 @@ def _build_robot_states(session: DispatchSession, result: DispatchResult) -> lis
                 name=robot.name,
                 position=position,
                 status=status,
-                battery=max(0, robot.battery - session.robot_travelled_distance.get(robot.id, 0)),
+                battery=session.robot_battery_levels.get(robot.id, robot.battery),
+                batteryCapacity=robot.batteryCapacity,
                 load=robot.load,
                 moveTicks=robot.moveTicks,
                 currentTaskId=current_task_id,
@@ -1285,11 +1336,13 @@ def _release_locks_for_active_higher_priority_task(
         return
 
     tasks_by_id = {existing.id: existing for existing in _all_tasks(session)}
+    charging_robot_ids = _charging_robot_ids_at(session, event_time)
     candidate_task_ids = [
         task_id
         for task_id in session.locked_task_robot_ids
         if task_id not in session.completed_task_ids
         and task.priority > tasks_by_id.get(task_id, task).priority
+        and session.locked_task_robot_ids[task_id] not in charging_robot_ids
     ]
     if not candidate_task_ids:
         return
@@ -1327,6 +1380,17 @@ def _release_locks_for_active_higher_priority_task(
         f"T={event_time} 高优先级任务 {task.id} 评分更优，释放低优先级锁定任务："
         f"{', '.join(sorted(candidate_task_ids))}"
     )
+
+
+def _charging_robot_ids_at(session: DispatchSession, current_time: int) -> set[str]:
+    result = session.last_result
+    if result is None:
+        return set()
+    return {
+        visit.robotId
+        for visit in result.chargingVisits
+        if visit.departureTime <= current_time < visit.completionTime
+    }
 
 
 def _preemption_plan_score(result: DispatchResult, trigger_task_id: str) -> tuple[float, ...]:
