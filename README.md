@@ -5,7 +5,7 @@
 项目采用前后端分离：
 
 - `frontend/`：React + TypeScript + Vite，负责界面、地图渲染、时间轴播放、状态和指标展示。
-- `backend/`：Python + FastAPI，负责任务分配、路径规划、避碰、冲突检测和指标计算。
+- `backend/`：Python + FastAPI，负责任务分配、路径规划、时空避碰、在线重规划、充电调度、冲突检测和指标计算。
 - `scripts/`：环境、启动、停止和检查脚本。
 - `docs/environment.md`：环境配置说明。
 - `docs/algorithm.md`：调度算法、在线重规划和稳定化边界说明。
@@ -111,7 +111,6 @@ GET  http://127.0.0.1:8011/api/sessions/{sessionId}
 DELETE http://127.0.0.1:8011/api/sessions/{sessionId}
 POST http://127.0.0.1:8011/api/sessions/{sessionId}/reset
 POST http://127.0.0.1:8011/api/sessions/{sessionId}/tasks
-POST http://127.0.0.1:8011/api/sessions/{sessionId}/stream-task
 POST http://127.0.0.1:8011/api/sessions/{sessionId}/tick
 POST http://127.0.0.1:8011/api/sessions/{sessionId}/blocked-cells
 POST http://127.0.0.1:8011/api/sessions/{sessionId}/blocked-cells/remove

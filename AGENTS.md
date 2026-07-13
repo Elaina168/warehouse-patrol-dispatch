@@ -181,7 +181,7 @@ Recommended execution order:
    - Fixed-seed pressure coverage now verifies randomized 4/6/8-robot scenario families with mixed tasks, randomized obstacles, dynamic emergency tasks, full assignment, zero conflicts, zero failures, and bounded planning time.
    - The previous 8-robot seed-43 late-goal conflict boundary is now a passing regression through reservation-aware post-task parking.
    - Remaining work is algorithmic quality beyond the current heuristic planner, especially adaptive rolling-window exploration, richer MAPF behavior if needed, and performance tuning on larger instances.
-   - Battery currently exists as a model field and scoring/runtime display factor; treat hard battery constraints or charging behavior as optional unless explicitly prioritized.
+   - Battery and charging are now hard runtime constraints: a robot consumes one unit per moved grid cell, routes to a reachable charger when needed, waits for `chargeTime`, and remains unavailable to preemption while charging.
 
 3. Online scheduling module completion - 97%
    - Implemented session metadata such as creation time and last access/update time.
@@ -256,7 +256,7 @@ Desired direction for that later phase:
 - `frontend/`
   - React + TypeScript + Vite frontend.
   - Main UI entry: `frontend/src/main.tsx`
-  - Scenario data: `frontend/src/domain/scenarios.ts`
+  - Scenario data: `frontend/src/domain/scenarios.json`, exported through `frontend/src/domain/scenarios.ts`
   - Shared frontend types: `frontend/src/domain/types.ts`
   - View-only helpers: `frontend/src/domain/view.ts`
 - `backend/`
@@ -378,7 +378,6 @@ GET /api/sessions/{session_id}
 DELETE /api/sessions/{session_id}
 POST /api/sessions/{session_id}/reset
 POST /api/sessions/{session_id}/tasks
-POST /api/sessions/{session_id}/stream-task
 POST /api/sessions/{session_id}/tick
 POST /api/sessions/{session_id}/blocked-cells
 POST /api/sessions/{session_id}/blocked-cells/remove
@@ -426,7 +425,7 @@ Frontend:
 
 - Use React function components and hooks.
 - Keep algorithm computation out of the frontend. The frontend may keep view helpers only.
-- Scenario data currently lives in `frontend/src/domain/scenarios.ts`.
+- Scenario data lives in `frontend/src/domain/scenarios.json`, with typed exports in `frontend/src/domain/scenarios.ts`.
 - UI text is Chinese.
 - Keep the operational dashboard style: dense, clear, and utilitarian.
 
@@ -456,7 +455,7 @@ For frontend behavior changes, also verify in a browser when practical:
 
 ## Important Notes
 
-- The repository is currently not a Git repository.
+- The repository uses Git. Work on feature or fix branches, run the relevant checks, then merge reviewed changes into `main`.
 - `frontend/node_modules`, `frontend/dist`, `.venv`, and Python caches are generated artifacts and should not be treated as source.
 - `scripts/start-dev.ps1` starts both frontend and backend and opens the frontend URL.
 - `Ctrl+C` in the startup terminal should stop both services.

@@ -11,7 +11,6 @@
 - 在线会话删除：`DELETE /api/sessions/{session_id}`
 - 在线会话重置：`POST /api/sessions/{session_id}/reset`
 - 在线任务追加：`POST /api/sessions/{session_id}/tasks`
-- 自动任务流：`POST /api/sessions/{session_id}/stream-task`
 - 会话时间推进：`POST /api/sessions/{session_id}/tick`
 - 运行时封锁：`POST /api/sessions/{session_id}/blocked-cells`
 - 解除运行时封锁：`POST /api/sessions/{session_id}/blocked-cells/remove`
@@ -179,6 +178,7 @@
 ## 当前边界
 
 - 当前不是完整 MAPF/CBS 求解器，冲突处理采用时空 A* 加多候选规划顺序。
+- 当前避碰目标是在滚动重规划下尽量提前消解时空冲突；未来路径属于预测结果，任务完成、封锁、故障和任务到达都会触发重规划。执行层绝对零冲突安全门属于后续独立算法升级。
 - 滚动窗口已有 API 参数，当前仍使用固定数值策略，没有按场景压力自适应调整。
 - 高优先级抢占只释放低优先级锁定任务，不处理同优先级抢占。
 - 前端目前主要消费结果和状态，算法计算集中在后端。

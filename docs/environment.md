@@ -87,6 +87,7 @@ http://127.0.0.1:8011/health
 检查内容包括：
 
 - `frontend` 构建
+- `frontend` 单元测试
 - `backend` 测试
 
 ## 依赖安装
