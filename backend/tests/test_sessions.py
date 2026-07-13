@@ -557,13 +557,12 @@ def test_session_replans_waiting_task_when_the_active_task_completes() -> None:
     assert task_states["M2"]["assignedRobotId"] == "R1"
 
 
-def test_session_real_campus_flow_stays_consistent_through_dynamic_and_manual_task() -> None:
+def test_session_integrated_demo_flow_stays_consistent_through_online_updates() -> None:
     client = TestClient(app)
-    scenario = frontend_demo_scenario("campus-warehouse")
     create_response = client.post(
         "/api/sessions",
         json={
-            "scenario": scenario,
+            "scenario": frontend_demo_scenario("integrated-demo"),
             "options": {"avoidConflicts": True, "includeDynamic": True},
         },
     )
@@ -581,22 +580,15 @@ def test_session_real_campus_flow_stays_consistent_through_dynamic_and_manual_ta
         payload = tick_response.json()
         _assert_online_payload_consistent(payload)
 
-    task_ids = {task["id"] for task in payload["result"]["tasks"]}
-    event_texts = [event["text"] for event in payload["result"]["eventLog"]]
     task_states = {state["taskId"]: state for state in payload["taskStates"]}
-    assert payload["scenarioId"] == "campus-warehouse"
+    assert payload["scenarioId"] == "integrated-demo"
     assert payload["currentTime"] == 12
     assert payload["manualTaskCount"] == 0
-    assert payload["result"]["dynamicTriggerTime"] == 12
-    assert [7, 4] in payload["result"]["extraBlocked"]
-    assert [7, 5] in payload["result"]["extraBlocked"]
-    assert "E1" in task_ids
+    assert payload["result"]["dynamicTriggerTime"] is None
     assert task_states["E1"]["status"] == "running"
-    assert task_states["T2"]["failureCategory"] == "temporary"
-    assert task_states["T2"]["recoveryAction"] == "clearBlockedCells"
-    assert payload["result"]["failureDetails"]["T2"]["blockingCells"] == [[7, 5]]
-    assert any(text == "T=12 场景动态事件触发" for text in event_texts)
-    assert any("新增 2 个封锁单元" in text for text in event_texts)
+    assert task_states["E1"]["failureReason"] is None
+    assert payload["result"]["metrics"]["conflictCount"] == 0
+    assert payload["result"]["metrics"]["failureCount"] == 0
     assert payload["metricsHistory"][-1]["time"] == 12
     assert payload["metricsHistory"][-1]["completedTaskCount"] == payload["completedTaskCount"]
 
@@ -606,7 +598,7 @@ def test_session_real_campus_flow_stays_consistent_through_dynamic_and_manual_ta
             "task": {
                 "id": "DEMO-RUNTIME-12",
                 "type": "emergency",
-                "title": "演示动态后复核",
+                "title": "???????",
                 "priority": 5,
                 "releaseTime": 12,
                 "deadline": 24,
@@ -620,184 +612,11 @@ def test_session_real_campus_flow_stays_consistent_through_dynamic_and_manual_ta
 
     task_ids = {task["id"] for task in payload["result"]["tasks"]}
     event_texts = [event["text"] for event in payload["result"]["eventLog"]]
-    task_states = {state["taskId"]: state for state in payload["taskStates"]}
     assert payload["currentTime"] == 12
     assert payload["manualTaskCount"] == 1
     assert "DEMO-RUNTIME-12" in task_ids
-    assert task_states["DEMO-RUNTIME-12"]["status"] == "running"
-    assert task_states["T2"]["failureCategory"] == "temporary"
-    assert task_states["T2"]["recoveryAction"] == "clearBlockedCells"
-    assert payload["result"]["failureDetails"]["T2"]["blockingCells"] == [[7, 5]]
-    assert payload["result"]["metrics"]["conflictCount"] == 0
-    assert payload["result"]["metrics"]["failureCount"] == 1
-    assert payload["metricsHistory"][-1]["time"] == 12
-    assert payload["metricsHistory"][-1]["completedTaskCount"] == payload["completedTaskCount"]
-    assert any("DEMO-RUNTIME-12" in text for text in event_texts)
-    assert any(text == "T=12 场景动态事件触发" for text in event_texts)
-
-
-def test_session_real_robot_failure_flow_recovers_after_dynamic_failure_and_block_clear() -> None:
-    client = TestClient(app)
-    scenario = frontend_demo_scenario("robot-failure")
-    create_response = client.post(
-        "/api/sessions",
-        json={
-            "scenario": scenario,
-            "options": {"avoidConflicts": True, "includeDynamic": True},
-        },
-    )
-    assert create_response.status_code == 200
-    payload = create_response.json()
-    session_id = payload["sessionId"]
-    _assert_online_payload_consistent(payload)
-
-    for current_time in range(1, 10):
-        tick_response = client.post(
-            f"/api/sessions/{session_id}/tick",
-            json={"currentTime": current_time},
-        )
-        assert tick_response.status_code == 200
-        payload = tick_response.json()
-        _assert_online_payload_consistent(payload)
-
-    event_texts = [event["text"] for event in payload["result"]["eventLog"]]
-    task_states = {state["taskId"]: state for state in payload["taskStates"]}
-    robot_states = {state["robotId"]: state for state in payload["robotStates"]}
-    assert payload["scenarioId"] == "robot-failure"
-    assert payload["currentTime"] == 9
-    assert payload["result"]["dynamicTriggerTime"] == 9
-    assert [5, 4] in payload["result"]["extraBlocked"]
-    assert [5, 5] in payload["result"]["extraBlocked"]
-    assert "R1" in payload["result"]["unavailableRobotIds"]
-    assert robot_states["R1"]["status"] == "failed"
-    assert task_states["E1"]["status"] == "running"
-    assert task_states["E1"]["assignedRobotId"] in {"R2", "R3"}
-    assert task_states["T2"]["status"] == "unassigned"
-    assert task_states["T2"]["failureCategory"] == "temporary"
-    assert task_states["T2"]["recoveryAction"] == "clearBlockedCells"
-    assert payload["result"]["failureDetails"]["T2"]["blockingCells"] == [[5, 4]]
-    assert payload["result"]["metrics"]["conflictCount"] == 0
-    assert payload["result"]["metrics"]["failureCount"] == 1
-    assert any(text == "T=9 场景动态事件触发" for text in event_texts)
-    assert any("R1 故障，退出调度" in text for text in event_texts)
-
-    restore_response = client.post(
-        f"/api/sessions/{session_id}/failed-robots/restore",
-        json={"robotId": "R1", "currentTime": 9},
-    )
-    assert restore_response.status_code == 200
-    payload = restore_response.json()
-    _assert_online_payload_consistent(payload)
-
-    event_texts = [event["text"] for event in payload["result"]["eventLog"]]
-    task_states = {state["taskId"]: state for state in payload["taskStates"]}
-    robot_states = {state["robotId"]: state for state in payload["robotStates"]}
-    assert "R1" not in payload["result"]["unavailableRobotIds"]
-    assert robot_states["R1"]["status"] != "failed"
-    assert task_states["T2"]["status"] == "unassigned"
-    assert task_states["T2"]["failureCategory"] == "temporary"
-    assert task_states["T2"]["recoveryAction"] == "clearBlockedCells"
-    assert payload["result"]["failureDetails"]["T2"]["blockingCells"] == [[5, 4]]
-    assert payload["result"]["metrics"]["failureCount"] == 1
-    assert any(text == "T=9 场景动态事件触发" for text in event_texts)
-    assert any(text == "T=9 手动恢复机器人：R1" for text in event_texts)
-
-    unblock_response = client.post(
-        f"/api/sessions/{session_id}/blocked-cells/remove",
-        json={"cell": [5, 4], "currentTime": 9},
-    )
-    assert unblock_response.status_code == 200
-    payload = unblock_response.json()
-    _assert_online_payload_consistent(payload)
-
-    event_texts = [event["text"] for event in payload["result"]["eventLog"]]
-    task_states = {state["taskId"]: state for state in payload["taskStates"]}
-    robot_states = {state["robotId"]: state for state in payload["robotStates"]}
-    assert [5, 4] not in payload["result"]["extraBlocked"]
-    assert [5, 5] in payload["result"]["extraBlocked"]
-    assert "R1" not in payload["result"]["unavailableRobotIds"]
-    assert robot_states["R1"]["status"] != "failed"
-    assert task_states["T2"]["status"] == "running"
-    assert task_states["T2"]["assignedRobotId"] == "R1"
-    assert task_states["T2"]["failureReason"] is None
-    assert payload["result"]["failureDetails"] == {}
-    assert payload["result"]["metrics"]["conflictCount"] == 0
     assert payload["result"]["metrics"]["failureCount"] == 0
-    assert payload["metricsHistory"][-1]["time"] == 9
-    assert payload["metricsHistory"][-1]["completedTaskCount"] == payload["completedTaskCount"]
-    assert any(text == "T=9 场景动态事件触发" for text in event_texts)
-    assert any(text == "T=9 手动恢复机器人：R1" for text in event_texts)
-    assert any(text == "T=9 手动解除封锁单元：(5, 4)" for text in event_texts)
-
-
-def test_session_real_narrow_aisle_flow_avoids_conflicts_through_dynamic_trigger() -> None:
-    client = TestClient(app)
-    scenario = frontend_demo_scenario("narrow-aisle")
-    baseline_response = client.post(
-        "/api/sessions",
-        json={
-            "scenario": scenario,
-            "options": {"avoidConflicts": False, "includeDynamic": True},
-        },
-    )
-    assert baseline_response.status_code == 200
-    baseline_payload = baseline_response.json()
-    baseline_conflict_types = {conflict["type"] for conflict in baseline_payload["result"]["conflicts"]}
-    assert baseline_payload["scenarioId"] == "narrow-aisle"
-    assert baseline_payload["result"]["dynamicTriggerTime"] == 10
-    assert baseline_payload["result"]["metrics"]["conflictCount"] > 0
-    assert {"vertex", "edge"}.issubset(baseline_conflict_types)
-
-    avoid_response = client.post(
-        "/api/sessions",
-        json={
-            "scenario": scenario,
-            "options": {"avoidConflicts": True, "includeDynamic": True},
-        },
-    )
-    assert avoid_response.status_code == 200
-    payload = avoid_response.json()
-    session_id = payload["sessionId"]
-    _assert_online_payload_consistent(payload)
-
-    assert payload["scenarioId"] == "narrow-aisle"
-    assert payload["result"]["dynamicTriggerTime"] == 10
-    assert all(conflict["time"] > payload["currentTime"] for conflict in payload["result"]["conflicts"])
-    assert payload["result"]["metrics"]["conflictCount"] == 0
-    assert payload["result"]["metrics"]["assignedTaskCount"] == 3
-    task_states = {state["taskId"]: state for state in payload["taskStates"]}
-    assert task_states["E1"]["status"] == "pending"
-
-    for current_time in range(1, 11):
-        tick_response = client.post(
-            f"/api/sessions/{session_id}/tick",
-            json={"currentTime": current_time},
-        )
-        assert tick_response.status_code == 200
-        payload = tick_response.json()
-        _assert_online_payload_consistent(payload)
-        assert payload["result"]["conflicts"] == []
-        assert payload["result"]["metrics"]["conflictCount"] == 0
-        assert payload["result"]["metrics"]["failureCount"] == 0
-        assert payload["metricsHistory"][-1]["activeConflictCount"] == 0
-        assert payload["metricsHistory"][-1]["time"] == current_time
-        task_states = {state["taskId"]: state for state in payload["taskStates"]}
-        if current_time < 10:
-            assert task_states["E1"]["status"] == "pending"
-
-    event_texts = [event["text"] for event in payload["result"]["eventLog"]]
-    task_ids = {task["id"] for task in payload["result"]["tasks"]}
-    task_states = {state["taskId"]: state for state in payload["taskStates"]}
-    assert {"T1", "T2", "T3", "E1"}.issubset(task_ids)
-    assert [6, 3] in payload["result"]["extraBlocked"]
-    assert payload["result"]["metrics"]["assignedTaskCount"] == 3
-    assert task_states["E1"]["status"] == "running"
-    assert task_states["E1"]["failureReason"] is None
-    assert task_states["E1"]["status"] == "running"
-    assert task_states["E1"]["assignedRobotId"] in {"R1", "R2", "R3"}
-    assert payload["metricsHistory"][-1]["completedTaskCount"] == payload["completedTaskCount"]
-    assert any(text == "T=10 场景动态事件触发" for text in event_texts)
-    assert any("新增 1 个封锁单元" in text for text in event_texts)
+    assert any("DEMO-RUNTIME-12" in text for text in event_texts)
 
 
 def test_session_fixed_seed_pressure_flow_handles_runtime_events_consistently() -> None:

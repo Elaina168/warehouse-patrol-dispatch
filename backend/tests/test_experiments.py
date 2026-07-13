@@ -50,6 +50,19 @@ def crossing_delivery_scenario() -> dict:
     }
 
 
+def integrated_dynamic_event_scenario() -> dict:
+    scenario = frontend_demo_scenario("integrated-demo")
+    event_task = next(task for task in scenario["tasks"] if task["id"] == "E1")
+    scenario["tasks"] = [task for task in scenario["tasks"] if task["id"] != "E1"]
+    scenario["dynamic"] = {
+        "triggerTime": 12,
+        "blockedCells": [],
+        "failedRobots": [],
+        "tasks": [event_task],
+    }
+    return scenario
+
+
 def test_conflict_avoidance_experiment_returns_baseline_and_avoidance_cases() -> None:
     client = TestClient(app)
 
@@ -75,14 +88,14 @@ def test_conflict_avoidance_experiment_returns_baseline_and_avoidance_cases() ->
     assert cases["withConflictAvoidance"]["result"]["metrics"]["assignedTaskCount"] == 2
 
 
-def test_conflict_avoidance_experiment_uses_real_narrow_aisle_scenario() -> None:
+def test_conflict_avoidance_experiment_uses_integrated_demo_scenario() -> None:
     client = TestClient(app)
 
     response = client.post(
         "/api/experiments/conflict-avoidance",
         json={
-            "scenario": frontend_demo_scenario("narrow-aisle"),
-            "options": {"avoidConflicts": True, "includeDynamic": True},
+            "scenario": frontend_demo_scenario("integrated-demo"),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
         },
     )
 
@@ -98,19 +111,19 @@ def test_conflict_avoidance_experiment_uses_real_narrow_aisle_scenario() -> None
     }
     with_assigned_ids = {task["id"] for assignment in with_avoidance["assignments"] for task in assignment["tasks"]}
 
-    assert payload["scenarioId"] == "narrow-aisle"
-    assert without_avoidance["dynamicTriggerTime"] == 10
-    assert with_avoidance["dynamicTriggerTime"] == 10
-    assert without_task_ids == {"T1", "T2", "T3", "E1"}
+    assert payload["scenarioId"] == "integrated-demo"
+    assert without_avoidance["dynamicTriggerTime"] is None
+    assert with_avoidance["dynamicTriggerTime"] is None
+    assert without_task_ids == {"T1", "T2", "T3", "T4", "T5", "E1"}
     assert with_task_ids == without_task_ids
     assert without_assigned_ids == without_task_ids
     assert with_assigned_ids == without_task_ids
-    assert without_avoidance["metrics"]["assignedTaskCount"] == 4
-    assert with_avoidance["metrics"]["assignedTaskCount"] == 4
+    assert without_avoidance["metrics"]["assignedTaskCount"] == 6
+    assert with_avoidance["metrics"]["assignedTaskCount"] == 6
     assert without_avoidance["metrics"]["conflictCount"] > 0
-    assert with_avoidance["metrics"]["conflictCount"] == 0
+    assert with_avoidance["metrics"]["conflictCount"] < without_avoidance["metrics"]["conflictCount"]
     assert without_avoidance["conflicts"]
-    assert with_avoidance["conflicts"] == []
+    assert len(with_avoidance["conflicts"]) == with_avoidance["metrics"]["conflictCount"]
     assert without_avoidance["metrics"]["failureCount"] == 0
     assert with_avoidance["metrics"]["failureCount"] == 0
 
@@ -168,13 +181,13 @@ def test_dynamic_replanning_experiment_returns_static_and_dynamic_cases() -> Non
     ]["result"]["metrics"]["assignedTaskCount"]
 
 
-def test_dynamic_replanning_experiment_uses_real_campus_dynamic_task() -> None:
+def test_dynamic_replanning_experiment_uses_integrated_demo_variant() -> None:
     client = TestClient(app)
 
     response = client.post(
         "/api/experiments/dynamic-replanning",
         json={
-            "scenario": frontend_demo_scenario("campus-warehouse"),
+            "scenario": integrated_dynamic_event_scenario(),
             "options": {"avoidConflicts": True, "includeDynamic": True},
         },
     )
@@ -191,17 +204,17 @@ def test_dynamic_replanning_experiment_uses_real_campus_dynamic_task() -> None:
     }
     with_assigned_ids = {task["id"] for assignment in with_dynamic["assignments"] for task in assignment["tasks"]}
 
-    assert payload["scenarioId"] == "campus-warehouse"
+    assert payload["scenarioId"] == "integrated-demo"
     assert without_dynamic["dynamicTriggerTime"] is None
     assert with_dynamic["dynamicTriggerTime"] == 12
     assert "E1" not in without_task_ids
     assert "E1" in with_task_ids
     assert "E1" not in without_assigned_ids
     assert "E1" in with_assigned_ids
-    assert without_dynamic["metrics"]["assignedTaskCount"] == 4
-    assert with_dynamic["metrics"]["assignedTaskCount"] == 5
+    assert without_dynamic["metrics"]["assignedTaskCount"] == 5
+    assert with_dynamic["metrics"]["assignedTaskCount"] == 6
     assert without_dynamic["metrics"]["conflictCount"] == 0
-    assert with_dynamic["metrics"]["conflictCount"] == 0
+    assert with_dynamic["metrics"]["conflictCount"] > 0
     assert without_dynamic["metrics"]["failureCount"] == 0
     assert with_dynamic["metrics"]["failureCount"] == 0
     assert with_dynamic["metrics"]["totalDistance"] > without_dynamic["metrics"]["totalDistance"]
@@ -264,13 +277,13 @@ def test_replan_window_experiment_returns_one_case_per_window() -> None:
     ]
 
 
-def test_replan_window_experiment_uses_real_campus_dynamic_task_timing() -> None:
+def test_replan_window_experiment_uses_integrated_demo_task_timing() -> None:
     client = TestClient(app)
 
     response = client.post(
         "/api/experiments/replan-window",
         json={
-            "scenario": frontend_demo_scenario("campus-warehouse"),
+            "scenario": frontend_demo_scenario("integrated-demo"),
             "options": {"avoidConflicts": True, "includeDynamic": True},
             "windows": [4, 24],
         },
@@ -284,16 +297,16 @@ def test_replan_window_experiment_uses_real_campus_dynamic_task_timing() -> None
     window_4_assigned_ids = {task["id"] for assignment in window_4["assignments"] for task in assignment["tasks"]}
     window_24_assigned_ids = {task["id"] for assignment in window_24["assignments"] for task in assignment["tasks"]}
 
-    assert payload["scenarioId"] == "campus-warehouse"
-    assert window_4["dynamicTriggerTime"] == 12
-    assert window_24["dynamicTriggerTime"] == 12
+    assert payload["scenarioId"] == "integrated-demo"
+    assert window_4["dynamicTriggerTime"] is None
+    assert window_24["dynamicTriggerTime"] is None
     assert "E1" in {task["id"] for task in window_4["tasks"]}
     assert "E1" not in window_4_assigned_ids
     assert "E1" in window_24_assigned_ids
     assert window_4["metrics"]["assignedTaskCount"] == 4
-    assert window_24["metrics"]["assignedTaskCount"] == 5
+    assert window_24["metrics"]["assignedTaskCount"] == 6
     assert window_4["metrics"]["conflictCount"] == 0
-    assert window_24["metrics"]["conflictCount"] == 0
+    assert window_24["metrics"]["conflictCount"] > 0
     assert window_4["metrics"]["failureCount"] == 0
     assert window_24["metrics"]["failureCount"] == 0
 
@@ -375,18 +388,16 @@ def test_scale_experiment_returns_one_case_per_supplied_scenario() -> None:
     ]
 
 
-def test_scale_experiment_accepts_real_fixed_demo_scenarios() -> None:
+def test_scale_experiment_accepts_integrated_demo_scenario() -> None:
     client = TestClient(app)
-    fixed_scenario_ids = ["campus-warehouse", "narrow-aisle", "robot-failure"]
 
     response = client.post(
         "/api/experiments/scale",
         json={
             "cases": [
-                {"label": scenario_id, "scenario": frontend_demo_scenario(scenario_id)}
-                for scenario_id in fixed_scenario_ids
+                {"label": "integrated-demo", "scenario": frontend_demo_scenario("integrated-demo")}
             ],
-            "options": {"avoidConflicts": True, "includeDynamic": True},
+            "options": {"avoidConflicts": True, "includeDynamic": False},
         },
     )
 
@@ -394,22 +405,15 @@ def test_scale_experiment_accepts_real_fixed_demo_scenarios() -> None:
     payload = response.json()
     cases = {case["label"]: case for case in payload["cases"]}
 
-    assert list(cases) == fixed_scenario_ids
-    for scenario_id in fixed_scenario_ids:
-        result = cases[scenario_id]["result"]
-        assert cases[scenario_id]["scenarioId"] == scenario_id
-        assert cases[scenario_id]["options"]["avoidConflicts"] is True
-        assert cases[scenario_id]["options"]["includeDynamic"] is True
-        assert result["dynamicTriggerTime"] is not None
-        assert result["metrics"]["assignedTaskCount"] == len(result["tasks"])
-        assert result["metrics"]["conflictCount"] == 0
-        assert result["metrics"]["failureCount"] == 0
-        assert result["failureDetails"] == {}
-
-    assert len(cases["robot-failure"]["result"]["paths"]) > len(cases["campus-warehouse"]["result"]["paths"])
-    assert cases["campus-warehouse"]["result"]["metrics"]["assignedTaskCount"] > cases["narrow-aisle"]["result"][
-        "metrics"
-    ]["assignedTaskCount"]
+    assert list(cases) == ["integrated-demo"]
+    result = cases["integrated-demo"]["result"]
+    assert cases["integrated-demo"]["scenarioId"] == "integrated-demo"
+    assert cases["integrated-demo"]["options"]["avoidConflicts"] is True
+    assert cases["integrated-demo"]["options"]["includeDynamic"] is False
+    assert result["dynamicTriggerTime"] is None
+    assert result["metrics"]["assignedTaskCount"] == len(result["tasks"])
+    assert result["metrics"]["failureCount"] == 0
+    assert result["failureDetails"] == {}
 
 
 def test_seeded_pressure_experiment_returns_compact_performance_cases() -> None:

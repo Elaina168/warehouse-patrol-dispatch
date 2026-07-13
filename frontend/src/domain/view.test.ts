@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import scenariosData from "./scenarios.json";
 import { fixedDemoScenarioIds, scenarios } from "./scenarios";
 import { cellKey, getRobotStateAt } from "./view";
 import type { Cell, Scenario, Task } from "./types";
@@ -35,6 +36,7 @@ describe("scenario data", () => {
   it("exposes one integrated demo scenario for the main simulation", () => {
     expect(fixedDemoScenarioIds).toEqual(["integrated-demo"]);
     expect(scenarios.map((scenario) => scenario.id)).toEqual(fixedDemoScenarioIds);
+    expect(scenariosData.map((scenario) => scenario.id)).toEqual(["integrated-demo"]);
 
     const byId = new Map(scenarios.map((scenario) => [scenario.id, scenario]));
     const integrated = byId.get("integrated-demo");

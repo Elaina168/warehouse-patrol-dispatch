@@ -44,7 +44,7 @@ Completed and currently expected to remain in the project:
 - Direct dispatch planning also treats scenario dynamic blocked cells and failed robots as active only when `dynamic.triggerTime` is 0, while still exposing future dynamic tasks and event timing metadata.
 - Direct dispatch assignment avoids assigning future dynamic tasks to robots that become failed at the dynamic trigger, while still allowing those robots to handle pre-trigger base tasks.
 - Online session task states, session result task payloads, and direct dispatch planning clamp scenario dynamic task release times to at least `dynamic.triggerTime`, so a dynamic task with a missing or earlier `releaseTime` remains pending before activation, reports a consistent release time, and does not start before the dynamic event.
-- Online session event logs preserve the scenario dynamic trigger entry after runtime event-note trimming, so `T=<triggerTime> 场景动态事件触发` remains visible alongside preserved dynamic block and robot-failure history.
+- Online session event logs preserve the scenario dynamic trigger entry after runtime event-note trimming, so `T=<triggerTime> 场景动态事件触发` remains visible alongside preserved dynamic block and robot failure history.
 - Session replanning keeps `dynamicTriggerTime` and dynamic event log entries on absolute session time, so runtime task insertion before a dynamic trigger no longer shifts the trigger later.
 - Online replanning preserves partial task progress: completed pickup points and completed inspection targets are not planned again.
 - Task completion and partial-progress detection respect `releaseTime`; visiting a target before task release no longer marks the task completed.
@@ -65,7 +65,7 @@ Completed and currently expected to remain in the project:
 - Automatic stream tasks skip existing `A<n>` task IDs before insertion, preventing task-state and event-log ambiguity when imported or manual tasks already use stream-style IDs.
 - Online sessions can clear active scenario dynamic blocked cells through the blocked-cell recovery API, so `clearBlockedCells` recovery actions work for both manual runtime blocks and activated scenario dynamic blocks.
 - Online sessions can restore active scenario dynamic failed robots through the robot-restore recovery API, so `restoreRobot` recovery actions work for both manual runtime failures and activated scenario dynamic failures.
-- Manual runtime block or robot-failure requests are idempotent when the same condition is already active from a scenario dynamic event, preventing duplicate runtime event counts and duplicate manual event log entries. Duplicate manual block requests for an active dynamic blocked cell bypass ordinary occupancy rejection so the request remains a no-op even if a robot is currently on that already-blocked dynamic cell.
+- Manual runtime block or robot failure requests are idempotent when the same condition is already active from a scenario dynamic event, preventing duplicate runtime event counts and duplicate manual event log entries. Duplicate manual block requests for an active dynamic blocked cell bypass ordinary occupancy rejection so the request remains a no-op even if a robot is currently on that already-blocked dynamic cell.
 - Online session event logs preserve triggered scenario dynamic blocked-cell and failed-robot history after those dynamic conditions are cleared by recovery APIs.
 - Online session event logs keep the original triggered scenario dynamic blocked-cell count after partial dynamic block recovery, avoiding misleading reduced-count history entries.
 - Runtime session events are stored with their real tick timestamps before being merged into `eventLog`, so task arrivals, lock changes, blocked cells, failures, and dynamic triggers remain time-aligned for debugging.
@@ -105,13 +105,13 @@ Completed and currently expected to remain in the project:
 - API contract regression tests now verify response nullable fields, including serialized task variant null fields, so frontend task response types match backend `None` serialization.
 - Experiment comparison API now exposes `POST /api/experiments/conflict-avoidance`, returning paired dispatch results for conflict avoidance disabled and enabled on the same scenario.
 - Conflict-avoidance experiment scenarios should not use a fully one-dimensional two-robot position swap as a no-conflict success case; without side-bypass space, the current competition-scope planner may still report unavoidable conflicts.
-- Conflict-avoidance experiment regression now covers the real `narrow-aisle` demo scenario from shared frontend JSON: the baseline reports a vertex conflict, while priority avoidance preserves all assignments and reduces conflicts to zero.
+- Conflict-avoidance experiment regression now covers the shared `integrated-demo` scenario: priority avoidance preserves all assignments, reduces direct-plan conflict forecasts, and keeps failure count at zero.
 - Experiment comparison API now exposes `POST /api/experiments/dynamic-replanning`, returning paired dispatch results for dynamic events disabled and enabled on the same scenario.
-- Dynamic-replanning experiment regression now covers the real `campus-warehouse` demo scenario from shared frontend JSON: enabling dynamic replanning introduces dynamic task `E1`, preserves the trigger time, and keeps conflicts and failures at zero.
+- Dynamic-replanning experiment regression now derives a dynamic-task variant from `integrated-demo`: enabling dynamic replanning introduces `E1` at its configured trigger time while preserving zero failures.
 - Experiment comparison API now exposes `POST /api/experiments/replan-window`, returning one dispatch result per requested `assignmentReplanWindow` value.
-- Replan-window experiment regression now covers the real `campus-warehouse` demo scenario from shared frontend JSON: a short window defers dynamic task `E1`, while a larger window includes it without adding conflicts or failures.
+- Replan-window experiment regression now covers `integrated-demo`: a short window defers the future `E1` task, while a larger window includes it without creating scheduling failures.
 - Experiment comparison API now exposes `POST /api/experiments/scale`, returning one dispatch result per supplied labeled scenario for robot/task scale comparison.
-- Scale experiment regression now covers the real fixed demo scenario set from shared frontend JSON, verifying `campus-warehouse`, `narrow-aisle`, and `robot-failure` all complete with dynamic events, conflict avoidance, zero conflicts, and zero failures.
+- Scale experiment regression keeps generated multi-scale cases and verifies that the shared `integrated-demo` payload remains accepted by the same API.
 - Experiment comparison API now exposes `POST /api/experiments/seeded-pressure`, returning compact fixed-seed performance summaries for standard 4/6/8-robot randomized pressure scenarios and an extended seven-case stability set including the fixed seed-43 boundary, with task count, obstacle count, assigned task count, stability, completion rate, conflict count, failure count, total distance, average distance per task, makespan, planning time, and planning-time budget pass status.
 - Fixed-seed pressure experiment responses now include aggregate summary fields for case count, stable-case count, largest scale, total tasks, total assigned tasks, maximum conflict count, total failures, distance cost, completion rate, planning-time budget pass rate, average planning time, and maximum planning time, making scale/performance evidence directly quotable.
 - Frontend experiment comparison panel can run conflict-avoidance, dynamic-event, rolling-window, and robot/task scale experiments and summarize assigned tasks, conflicts, distance, makespan, deadline misses, failures, and planning time in a compact table with general insight cards for best strategy, task completion, deadline misses, failures, and planning time.
@@ -127,12 +127,9 @@ Completed and currently expected to remain in the project:
 - Frontend live deadline metric logic handles nullable serialized task deadlines and excludes still-pending tasks, keeping live deadline misses aligned with backend `deadlineMissCount`.
 - Frontend API error handling preserves backend error `detail` text across session creation, updates, ticks, reset, and delete failures, so operational panels surface concrete API failure causes instead of only HTTP status codes.
 - Frontend status strip now exposes both dynamic-event mode and the configured rolling replan window, making the active online scheduling options visible without opening the toolbar.
-- Frontend scenario-data regression now protects the fixed demo scenario IDs and intended capability coverage for `campus-warehouse`, `narrow-aisle`, and `robot-failure`.
-- Fixed demo e2e now reads the shared frontend scenario JSON and verifies the real `campus-warehouse` online flow through tick, urgent task insertion, runtime blocked cell, robot failure, event logs, and metrics history.
-- Fixed demo e2e now also verifies the real `narrow-aisle` conflict-avoidance comparison and the real `robot-failure` dynamic failure replanning flow from shared frontend scenario JSON.
-- Real `campus-warehouse` online session regression now runs continuous ticks to the dynamic trigger and then inserts a manual high-priority task, verifying task states, event logs, dynamic blocked cells, temporary recovery details, conflict metrics, and metrics history remain consistent.
-- Real `robot-failure` online session regression now runs continuous ticks to the dynamic robot failure, verifies emergency task handoff and temporary blocked-cell recovery details, then restores the failed robot and clears the critical dynamic block to verify failures clear and event history remains intact.
-- Real `narrow-aisle` online session regression now proves the same fixed scenario produces baseline vertex and edge conflicts without avoidance, while the online conflict-avoidance session stays conflict-free through continuous ticks and dynamic emergency activation.
+- Frontend scenario-data regression now protects `integrated-demo` as the only persisted frontend scenario and verifies its mixed task, charging, and online-dispatch coverage.
+- Fixed demo e2e now reads the shared `integrated-demo` JSON and verifies tick advancement, urgent task insertion, runtime blocked cells, robot failure, event logs, metrics history, conflict-avoidance comparison, and a derived dynamic-task variant.
+- Integrated online-session regression now runs continuous ticks through `E1` release and manual high-priority task insertion, verifying task states, event logs, conflict metrics, and metrics history remain consistent.
 - Frontend scenario data now lives in `frontend/src/domain/scenarios.json`, with `frontend/src/domain/scenarios.ts` providing typed exports for the React app and tests.
 - Backend tests split by algorithm, session, validation, health, and fixed demo flow.
 - Documentation for environment, algorithm behavior, runtime recovery APIs, and demo flow.
@@ -170,13 +167,13 @@ Recommended execution order:
 1. Baseline freeze and demo stability - 94%
    - The current full check passes and the online dispatch workflow is implemented.
    - The fixed frontend demo scenario IDs and their intended capability coverage are now protected by frontend scenario-data regression tests.
-   - The real frontend `campus-warehouse`, `narrow-aisle`, and `robot-failure` scenarios are now covered by backend fixed demo e2e through shared JSON scenario data.
-   - Next work is to keep these fixed demo flows stable during backend/frontend changes and avoid destabilizing broad refactors.
+   - The sole frontend `integrated-demo` scenario is protected by shared JSON, frontend data, and backend end-to-end regressions.
+   - Next work is to keep this fixed demo flow stable during backend/frontend changes and avoid destabilizing broad refactors.
 
 2. Core algorithm module completion - 95%
    - Assignment, A* path planning, conflict avoidance, lock stability, preemption scoring, rolling-window behavior, partial-progress replanning, delivery cargo continuity, dynamic timing, and failure recovery classification are implemented with targeted regressions.
-   - Dynamic replanning behavior is now regression-tested against the real `campus-warehouse` demo scenario, confirming dynamic task inclusion while preserving zero conflicts and zero failures.
-   - Rolling-window behavior is now regression-tested against the real `campus-warehouse` demo scenario, confirming far-future dynamic task deferral versus inclusion across window settings.
+   - Dynamic replanning behavior is regression-tested through an `integrated-demo` dynamic-task variant, confirming dynamic task inclusion and zero failures.
+   - Rolling-window behavior is regression-tested against `integrated-demo`, confirming far-future task deferral versus inclusion across window settings.
    - Deterministic scale-pressure coverage now verifies increasing 3/5/8-robot scenario families with mixed tasks and dynamic emergency tasks while preserving full assignment, zero conflicts, zero failures, and bounded planning time.
    - Fixed-seed pressure coverage now verifies randomized 4/6/8-robot scenario families with mixed tasks, randomized obstacles, dynamic emergency tasks, full assignment, zero conflicts, zero failures, and bounded planning time.
    - The previous 8-robot seed-43 late-goal conflict boundary is now a passing regression through reservation-aware post-task parking.
@@ -187,7 +184,7 @@ Recommended execution order:
    - Implemented session metadata such as creation time and last access/update time.
    - Implemented idle-session cleanup, least-recently-accessed capacity pruning, explicit delete/reset endpoints, task caps, tick caps, metrics-history caps, and event-note caps.
    - Implemented manual tasks, stream tasks, runtime blocked cells, robot failure and recovery, scenario dynamic timing, rolling-window triggers, task locks, event logs, and metrics history.
-   - Real fixed-scenario online continuity is now regression-tested across `campus-warehouse`, `narrow-aisle`, and `robot-failure` for dynamic triggers, manual insertion, conflict avoidance, robot recovery, block recovery, and metrics consistency.
+   - Integrated-scenario online continuity is regression-tested through ticks, manual insertion, conflict avoidance, runtime events, and metrics consistency; focused generic tests retain recovery edge coverage.
    - Fixed-seed randomized online pressure is now regression-tested through continuous ticks, dynamic activation, manual emergency insertion, runtime block/failure events, recovery APIs, event history, and metrics history.
    - Remaining work is mainly harder online pressure boundary cases or dedicated performance profiling if algorithm scale becomes a priority. Persistence, auth, or external observability remain out of competition scope unless the project scope expands.
 
@@ -199,9 +196,9 @@ Recommended execution order:
    - Online sessions now also have a fixed-seed randomized long-flow regression with continuous ticks, dynamic activation, manual emergency insertion, runtime blocked-cell recovery, runtime robot failure/restore, preserved event history, and recovered zero-conflict/zero-failure metrics.
    - Online sessions now have an 8-robot pressure regression with manual urgent insertion, repeated stream tasks, scenario dynamic activation, runtime blocked cells, robot failure and restore, and deferred far-future task visibility.
    - Online sessions now also have an 8-robot long-horizon runtime stress regression covering continuous ticks, repeated stream tasks, multiple runtime block/failure recovery cycles, scenario dynamic recovery, metrics history continuity, and active-time conflict safety.
-   - Online sessions now also cover the real `campus-warehouse` fixed scenario through continuous ticks, dynamic blocked-cell activation, temporary failure recovery details, and manual high-priority task insertion.
-   - Online sessions now also cover the real `robot-failure` fixed scenario through continuous ticks, dynamic robot failure, emergency task handoff, robot recovery, dynamic block recovery, cleared failure details, and preserved event history.
-   - Online sessions now also cover the real `narrow-aisle` fixed scenario by comparing baseline conflicts against conflict-avoidance planning, then running the avoided session through dynamic emergency activation with zero conflicts and zero failures.
+   - Online sessions now also cover `integrated-demo` through continuous ticks, `E1` release, and manual high-priority task insertion.
+   - Focused generic scenarios retain dynamic robot failure, block recovery, and emergency handoff regression coverage without adding more persisted demo maps.
+   - The integrated conflict-avoidance comparison retains direct-plan baseline and avoidance coverage; active-session conflict safety remains covered through continuous ticks.
    - Remaining work is randomized scenario families or dedicated performance profiling if algorithm scale becomes a priority.
 
 5. Unschedulable task recovery semantics - 93%

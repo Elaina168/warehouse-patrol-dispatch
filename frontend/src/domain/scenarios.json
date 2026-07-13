@@ -6,253 +6,321 @@
     "width": 14,
     "height": 10,
     "obstacles": [
-      [2, 1],
-      [2, 2],
-      [2, 3],
-      [2, 5],
-      [2, 6],
-      [2, 7],
-      [5, 0],
-      [5, 1],
-      [5, 2],
-      [5, 3],
-      [5, 5],
-      [5, 6],
-      [5, 7],
-      [5, 8],
-      [8, 1],
-      [8, 2],
-      [8, 3],
-      [8, 5],
-      [8, 6],
-      [8, 7],
-      [11, 1],
-      [11, 2],
-      [11, 6],
-      [11, 7]
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        2
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        5
+      ],
+      [
+        2,
+        6
+      ],
+      [
+        2,
+        7
+      ],
+      [
+        5,
+        0
+      ],
+      [
+        5,
+        1
+      ],
+      [
+        5,
+        2
+      ],
+      [
+        5,
+        3
+      ],
+      [
+        5,
+        5
+      ],
+      [
+        5,
+        6
+      ],
+      [
+        5,
+        7
+      ],
+      [
+        5,
+        8
+      ],
+      [
+        8,
+        1
+      ],
+      [
+        8,
+        2
+      ],
+      [
+        8,
+        3
+      ],
+      [
+        8,
+        5
+      ],
+      [
+        8,
+        6
+      ],
+      [
+        8,
+        7
+      ],
+      [
+        11,
+        1
+      ],
+      [
+        11,
+        2
+      ],
+      [
+        11,
+        6
+      ],
+      [
+        11,
+        7
+      ]
     ],
     "zones": {
       "warehouse": [
-        [0, 4],
-        [13, 4],
-        [1, 8]
+        [
+          0,
+          4
+        ],
+        [
+          13,
+          4
+        ],
+        [
+          1,
+          8
+        ]
       ],
       "inspection": [
-        [3, 0],
-        [7, 9],
-        [10, 0],
-        [12, 8]
+        [
+          3,
+          0
+        ],
+        [
+          7,
+          9
+        ],
+        [
+          10,
+          0
+        ],
+        [
+          12,
+          8
+        ]
       ],
       "delivery": [
-        [3, 9],
-        [10, 9],
-        [13, 8]
+        [
+          3,
+          9
+        ],
+        [
+          10,
+          9
+        ],
+        [
+          13,
+          8
+        ]
       ],
       "charging": [
-        [0, 9],
-        [13, 0]
+        [
+          0,
+          9
+        ],
+        [
+          13,
+          0
+        ]
       ]
     },
     "chargeTime": 4,
     "robots": [
-      { "id": "R1", "name": "左侧搬运车", "start": [0, 4], "battery": 92, "batteryCapacity": 100, "load": 2, "moveTicks": 1 },
-      { "id": "R2", "name": "右侧搬运车", "start": [13, 4], "battery": 88, "batteryCapacity": 100, "load": 2, "moveTicks": 2 },
-      { "id": "R3", "name": "巡检车", "start": [6, 4], "battery": 80, "batteryCapacity": 100, "load": 1, "moveTicks": 3 },
-      { "id": "R4", "name": "备用协作车", "start": [13, 9], "battery": 84, "batteryCapacity": 100, "load": 2, "moveTicks": 4 }
+      {
+        "id": "R1",
+        "name": "左侧搬运车",
+        "start": [
+          0,
+          4
+        ],
+        "battery": 92,
+        "batteryCapacity": 100,
+        "load": 2,
+        "moveTicks": 1
+      },
+      {
+        "id": "R2",
+        "name": "右侧搬运车",
+        "start": [
+          13,
+          4
+        ],
+        "battery": 88,
+        "batteryCapacity": 100,
+        "load": 2,
+        "moveTicks": 2
+      },
+      {
+        "id": "R3",
+        "name": "巡检车",
+        "start": [
+          6,
+          4
+        ],
+        "battery": 80,
+        "batteryCapacity": 100,
+        "load": 1,
+        "moveTicks": 3
+      },
+      {
+        "id": "R4",
+        "name": "备用协作车",
+        "start": [
+          13,
+          9
+        ],
+        "battery": 84,
+        "batteryCapacity": 100,
+        "load": 2,
+        "moveTicks": 4
+      }
     ],
     "tasks": [
-      { "id": "T1", "type": "delivery", "title": "左库到右端补货", "priority": 3, "pickup": [0, 4], "dropoff": [10, 9], "demand": 1, "serviceTime": 2, "deadline": 32 },
-      { "id": "T2", "type": "delivery", "title": "右库到左端回收", "priority": 3, "pickup": [13, 4], "dropoff": [3, 9], "demand": 1, "serviceTime": 2, "deadline": 32 },
-      { "id": "T3", "type": "inspection", "title": "巷道顶部巡检", "priority": 2, "targets": [[3, 0], [10, 0]], "serviceTime": 1, "deadline": 42 },
-      { "id": "T4", "type": "delivery", "title": "备件送达设备间", "priority": 2, "pickup": [1, 8], "dropoff": [13, 8], "demand": 1, "releaseTime": 4, "serviceTime": 3, "deadline": 44 },
-      { "id": "T5", "type": "inspection", "title": "园区南侧巡检", "priority": 1, "targets": [[7, 9], [12, 8]], "releaseTime": 8, "serviceTime": 1, "deadline": 52 },
-      { "id": "E1", "type": "emergency", "title": "冷链告警应急复核", "priority": 5, "target": [7, 9], "releaseTime": 12, "serviceTime": 2, "deadline": 36 }
+      {
+        "id": "T1",
+        "type": "delivery",
+        "title": "左库到右端补货",
+        "priority": 3,
+        "pickup": [
+          0,
+          4
+        ],
+        "dropoff": [
+          10,
+          9
+        ],
+        "demand": 1,
+        "serviceTime": 2,
+        "deadline": 32
+      },
+      {
+        "id": "T2",
+        "type": "delivery",
+        "title": "右库到左端回收",
+        "priority": 3,
+        "pickup": [
+          13,
+          4
+        ],
+        "dropoff": [
+          3,
+          9
+        ],
+        "demand": 1,
+        "serviceTime": 2,
+        "deadline": 32
+      },
+      {
+        "id": "T3",
+        "type": "inspection",
+        "title": "巷道顶部巡检",
+        "priority": 2,
+        "targets": [
+          [
+            3,
+            0
+          ],
+          [
+            10,
+            0
+          ]
+        ],
+        "serviceTime": 1,
+        "deadline": 42
+      },
+      {
+        "id": "T4",
+        "type": "delivery",
+        "title": "备件送达设备间",
+        "priority": 2,
+        "pickup": [
+          1,
+          8
+        ],
+        "dropoff": [
+          13,
+          8
+        ],
+        "demand": 1,
+        "releaseTime": 4,
+        "serviceTime": 3,
+        "deadline": 44
+      },
+      {
+        "id": "T5",
+        "type": "inspection",
+        "title": "园区南侧巡检",
+        "priority": 1,
+        "targets": [
+          [
+            7,
+            9
+          ],
+          [
+            12,
+            8
+          ]
+        ],
+        "releaseTime": 8,
+        "serviceTime": 1,
+        "deadline": 52
+      },
+      {
+        "id": "E1",
+        "type": "emergency",
+        "title": "冷链告警应急复核",
+        "priority": 5,
+        "target": [
+          7,
+          9
+        ],
+        "releaseTime": 12,
+        "serviceTime": 2,
+        "deadline": 36
+      }
     ],
     "dynamic": {
       "triggerTime": 12,
       "blockedCells": [],
       "failedRobots": [],
       "tasks": []
-    }
-  },
-  {
-    "id": "campus-warehouse",
-    "name": "园区仓储协同",
-    "description": "3 台机器人同时执行设施巡检和仓库取送任务。",
-    "width": 14,
-    "height": 10,
-    "obstacles": [
-      [4, 1],
-      [4, 2],
-      [4, 3],
-      [4, 4],
-      [8, 5],
-      [8, 6],
-      [8, 7],
-      [8, 8],
-      [10, 1],
-      [11, 1],
-      [12, 1],
-      [1, 6],
-      [2, 6],
-      [3, 6]
-    ],
-    "zones": {
-      "warehouse": [
-        [1, 1],
-        [2, 1]
-      ],
-      "inspection": [
-        [6, 1],
-        [12, 4],
-        [6, 8]
-      ],
-      "delivery": [
-        [12, 8],
-        [1, 8]
-      ]
-    },
-    "robots": [
-      { "id": "R1", "name": "巡检一号", "start": [0, 0], "battery": 92, "load": 1 },
-      { "id": "R2", "name": "搬运二号", "start": [13, 0], "battery": 86, "load": 3 },
-      { "id": "R3", "name": "协同三号", "start": [0, 9], "battery": 78, "load": 2 }
-    ],
-    "tasks": [
-      { "id": "T1", "type": "inspection", "title": "机房温湿度巡检", "priority": 2, "targets": [[6, 1], [12, 4]] },
-      { "id": "T2", "type": "delivery", "title": "备件从库房送至设备间", "priority": 3, "pickup": [1, 1], "dropoff": [12, 8], "demand": 1 },
-      { "id": "T3", "type": "inspection", "title": "消防通道巡检", "priority": 1, "targets": [[6, 8]] },
-      { "id": "T4", "type": "delivery", "title": "耗材补给实验楼", "priority": 2, "pickup": [2, 1], "dropoff": [1, 8], "demand": 1 }
-    ],
-    "dynamic": {
-      "triggerTime": 12,
-      "blockedCells": [
-        [7, 4],
-        [7, 5]
-      ],
-      "failedRobots": [],
-      "tasks": [{ "id": "E1", "type": "emergency", "title": "冷库告警应急巡查", "priority": 5, "target": [11, 6] }]
-    }
-  },
-  {
-    "id": "narrow-aisle",
-    "name": "窄巷道避碰",
-    "description": "狭窄通道容易产生同格与迎面冲突，适合展示避碰效果。",
-    "width": 12,
-    "height": 9,
-    "obstacles": [
-      [2, 1],
-      [2, 2],
-      [2, 3],
-      [2, 5],
-      [2, 6],
-      [2, 7],
-      [5, 0],
-      [5, 1],
-      [5, 2],
-      [5, 3],
-      [5, 5],
-      [5, 6],
-      [5, 7],
-      [5, 8],
-      [8, 1],
-      [8, 2],
-      [8, 3],
-      [8, 5],
-      [8, 6],
-      [8, 7]
-    ],
-    "zones": {
-      "warehouse": [
-        [0, 4],
-        [11, 4]
-      ],
-      "inspection": [
-        [3, 0],
-        [7, 8],
-        [10, 0]
-      ],
-      "delivery": [
-        [3, 8],
-        [10, 8]
-      ]
-    },
-    "robots": [
-      { "id": "R1", "name": "左侧 AGV", "start": [0, 4], "battery": 88, "load": 2 },
-      { "id": "R2", "name": "右侧 AGV", "start": [11, 4], "battery": 82, "load": 2 },
-      { "id": "R3", "name": "巡检 AGV", "start": [6, 4], "battery": 76, "load": 1 }
-    ],
-    "tasks": [
-      { "id": "T1", "type": "delivery", "title": "左库到右端补货", "priority": 3, "pickup": [0, 4], "dropoff": [10, 8], "demand": 1 },
-      { "id": "T2", "type": "delivery", "title": "右库到左端回收", "priority": 3, "pickup": [11, 4], "dropoff": [3, 8], "demand": 1 },
-      { "id": "T3", "type": "inspection", "title": "巷道顶部巡检", "priority": 2, "targets": [[3, 0], [10, 0]] }
-    ],
-    "dynamic": {
-      "triggerTime": 10,
-      "blockedCells": [[6, 3]],
-      "failedRobots": [],
-      "tasks": [{ "id": "E1", "type": "emergency", "title": "中段巷道异常复核", "priority": 5, "target": [7, 8] }]
-    }
-  },
-  {
-    "id": "robot-failure",
-    "name": "故障重规划",
-    "description": "机器人故障后，剩余机器人接管高优先级任务。",
-    "width": 13,
-    "height": 10,
-    "obstacles": [
-      [3, 0],
-      [3, 1],
-      [3, 2],
-      [3, 3],
-      [3, 6],
-      [3, 7],
-      [3, 8],
-      [3, 9],
-      [7, 2],
-      [8, 2],
-      [9, 2],
-      [7, 7],
-      [8, 7],
-      [9, 7],
-      [11, 4],
-      [11, 5],
-      [11, 6]
-    ],
-    "zones": {
-      "warehouse": [
-        [1, 4],
-        [1, 5]
-      ],
-      "inspection": [
-        [6, 1],
-        [12, 1],
-        [10, 8]
-      ],
-      "delivery": [
-        [12, 5],
-        [5, 8]
-      ]
-    },
-    "robots": [
-      { "id": "R1", "name": "低电量巡检车", "start": [0, 0], "battery": 35, "load": 1 },
-      { "id": "R2", "name": "主搬运车", "start": [0, 9], "battery": 91, "load": 3 },
-      { "id": "R3", "name": "备用车", "start": [12, 9], "battery": 84, "load": 2 },
-      { "id": "R4", "name": "协作车", "start": [12, 0], "battery": 71, "load": 1 }
-    ],
-    "tasks": [
-      { "id": "T1", "type": "inspection", "title": "配电间巡检", "priority": 3, "targets": [[6, 1], [12, 1]] },
-      { "id": "T2", "type": "delivery", "title": "抢修工具配送", "priority": 4, "pickup": [1, 4], "dropoff": [12, 5], "demand": 1 },
-      { "id": "T3", "type": "inspection", "title": "库区夜间巡检", "priority": 1, "targets": [[10, 8]] },
-      { "id": "T4", "type": "delivery", "title": "备件转运", "priority": 2, "pickup": [1, 5], "dropoff": [5, 8], "demand": 1 }
-    ],
-    "dynamic": {
-      "triggerTime": 9,
-      "blockedCells": [
-        [5, 4],
-        [5, 5]
-      ],
-      "failedRobots": ["R1"],
-      "tasks": [{ "id": "E1", "type": "emergency", "title": "故障机器人位置复核", "priority": 5, "target": [4, 4] }]
     }
   }
 ]

@@ -1102,8 +1102,8 @@ def test_dispatch_reports_joint_recovering_blocked_cells_without_unrelated_block
 def test_dispatch_marks_unavailable_robots_in_failure_detail() -> None:
     scenario = Scenario.model_validate(
         {
-            "id": "temporary-robot-failure",
-            "name": "temporary-robot-failure",
+            "id": "temporary-unavailable-robot",
+            "name": "temporary-unavailable-robot",
             "description": "temporary robot failure detail regression",
             "width": 3,
             "height": 1,
@@ -1142,8 +1142,8 @@ def test_dispatch_marks_unavailable_robots_in_failure_detail() -> None:
 def test_dispatch_marks_unavailable_capable_robot_as_temporary_recovery() -> None:
     scenario = Scenario.model_validate(
         {
-            "id": "temporary-capable-robot-failure",
-            "name": "temporary-capable-robot-failure",
+            "id": "temporary-capable-unavailable-robot",
+            "name": "temporary-capable-unavailable-robot",
             "description": "capable failed robot recovery regression",
             "width": 3,
             "height": 1,

@@ -1257,7 +1257,7 @@ describe("experiment summaries", () => {
     const rows = [
       {
         label: "withConflictAvoidance",
-        scenarioId: "narrow-aisle",
+        scenarioId: "integrated-demo",
         assignedTaskCount: 3,
         conflictCount: 0,
         totalDistance: 42,
@@ -1270,7 +1270,7 @@ describe("experiment summaries", () => {
 
     expect(buildExperimentReportDisplayText("避碰开启/关闭", rows, "后端汇总结论")).toBe("后端汇总结论");
     expect(buildExperimentReportDisplayText("避碰开启/关闭", rows, null)).toBe(
-      "避碰开启/关闭：在场景 narrow-aisle 中，开启避碰 完成 3 个任务，冲突数 0，总路径长度 42，完成时间 21，截止超期 0，失败数 0，规划耗时 4ms。"
+      "避碰开启/关闭：在场景 integrated-demo 中，开启避碰 完成 3 个任务，冲突数 0，总路径长度 42，完成时间 21，截止超期 0，失败数 0，规划耗时 4ms。"
     );
   });
 
@@ -1321,7 +1321,7 @@ describe("experiment summaries", () => {
       const rows = [
       {
         label: "withoutConflictAvoidance",
-        scenarioId: "narrow-aisle",
+        scenarioId: "integrated-demo",
         assignedTaskCount: 3,
         conflictCount: 2,
         totalDistance: 38,
@@ -1332,7 +1332,7 @@ describe("experiment summaries", () => {
       },
       {
         label: "withConflictAvoidance",
-        scenarioId: "narrow-aisle",
+        scenarioId: "integrated-demo",
         assignedTaskCount: 3,
         conflictCount: 0,
         totalDistance: 42,
@@ -1345,8 +1345,8 @@ describe("experiment summaries", () => {
 
     expect(buildExperimentCsv(rows)).toBe([
       "组别,场景,任务数,冲突数,总路径长度,完成时间,截止超期,失败数,规划耗时(ms)",
-      "关闭避碰,narrow-aisle,3,2,38,19,1,0,3.125",
-      "开启避碰,narrow-aisle,3,0,42,21,0,0,4"
+      "关闭避碰,integrated-demo,3,2,38,19,1,0,3.125",
+      "开启避碰,integrated-demo,3,0,42,21,0,0,4"
       ].join("\n"));
     });
 
@@ -1354,7 +1354,7 @@ describe("experiment summaries", () => {
       const rows = [
         {
           label: "withConflictAvoidance",
-          scenarioId: "narrow-aisle",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 3,
           conflictCount: 0,
           totalDistance: 42,
@@ -1367,7 +1367,7 @@ describe("experiment summaries", () => {
 
       expect(buildExperimentTableRows(rows)).toEqual([
         {
-          key: "narrow-aisle-withConflictAvoidance",
+          key: "integrated-demo-withConflictAvoidance",
           cells: ["开启避碰", "3", "0", "42", "21", "0", "0", "4ms"]
         }
       ]);
@@ -1573,7 +1573,7 @@ describe("experiment summaries", () => {
     const rows = [
       {
         label: "withoutConflictAvoidance",
-        scenarioId: "narrow-aisle",
+        scenarioId: "integrated-demo",
         assignedTaskCount: 3,
         conflictCount: 2,
         totalDistance: 38,
@@ -1584,7 +1584,7 @@ describe("experiment summaries", () => {
       },
       {
         label: "withConflictAvoidance",
-        scenarioId: "narrow-aisle",
+        scenarioId: "integrated-demo",
         assignedTaskCount: 3,
         conflictCount: 0,
         totalDistance: 42,
@@ -1596,7 +1596,7 @@ describe("experiment summaries", () => {
     ];
 
       expect(buildExperimentReportText("避碰开启/关闭", rows)).toBe(
-        "避碰开启/关闭：在场景 narrow-aisle 中，开启避碰 相比 关闭避碰 将冲突从 2 降到 0，任务完成数保持 3，总路径长度增加 4，完成时间增加 2，截止超期减少 1，失败数保持 0，规划耗时增加 0.875ms。该结果可用于说明优先级避碰能用有限路径和时间代价换取无冲突执行。"
+        "避碰开启/关闭：在场景 integrated-demo 中，开启避碰 相比 关闭避碰 将冲突从 2 降到 0，任务完成数保持 3，总路径长度增加 4，完成时间增加 2，截止超期减少 1，失败数保持 0，规划耗时增加 0.875ms。该结果可用于说明优先级避碰能用有限路径和时间代价换取无冲突执行。"
       );
     });
 
@@ -1604,7 +1604,7 @@ describe("experiment summaries", () => {
       const rows = [
         {
           label: "withoutDynamicReplanning",
-          scenarioId: "campus-warehouse",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 4,
           conflictCount: 0,
           totalDistance: 80,
@@ -1615,7 +1615,7 @@ describe("experiment summaries", () => {
         },
         {
           label: "withDynamicReplanning",
-          scenarioId: "campus-warehouse",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 5,
           conflictCount: 0,
           totalDistance: 96,
@@ -1627,7 +1627,7 @@ describe("experiment summaries", () => {
       ];
 
       expect(buildExperimentReportText("动态事件开启/关闭", rows)).toBe(
-        "动态事件开启/关闭：在场景 campus-warehouse 中，开启动态 相比 关闭动态 冲突数保持 0，任务完成数增加 1，总路径长度增加 16，完成时间增加 6，截止超期保持 0，失败数减少 1，规划耗时增加 2ms。该结果可用于说明动态重规划能在突发任务或故障出现后维持任务完成和低失败。"
+        "动态事件开启/关闭：在场景 integrated-demo 中，开启动态 相比 关闭动态 冲突数保持 0，任务完成数增加 1，总路径长度增加 16，完成时间增加 6，截止超期保持 0，失败数减少 1，规划耗时增加 2ms。该结果可用于说明动态重规划能在突发任务或故障出现后维持任务完成和低失败。"
       );
     });
 
@@ -1635,7 +1635,7 @@ describe("experiment summaries", () => {
       const rows = [
         {
           label: "withoutConflictAvoidance",
-          scenarioId: "narrow-aisle",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 3,
           conflictCount: 3,
           totalDistance: 38,
@@ -1646,7 +1646,7 @@ describe("experiment summaries", () => {
         },
         {
           label: "withConflictAvoidance",
-          scenarioId: "narrow-aisle",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 3,
           conflictCount: 1,
           totalDistance: 44,
@@ -1658,7 +1658,7 @@ describe("experiment summaries", () => {
       ];
 
       expect(buildExperimentReportText("避碰开启/关闭", rows)).toBe(
-        "避碰开启/关闭：在场景 narrow-aisle 中，开启避碰 相比 关闭避碰 将冲突从 3 降到 1，任务完成数保持 3，总路径长度增加 6，完成时间增加 5，截止超期保持 0，失败数保持 0，规划耗时增加 3ms。该结果可用于说明优先级避碰降低了冲突，但仍有 1 个冲突，需要继续作为压力边界优化。"
+        "避碰开启/关闭：在场景 integrated-demo 中，开启避碰 相比 关闭避碰 将冲突从 3 降到 1，任务完成数保持 3，总路径长度增加 6，完成时间增加 5，截止超期保持 0，失败数保持 0，规划耗时增加 3ms。该结果可用于说明优先级避碰降低了冲突，但仍有 1 个冲突，需要继续作为压力边界优化。"
       );
     });
 
@@ -1666,7 +1666,7 @@ describe("experiment summaries", () => {
       const rows = [
         {
           label: "withoutDynamicReplanning",
-          scenarioId: "robot-failure",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 4,
           conflictCount: 0,
           totalDistance: 72,
@@ -1677,7 +1677,7 @@ describe("experiment summaries", () => {
         },
         {
           label: "withDynamicReplanning",
-          scenarioId: "robot-failure",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 5,
           conflictCount: 0,
           totalDistance: 88,
@@ -1689,7 +1689,7 @@ describe("experiment summaries", () => {
       ];
 
       expect(buildExperimentReportText("动态事件开启/关闭", rows)).toBe(
-        "动态事件开启/关闭：在场景 robot-failure 中，开启动态 相比 关闭动态 冲突数保持 0，任务完成数增加 1，总路径长度增加 16，完成时间增加 9，截止超期保持 0，失败数减少 2，规划耗时增加 4ms。该结果可用于说明动态重规划降低了失败数，但仍有 1 个失败任务，需要继续分析恢复条件。"
+        "动态事件开启/关闭：在场景 integrated-demo 中，开启动态 相比 关闭动态 冲突数保持 0，任务完成数增加 1，总路径长度增加 16，完成时间增加 9，截止超期保持 0，失败数减少 2，规划耗时增加 4ms。该结果可用于说明动态重规划降低了失败数，但仍有 1 个失败任务，需要继续分析恢复条件。"
       );
     });
 
@@ -1697,7 +1697,7 @@ describe("experiment summaries", () => {
       const rows = [
         {
           label: "window-24",
-          scenarioId: "campus-warehouse",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 4,
           conflictCount: 0,
           totalDistance: 68,
@@ -1708,7 +1708,7 @@ describe("experiment summaries", () => {
         },
         {
           label: "window-120",
-          scenarioId: "campus-warehouse",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 5,
           conflictCount: 0,
           totalDistance: 75,
@@ -1720,7 +1720,7 @@ describe("experiment summaries", () => {
       ];
 
       expect(buildExperimentReportText("滚动窗口参数", rows)).toBe(
-        "滚动窗口参数：在场景 campus-warehouse 中，window-120 相比 window-24 冲突数保持 0，任务完成数增加 1，总路径长度增加 7，完成时间增加 3，截止超期保持 0，失败数减少 1，规划耗时增加 2ms。该结果可用于说明滚动窗口扩大后能纳入更多近未来任务，同时保持冲突和失败受控。"
+        "滚动窗口参数：在场景 integrated-demo 中，window-120 相比 window-24 冲突数保持 0，任务完成数增加 1，总路径长度增加 7，完成时间增加 3，截止超期保持 0，失败数减少 1，规划耗时增加 2ms。该结果可用于说明滚动窗口扩大后能纳入更多近未来任务，同时保持冲突和失败受控。"
       );
     });
 
@@ -1728,7 +1728,7 @@ describe("experiment summaries", () => {
       const rows = [
         {
           label: "window-24",
-          scenarioId: "campus-warehouse",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 4,
           conflictCount: 0,
           totalDistance: 68,
@@ -1739,7 +1739,7 @@ describe("experiment summaries", () => {
         },
         {
           label: "window-120",
-          scenarioId: "campus-warehouse",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 5,
           conflictCount: 0,
           totalDistance: 79,
@@ -1751,7 +1751,7 @@ describe("experiment summaries", () => {
       ];
 
       expect(buildExperimentReportText("滚动窗口参数", rows)).toBe(
-        "滚动窗口参数：在场景 campus-warehouse 中，window-120 相比 window-24 冲突数保持 0，任务完成数增加 1，总路径长度增加 11，完成时间增加 3，截止超期保持 0，失败数减少 1，规划耗时增加 2ms。该结果可用于说明滚动窗口扩大后纳入了更多任务，但仍有 0 个冲突和 1 个失败，需要继续权衡窗口长度。"
+        "滚动窗口参数：在场景 integrated-demo 中，window-120 相比 window-24 冲突数保持 0，任务完成数增加 1，总路径长度增加 11，完成时间增加 3，截止超期保持 0，失败数减少 1，规划耗时增加 2ms。该结果可用于说明滚动窗口扩大后纳入了更多任务，但仍有 0 个冲突和 1 个失败，需要继续权衡窗口长度。"
       );
     });
 
@@ -1807,8 +1807,8 @@ describe("experiment summaries", () => {
     it("builds an aggregate report paragraph for robot and task scale cases", () => {
       const rows = [
         {
-          label: "campus-warehouse",
-          scenarioId: "campus-warehouse",
+          label: "integrated-demo",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 5,
           conflictCount: 0,
           totalDistance: 60,
@@ -1818,8 +1818,8 @@ describe("experiment summaries", () => {
           replanTimeMs: 9
         },
         {
-          label: "robot-failure",
-          scenarioId: "robot-failure",
+          label: "integrated-demo",
+          scenarioId: "integrated-demo",
           assignedTaskCount: 7,
           conflictCount: 0,
           totalDistance: 88,
@@ -1839,7 +1839,7 @@ describe("experiment summaries", () => {
     const rows = [
       {
         label: "withoutConflictAvoidance",
-        scenarioId: "narrow-aisle",
+        scenarioId: "integrated-demo",
         assignedTaskCount: 3,
         conflictCount: 2,
         totalDistance: 38,
@@ -1850,7 +1850,7 @@ describe("experiment summaries", () => {
       },
       {
         label: "withConflictAvoidance",
-        scenarioId: "narrow-aisle",
+        scenarioId: "integrated-demo",
         assignedTaskCount: 3,
         conflictCount: 0,
         totalDistance: 42,
@@ -1909,7 +1909,7 @@ describe("experiment summaries", () => {
     const rows = [
       {
         label: "withoutConflictAvoidance",
-        scenarioId: "narrow-aisle",
+        scenarioId: "integrated-demo",
         assignedTaskCount: 3,
         conflictCount: 2,
         totalDistance: 38,
@@ -1920,7 +1920,7 @@ describe("experiment summaries", () => {
       },
       {
         label: "withConflictAvoidance",
-        scenarioId: "narrow-aisle",
+        scenarioId: "integrated-demo",
         assignedTaskCount: 3,
         conflictCount: 0,
         totalDistance: 42,
@@ -1946,7 +1946,7 @@ describe("experiment summaries", () => {
     const rows = [
       {
         label: "withoutConflictAvoidance",
-        scenarioId: "narrow-aisle",
+        scenarioId: "integrated-demo",
         assignedTaskCount: 3,
         conflictCount: 2,
         totalDistance: 38,
@@ -1957,7 +1957,7 @@ describe("experiment summaries", () => {
       },
       {
         label: "withConflictAvoidance",
-        scenarioId: "narrow-aisle",
+        scenarioId: "integrated-demo",
         assignedTaskCount: 3,
         conflictCount: 0,
         totalDistance: 42,
