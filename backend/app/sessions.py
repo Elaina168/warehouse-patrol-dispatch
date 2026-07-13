@@ -489,6 +489,13 @@ def _build_result(session: DispatchSession) -> SessionResult:
     _sync_completed_task_states(session, task_states)
     snapshot = _build_metric_snapshot(session, result, task_states)
     _record_metric_snapshot(session, snapshot)
+    result = result.model_copy(
+        update={
+            "metrics": result.metrics.model_copy(
+                update={"deadlineMissCount": snapshot.deadlineMissCount}
+            )
+        }
+    )
 
     return SessionResult(
         sessionId=session.session_id,

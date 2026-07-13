@@ -209,6 +209,47 @@ def test_online_session_reports_slow_robot_position_and_keeps_service_time_indep
     assert completion_state["status"] == "completed"
 
 
+def test_session_result_metrics_keep_completed_deadline_miss() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "completed-deadline-miss",
+        "name": "completed-deadline-miss",
+        "description": "completed late task should remain in session deadline metrics",
+        "width": 2,
+        "height": 1,
+        "obstacles": [],
+        "zones": {"warehouse": [], "inspection": [[1, 0]], "delivery": []},
+        "robots": [
+            {"id": "R1", "name": "R1", "start": [0, 0], "battery": 90, "load": 1},
+        ],
+        "tasks": [
+            {
+                "id": "T1",
+                "type": "inspection",
+                "title": "late inspection",
+                "priority": 1,
+                "targets": [[1, 0]],
+                "deadline": 0,
+            },
+        ],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+    create_response = client.post(
+        "/api/sessions",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}},
+    )
+
+    assert create_response.status_code == 200
+    session_id = create_response.json()["sessionId"]
+    tick_response = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 2})
+
+    assert tick_response.status_code == 200
+    payload = tick_response.json()
+    assert payload["completedTaskCount"] == 1
+    assert payload["result"]["metrics"]["deadlineMissCount"] == 1
+    assert payload["metricsHistory"][-1]["deadlineMissCount"] == 1
+
+
 def test_session_api_accepts_manual_task() -> None:
     client = TestClient(app)
     create_response = client.post(
