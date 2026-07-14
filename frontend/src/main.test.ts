@@ -4,7 +4,6 @@ import {
   buildDispatchOptions,
   buildReplanStatus,
   assignmentReplanWindowLabel,
-  dynamicModeLabel,
   buildRecoveryTargets,
   buildTaskSnapshots,
   buildTaskQueueMetricRows,
@@ -12,15 +11,6 @@ import {
   filterActiveRouteArrows,
   canJumpToEvent,
   visibleRuntimeEvents,
-  buildExperimentCsv,
-  buildExperimentTableRows,
-  buildExperimentChartSeries,
-  buildExperimentDeltaHighlights,
-  buildExperimentInsightCards,
-  buildExperimentReportText,
-  buildExperimentReportDisplayText,
-  buildExperimentEmptyState,
-  buildExperimentSectionLabels,
   isSelectedCell,
   isSelectedRobotCell,
   mapContextAction,
@@ -35,6 +25,7 @@ import {
   parsePlaybackSpeed,
   parsePositiveIntegerInput,
   normalizeManualTaskDeadline,
+  normalizeTaskPriority,
   buildRandomGeneratedTask,
   nextMapPickTarget,
   applyMapPickToManualTask,
@@ -52,14 +43,7 @@ import {
   RIGHTBAR_TASK_QUEUE_CLASS,
   sortTaskSnapshotsForDisplay,
   splitTaskSnapshotsForDisplay,
-  taskTimingFields,
-  buildExperimentSummaryRows,
-  buildOnlinePressureInsightCards,
-  buildOnlinePressureSummaryRows,
-  buildOnlinePressureSummaryText,
-  buildSeededPressureInsightCards,
-  buildSeededPressureSummaryText,
-  buildSeededPressureSummaryRows
+  taskTimingFields
 } from "./main";
 import { scenarios } from "./domain/scenarios";
 import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, Task } from "./domain/types";
@@ -71,7 +55,6 @@ describe("robot charging runtime status contract", () => {
     expect(statuses).toEqual(["toCharge", "charging"]);
   });
 });
-
 describe("charging scenario import", () => {
   it("accepts legacy scenarios without charging fields", () => {
     const scenario = structuredClone(scenarios[0]);
@@ -658,6 +641,31 @@ describe("manual task coordinates", () => {
     expect(["inspection", "delivery", "emergency"]).toContain(task?.type);
   });
 
+  it("keeps randomly generated emergency priority within four to five", () => {
+    const scenario: Scenario = {
+      id: "generated-emergency-priority",
+      name: "generated-emergency-priority",
+      description: "",
+      width: 6,
+      height: 5,
+      obstacles: [],
+      zones: {
+        warehouse: [[0, 0]],
+        inspection: [[3, 1], [4, 2]],
+        delivery: [[5, 4]]
+      },
+      robots: [{ id: "R1", name: "R1", start: [0, 0], battery: 90, load: 2 }],
+      tasks: [],
+      dynamic: { triggerTime: 20, blockedCells: [], failedRobots: [], tasks: [] }
+    };
+
+    const emergency = buildRandomGeneratedTask([], 8, scenario, 2);
+
+    expect(emergency?.type).toBe("emergency");
+    expect(emergency?.priority).toBeGreaterThanOrEqual(4);
+    expect(emergency?.priority).toBeLessThanOrEqual(5);
+  });
+
   it("avoids repeating generated task signatures while unused candidates remain", () => {
     const scenario: Scenario = {
       id: "generated-task-variety",
@@ -744,8 +752,7 @@ describe("replan status", () => {
       updatedAt: 1,
       lastAccessedAt: 1,
       currentTime: 8,
-      manualTaskCount: 0,
-      streamTaskCount: 0,
+      runtimeTaskCount: 0,
       runtimeEventCount: 0,
       robotStates: [],
       taskStates: [
@@ -995,6 +1002,11 @@ describe("active route hints", () => {
 });
 
 describe("dispatch options", () => {
+  it("normalizes ordinary task priority to the inclusive zero-to-five range", () => {
+    expect(normalizeTaskPriority(0)).toBe(0);
+    expect(normalizeTaskPriority(6)).toBe(5);
+  });
+
   it("normalizes assignment replan window for session creation", () => {
     expect(buildDispatchOptions(true, true, 18)).toEqual({
       avoidConflicts: true,
@@ -1013,10 +1025,6 @@ describe("dispatch options", () => {
     expect(assignmentReplanWindowLabel(Number.NaN)).toBe("窗口 24T");
   });
 
-  it("formats the dynamic mode for status display", () => {
-    expect(dynamicModeLabel(true)).toBe("动态事件");
-    expect(dynamicModeLabel(false)).toBe("静态流程");
-  });
 });
 
 describe("task queue display", () => {
@@ -1226,757 +1234,5 @@ describe("task queue display", () => {
         { task: { id: "DONE" } }
       ]
     });
-  });
-});
-
-describe("experiment summaries", () => {
-  it("labels experiment evidence sections in display order", () => {
-    expect(buildExperimentSectionLabels()).toEqual({
-      report: "实验结论",
-      evidence: "最佳方案依据",
-      delta: "相对基线变化",
-      table: "对比明细"
-    });
-  });
-
-  it("describes available experiment buttons before a run", () => {
-    expect(buildExperimentEmptyState()).toEqual({
-      title: "选择实验类型后显示对比指标。",
-      actions: [
-        "避碰：对比开启/关闭冲突规避后的冲突数和路径代价。",
-        "动态：对比是否处理突发任务、封锁和故障后的完成率与失败数。",
-        "窗口：对比不同滚动重规划窗口对任务纳入和调度代价的影响。",
-        "规模：对比固定场景集合中的机器人/任务规模表现。",
-        "压力：运行固定种子压力场景，检查稳定率、完成率和规划耗时。",
-        "在线：运行固定种子在线流程，检查任务插入、封锁、故障和恢复后的稳定性。"
-      ]
-    });
-  });
-
-  it("uses backend experiment notes when present and generated report text otherwise", () => {
-    const rows = [
-      {
-        label: "withConflictAvoidance",
-        scenarioId: "integrated-demo",
-        assignedTaskCount: 3,
-        conflictCount: 0,
-        totalDistance: 42,
-        makespan: 21,
-        deadlineMissCount: 0,
-        failureCount: 0,
-        replanTimeMs: 4
-      }
-    ];
-
-    expect(buildExperimentReportDisplayText("避碰开启/关闭", rows, "后端汇总结论")).toBe("后端汇总结论");
-    expect(buildExperimentReportDisplayText("避碰开启/关闭", rows, null)).toBe(
-      "避碰开启/关闭：在场景 integrated-demo 中，开启避碰 完成 3 个任务，冲突数 0，总路径长度 42，完成时间 21，截止超期 0，失败数 0，规划耗时 4ms。"
-    );
-  });
-
-  it("maps experiment cases to compact metric rows", () => {
-    const result = {
-      scenarioId: "case-a",
-      avoidConflicts: true,
-      includeDynamic: false,
-      dynamicTriggerTime: null,
-      extraBlocked: [],
-      unavailableRobotIds: [],
-      assignments: [],
-      paths: {},
-      conflicts: [],
-      failureReasons: {},
-      failureDetails: {},
-      eventLog: [],
-      tasks: [],
-      metrics: {
-        makespan: 12,
-        totalDistance: 30,
-        conflictCount: 0,
-        loadBalance: 1.2,
-        assignedTaskCount: 4,
-        deadlineMissCount: 1,
-        averageLateness: 0.5,
-        failureCount: 0,
-        replanTimeMs: 2.4
-      }
-    } as DispatchResult;
-
-    expect(buildExperimentSummaryRows([{ label: "withConflictAvoidance", result }])).toEqual([
-      {
-        label: "withConflictAvoidance",
-        scenarioId: "case-a",
-        assignedTaskCount: 4,
-        conflictCount: 0,
-        totalDistance: 30,
-        makespan: 12,
-        deadlineMissCount: 1,
-        failureCount: 0,
-        replanTimeMs: 2.4
-      }
-    ]);
-  });
-
-    it("exports experiment rows as CSV with stable report columns", () => {
-      const rows = [
-      {
-        label: "withoutConflictAvoidance",
-        scenarioId: "integrated-demo",
-        assignedTaskCount: 3,
-        conflictCount: 2,
-        totalDistance: 38,
-        makespan: 19,
-        deadlineMissCount: 1,
-        failureCount: 0,
-        replanTimeMs: 3.125
-      },
-      {
-        label: "withConflictAvoidance",
-        scenarioId: "integrated-demo",
-        assignedTaskCount: 3,
-        conflictCount: 0,
-        totalDistance: 42,
-        makespan: 21,
-        deadlineMissCount: 0,
-        failureCount: 0,
-        replanTimeMs: 4
-      }
-    ];
-
-    expect(buildExperimentCsv(rows)).toBe([
-      "组别,场景,任务数,冲突数,总路径长度,完成时间,截止超期,失败数,规划耗时(ms)",
-      "关闭避碰,integrated-demo,3,2,38,19,1,0,3.125",
-      "开启避碰,integrated-demo,3,0,42,21,0,0,4"
-      ].join("\n"));
-    });
-
-    it("builds visible experiment table rows with all key metrics", () => {
-      const rows = [
-        {
-          label: "withConflictAvoidance",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 3,
-          conflictCount: 0,
-          totalDistance: 42,
-          makespan: 21,
-          deadlineMissCount: 0,
-          failureCount: 0,
-          replanTimeMs: 4
-        }
-      ];
-
-      expect(buildExperimentTableRows(rows)).toEqual([
-        {
-          key: "integrated-demo-withConflictAvoidance",
-          cells: ["开启避碰", "3", "0", "42", "21", "0", "0", "4ms"]
-        }
-      ]);
-    });
-
-  it("maps seeded pressure performance cases to experiment summary rows", () => {
-    const rows = buildSeededPressureSummaryRows([
-      {
-        label: "seed-17",
-        seed: 17,
-        scenarioId: "seeded-pressure-seed-17",
-        options: { avoidConflicts: true, includeDynamic: true, assignmentReplanWindow: 120 },
-        robotCount: 4,
-        taskCount: 15,
-        dynamicTaskCount: 3,
-        obstacleCount: 8,
-        assignedTaskCount: 15,
-        stable: false,
-        completionRatePercent: 100,
-        conflictCount: 0,
-        deadlineMissCount: 2,
-        failureCount: 0,
-        totalDistance: 120,
-        averageDistancePerTask: 8,
-        makespan: 42,
-        replanTimeMs: 18.5,
-        withinPlanningTimeBudget: true
-      }
-    ]);
-
-    expect(rows).toEqual([
-      {
-        label: "seed-17 · 4R/15T",
-        scenarioId: "seeded-pressure-seed-17",
-        assignedTaskCount: 15,
-        conflictCount: 0,
-        totalDistance: 120,
-        makespan: 42,
-        deadlineMissCount: 2,
-        failureCount: 0,
-        replanTimeMs: 18.5
-      }
-    ]);
-  });
-
-  it("maps online pressure cases to experiment summary rows", () => {
-    const rows = buildOnlinePressureSummaryRows([
-      {
-        label: "seed-17-online-flow",
-        seed: 17,
-        scenarioId: "seeded-pressure-seed-17",
-        options: { avoidConflicts: true, includeDynamic: true, assignmentReplanWindow: 120 },
-        robotCount: 4,
-        baseTaskCount: 12,
-        scenarioDynamicTaskCount: 3,
-        manualTaskCount: 2,
-        streamTaskCount: 0,
-        runtimeEventCount: 6,
-        runtimeEventEvidence: [
-          "manualTask",
-          "blockedCell",
-          "failedRobot",
-          "restoredRobot",
-          "clearedBlockedCell",
-          "generatedTask"
-        ],
-        tickCount: 20,
-        taskCount: 17,
-        coveredTaskCount: 17,
-        completedTaskCount: 5,
-        assignedTaskCount: 13,
-        stable: true,
-        completionRatePercent: 100,
-        conflictCount: 0,
-        deadlineMissCount: 0,
-        failureCount: 0,
-        totalDistance: 156,
-        averageDistancePerTask: 9.2,
-        makespan: 54,
-        replanTimeMs: 21.5,
-        metricsHistoryCount: 15,
-        eventLogCount: 22
-      }
-    ]);
-
-    expect(rows).toEqual([
-      {
-        label: "seed-17-online-flow · 4R/17T · 6事件",
-        scenarioId: "seeded-pressure-seed-17",
-        assignedTaskCount: 17,
-        taskMetricLabel: "任务覆盖",
-        conflictCount: 0,
-        totalDistance: 156,
-        makespan: 54,
-        deadlineMissCount: 0,
-        failureCount: 0,
-        replanTimeMs: 21.5
-      }
-    ]);
-    expect(buildExperimentReportText("在线压力流程", rows)).toBe(
-      "在线压力流程：在场景 seeded-pressure-seed-17 中，seed-17-online-flow · 4R/17T · 6事件 任务覆盖 17 个任务，冲突数 0，总路径长度 156，完成时间 54，截止超期 0，失败数 0，规划耗时 21.5ms。"
-    );
-  });
-
-  it("builds online pressure summary text and insight cards", () => {
-    const summary = {
-      caseCount: 1,
-      totalTaskCount: 17,
-      totalCoveredTaskCount: 17,
-      totalCompletedTaskCount: 5,
-      totalAssignedTaskCount: 13,
-      stableCaseCount: 1,
-      stableRatePercent: 100,
-      completionRatePercent: 100,
-      maxConflictCount: 0,
-      totalDeadlineMissCount: 0,
-      totalFailureCount: 0,
-      totalRuntimeEventCount: 6,
-      totalManualTaskCount: 1,
-      totalStreamTaskCount: 1,
-      totalDistance: 156,
-      averageDistancePerTask: 9.2,
-      maxMakespan: 54,
-      averageReplanTimeMs: 21.5,
-      maxReplanTimeMs: 21.5,
-      maxMetricsHistoryCount: 15,
-      maxEventLogCount: 22
-    };
-
-    expect(buildOnlinePressureSummaryText(summary)).toBe(
-      "在线压力汇总：1 组固定种子在线流程，稳定 1/1 组（100%），覆盖 17/17 个任务（100%），已完成 5 个任务，运行时事件 6 个（手动任务 1 个，自动任务 1 个），最大冲突 0，总超期 0，总失败 0，总路径 156，平均每任务路径 9.2，最大完成时间 54，平均规划耗时 21.5ms，最大规划耗时 21.5ms，最多指标快照 15 条，最多事件日志 22 条。"
-    );
-    expect(buildOnlinePressureInsightCards(summary)).toEqual([
-      { label: "稳定流程", value: "1/1 (100%)" },
-      { label: "任务覆盖", value: "17/17 (100%)" },
-      { label: "已完成", value: "5" },
-      { label: "运行时事件", value: "6" },
-      { label: "手动/自动任务", value: "1 / 1" },
-      { label: "冲突/失败", value: "0 / 0" },
-      { label: "指标/日志", value: "15 / 22" },
-      { label: "规划耗时", value: "21.5 / 21.5ms" }
-    ]);
-  });
-
-  it("builds a seeded pressure aggregate summary text", () => {
-    expect(buildSeededPressureSummaryText({
-      caseCount: 3,
-      largestRobotCount: 8,
-      largestTaskCount: 27,
-      totalTaskCount: 65,
-      totalAssignedTaskCount: 65,
-      stableCaseCount: 3,
-      stableRatePercent: 100,
-      completionRatePercent: 100,
-      planningTimeBudgetMs: 2000,
-      withinPlanningTimeBudgetCount: 3,
-      withinPlanningTimeBudgetRatePercent: 100,
-      maxConflictCount: 0,
-      totalDeadlineMissCount: 0,
-      totalFailureCount: 0,
-      totalDistance: 804,
-      maxMakespan: 61,
-      averageDistancePerTask: 12.4,
-      averageReplanTimeMs: 6.2,
-      maxReplanTimeMs: 18.5
-    })).toBe("压力汇总：3 组固定种子场景，稳定 3/3 组（100%），最大规模 8R/27T，完成 65/65 个任务（100%），最大冲突 0，总超期 0，总失败 0，规划预算通过 3/3 组（100%，预算 2000ms），总路径 804，平均每任务路径 12.4，最大完成时间 61，平均规划耗时 6.2ms，最大规划耗时 18.5ms。");
-  });
-
-  it("builds seeded pressure insight cards for demonstration", () => {
-    expect(buildSeededPressureInsightCards({
-      caseCount: 7,
-      largestRobotCount: 8,
-      largestTaskCount: 33,
-      totalTaskCount: 189,
-      totalAssignedTaskCount: 189,
-      stableCaseCount: 7,
-      stableRatePercent: 100,
-      completionRatePercent: 100,
-      planningTimeBudgetMs: 2000,
-      withinPlanningTimeBudgetCount: 7,
-      withinPlanningTimeBudgetRatePercent: 100,
-      maxConflictCount: 0,
-      totalDeadlineMissCount: 0,
-      totalFailureCount: 0,
-      totalDistance: 2345,
-      maxMakespan: 88,
-      averageDistancePerTask: 12.4,
-      averageReplanTimeMs: 142.4,
-      maxReplanTimeMs: 1510.63
-    })).toEqual([
-        { label: "稳定组数", value: "7/7 (100%)" },
-        { label: "任务完成", value: "189/189 (100%)" },
-        { label: "预算通过", value: "7/7 (100%)" },
-        { label: "截止超期", value: "0" },
-        { label: "最大规模", value: "8R/33T" },
-        { label: "总路径", value: "2345" },
-        { label: "平均路径/任务", value: "12.4" },
-        { label: "规划耗时", value: "142.4 / 1510.63ms" }
-      ]);
-  });
-
-  it("builds a concise report paragraph for the best conflict case", () => {
-    const rows = [
-      {
-        label: "withoutConflictAvoidance",
-        scenarioId: "integrated-demo",
-        assignedTaskCount: 3,
-        conflictCount: 2,
-        totalDistance: 38,
-        makespan: 19,
-        deadlineMissCount: 1,
-        failureCount: 0,
-        replanTimeMs: 3.125
-      },
-      {
-        label: "withConflictAvoidance",
-        scenarioId: "integrated-demo",
-        assignedTaskCount: 3,
-        conflictCount: 0,
-        totalDistance: 42,
-        makespan: 21,
-        deadlineMissCount: 0,
-        failureCount: 0,
-        replanTimeMs: 4
-      }
-    ];
-
-      expect(buildExperimentReportText("避碰开启/关闭", rows)).toBe(
-        "避碰开启/关闭：在场景 integrated-demo 中，开启避碰 相比 关闭避碰 将冲突从 2 降到 0，任务完成数保持 3，总路径长度增加 4，完成时间增加 2，截止超期减少 1，失败数保持 0，规划耗时增加 0.875ms。该结果可用于说明优先级避碰能用有限路径和时间代价换取无冲突执行。"
-      );
-    });
-
-    it("builds a defense-oriented report paragraph for dynamic replanning cases", () => {
-      const rows = [
-        {
-          label: "withoutDynamicReplanning",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 4,
-          conflictCount: 0,
-          totalDistance: 80,
-          makespan: 30,
-          deadlineMissCount: 0,
-          failureCount: 1,
-          replanTimeMs: 5
-        },
-        {
-          label: "withDynamicReplanning",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 5,
-          conflictCount: 0,
-          totalDistance: 96,
-          makespan: 36,
-          deadlineMissCount: 0,
-          failureCount: 0,
-          replanTimeMs: 7
-        }
-      ];
-
-      expect(buildExperimentReportText("动态事件开启/关闭", rows)).toBe(
-        "动态事件开启/关闭：在场景 integrated-demo 中，开启动态 相比 关闭动态 冲突数保持 0，任务完成数增加 1，总路径长度增加 16，完成时间增加 6，截止超期保持 0，失败数减少 1，规划耗时增加 2ms。该结果可用于说明动态重规划能在突发任务或故障出现后维持任务完成和低失败。"
-      );
-    });
-
-    it("keeps conflict-avoidance conclusions cautious when conflicts remain", () => {
-      const rows = [
-        {
-          label: "withoutConflictAvoidance",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 3,
-          conflictCount: 3,
-          totalDistance: 38,
-          makespan: 19,
-          deadlineMissCount: 0,
-          failureCount: 0,
-          replanTimeMs: 3
-        },
-        {
-          label: "withConflictAvoidance",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 3,
-          conflictCount: 1,
-          totalDistance: 44,
-          makespan: 24,
-          deadlineMissCount: 0,
-          failureCount: 0,
-          replanTimeMs: 6
-        }
-      ];
-
-      expect(buildExperimentReportText("避碰开启/关闭", rows)).toBe(
-        "避碰开启/关闭：在场景 integrated-demo 中，开启避碰 相比 关闭避碰 将冲突从 3 降到 1，任务完成数保持 3，总路径长度增加 6，完成时间增加 5，截止超期保持 0，失败数保持 0，规划耗时增加 3ms。该结果可用于说明优先级避碰降低了冲突，但仍有 1 个冲突，需要继续作为压力边界优化。"
-      );
-    });
-
-    it("keeps dynamic replanning conclusions cautious when failures remain", () => {
-      const rows = [
-        {
-          label: "withoutDynamicReplanning",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 4,
-          conflictCount: 0,
-          totalDistance: 72,
-          makespan: 30,
-          deadlineMissCount: 0,
-          failureCount: 3,
-          replanTimeMs: 5
-        },
-        {
-          label: "withDynamicReplanning",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 5,
-          conflictCount: 0,
-          totalDistance: 88,
-          makespan: 39,
-          deadlineMissCount: 0,
-          failureCount: 1,
-          replanTimeMs: 9
-        }
-      ];
-
-      expect(buildExperimentReportText("动态事件开启/关闭", rows)).toBe(
-        "动态事件开启/关闭：在场景 integrated-demo 中，开启动态 相比 关闭动态 冲突数保持 0，任务完成数增加 1，总路径长度增加 16，完成时间增加 9，截止超期保持 0，失败数减少 2，规划耗时增加 4ms。该结果可用于说明动态重规划降低了失败数，但仍有 1 个失败任务，需要继续分析恢复条件。"
-      );
-    });
-
-    it("builds a defense-oriented report paragraph for rolling window cases", () => {
-      const rows = [
-        {
-          label: "window-24",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 4,
-          conflictCount: 0,
-          totalDistance: 68,
-          makespan: 32,
-          deadlineMissCount: 0,
-          failureCount: 1,
-          replanTimeMs: 6
-        },
-        {
-          label: "window-120",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 5,
-          conflictCount: 0,
-          totalDistance: 75,
-          makespan: 35,
-          deadlineMissCount: 0,
-          failureCount: 0,
-          replanTimeMs: 8
-        }
-      ];
-
-      expect(buildExperimentReportText("滚动窗口参数", rows)).toBe(
-        "滚动窗口参数：在场景 integrated-demo 中，window-120 相比 window-24 冲突数保持 0，任务完成数增加 1，总路径长度增加 7，完成时间增加 3，截止超期保持 0，失败数减少 1，规划耗时增加 2ms。该结果可用于说明滚动窗口扩大后能纳入更多近未来任务，同时保持冲突和失败受控。"
-      );
-    });
-
-    it("keeps rolling-window conclusions cautious when larger windows still leave failures", () => {
-      const rows = [
-        {
-          label: "window-24",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 4,
-          conflictCount: 0,
-          totalDistance: 68,
-          makespan: 32,
-          deadlineMissCount: 0,
-          failureCount: 2,
-          replanTimeMs: 6
-        },
-        {
-          label: "window-120",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 5,
-          conflictCount: 0,
-          totalDistance: 79,
-          makespan: 35,
-          deadlineMissCount: 0,
-          failureCount: 1,
-          replanTimeMs: 8
-        }
-      ];
-
-      expect(buildExperimentReportText("滚动窗口参数", rows)).toBe(
-        "滚动窗口参数：在场景 integrated-demo 中，window-120 相比 window-24 冲突数保持 0，任务完成数增加 1，总路径长度增加 11，完成时间增加 3，截止超期保持 0，失败数减少 1，规划耗时增加 2ms。该结果可用于说明滚动窗口扩大后纳入了更多任务，但仍有 0 个冲突和 1 个失败，需要继续权衡窗口长度。"
-      );
-    });
-
-    it("builds a single-case report paragraph with all key metrics", () => {
-      expect(buildExperimentReportText("固定种子压力", [
-        {
-          label: "seed-17 · 4R/15T",
-          scenarioId: "seeded-pressure-seed-17",
-          assignedTaskCount: 15,
-          conflictCount: 0,
-          totalDistance: 120,
-          makespan: 42,
-          deadlineMissCount: 0,
-          failureCount: 0,
-          replanTimeMs: 18.5
-        }
-      ])).toBe(
-        "固定种子压力：在场景 seeded-pressure-seed-17 中，seed-17 · 4R/15T 完成 15 个任务，冲突数 0，总路径长度 120，完成时间 42，截止超期 0，失败数 0，规划耗时 18.5ms。"
-      );
-    });
-
-    it("builds an aggregate report paragraph for fixed-seed pressure cases", () => {
-      const rows = [
-        {
-          label: "seed-17 · 4R/15T",
-          scenarioId: "seeded-pressure-seed-17",
-          assignedTaskCount: 15,
-          conflictCount: 0,
-          totalDistance: 120,
-          makespan: 42,
-          deadlineMissCount: 0,
-          failureCount: 0,
-          replanTimeMs: 18.5
-        },
-        {
-          label: "seed-29 · 6R/23T",
-          scenarioId: "seeded-pressure-seed-29",
-          assignedTaskCount: 23,
-          conflictCount: 0,
-          totalDistance: 240,
-          makespan: 58,
-          deadlineMissCount: 0,
-          failureCount: 0,
-          replanTimeMs: 64.2
-        }
-      ];
-
-      expect(buildExperimentReportText("固定种子压力", rows)).toBe(
-        "固定种子压力：覆盖 2 组固定种子压力样本，稳定 2/2 组（无冲突、无超期、无失败），累计完成 38 个任务，总路径长度 360，平均每任务路径 9.5，最大完成时间 58，平均规划耗时 41.4ms，最大规划耗时 64.2ms。该结果可用于说明算法在随机障碍和多规模压力下具备可复现实验稳定性。"
-      );
-    });
-
-    it("builds an aggregate report paragraph for robot and task scale cases", () => {
-      const rows = [
-        {
-          label: "integrated-demo",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 5,
-          conflictCount: 0,
-          totalDistance: 60,
-          makespan: 30,
-          deadlineMissCount: 0,
-          failureCount: 0,
-          replanTimeMs: 9
-        },
-        {
-          label: "integrated-demo",
-          scenarioId: "integrated-demo",
-          assignedTaskCount: 7,
-          conflictCount: 0,
-          totalDistance: 88,
-          makespan: 44,
-          deadlineMissCount: 0,
-          failureCount: 0,
-          replanTimeMs: 15
-        }
-      ];
-
-      expect(buildExperimentReportText("机器人/任务规模", rows)).toBe(
-        "机器人/任务规模：覆盖 2 组规模样本，稳定 2/2 组（无冲突、无超期、无失败），累计完成 12 个任务，总路径长度 148，平均每任务路径 12.3，最大完成时间 44，平均规划耗时 12ms，最大规划耗时 15ms。该结果可用于说明算法在不同机器人与任务规模场景下保持调度稳定性与可控代价。"
-      );
-    });
-
-    it("builds normalized chart series for visible experiment comparison", () => {
-    const rows = [
-      {
-        label: "withoutConflictAvoidance",
-        scenarioId: "integrated-demo",
-        assignedTaskCount: 3,
-        conflictCount: 2,
-        totalDistance: 38,
-        makespan: 19,
-        deadlineMissCount: 1,
-        failureCount: 0,
-        replanTimeMs: 3.125
-      },
-      {
-        label: "withConflictAvoidance",
-        scenarioId: "integrated-demo",
-        assignedTaskCount: 3,
-        conflictCount: 0,
-        totalDistance: 42,
-        makespan: 21,
-        deadlineMissCount: 0,
-        failureCount: 0,
-        replanTimeMs: 4
-      }
-    ];
-
-    expect(buildExperimentChartSeries(rows)).toEqual([
-      {
-        key: "conflictCount",
-        label: "冲突数",
-        bars: [
-          { label: "关闭避碰", value: 2, widthPercent: 100 },
-          { label: "开启避碰", value: 0, widthPercent: 0 }
-        ]
-      },
-      {
-        key: "totalDistance",
-        label: "总路径",
-        bars: [
-          { label: "关闭避碰", value: 38, widthPercent: 90.5 },
-          { label: "开启避碰", value: 42, widthPercent: 100 }
-        ]
-      },
-        {
-          key: "makespan",
-          label: "完成时间",
-          bars: [
-            { label: "关闭避碰", value: 19, widthPercent: 90.5 },
-            { label: "开启避碰", value: 21, widthPercent: 100 }
-          ]
-        },
-        {
-          key: "deadlineMissCount",
-          label: "截止超期",
-          bars: [
-            { label: "关闭避碰", value: 1, widthPercent: 100 },
-            { label: "开启避碰", value: 0, widthPercent: 0 }
-          ]
-        },
-        {
-          key: "replanTimeMs",
-          label: "规划耗时",
-          bars: [
-            { label: "关闭避碰", value: 3.125, widthPercent: 78.1 },
-            { label: "开启避碰", value: 4, widthPercent: 100 }
-          ]
-        }
-      ]);
-    });
-
-  it("highlights the main differences between the baseline and best experiment case", () => {
-    const rows = [
-      {
-        label: "withoutConflictAvoidance",
-        scenarioId: "integrated-demo",
-        assignedTaskCount: 3,
-        conflictCount: 2,
-        totalDistance: 38,
-        makespan: 19,
-        deadlineMissCount: 1,
-        failureCount: 0,
-        replanTimeMs: 3.125
-      },
-      {
-        label: "withConflictAvoidance",
-        scenarioId: "integrated-demo",
-        assignedTaskCount: 3,
-        conflictCount: 0,
-        totalDistance: 42,
-        makespan: 21,
-        deadlineMissCount: 0,
-        failureCount: 0,
-        replanTimeMs: 4
-      }
-    ];
-
-      expect(buildExperimentDeltaHighlights(rows)).toEqual([
-        { label: "冲突变化", value: "-2" },
-        { label: "任务变化", value: "0" },
-        { label: "路径变化", value: "+4" },
-        { label: "时间变化", value: "+2" },
-        { label: "超期变化", value: "-1" },
-        { label: "失败变化", value: "0" },
-        { label: "规划耗时变化", value: "+0.875ms" }
-      ]);
-    });
-
-  it("builds general experiment insight cards for comparison results", () => {
-    const rows = [
-      {
-        label: "withoutConflictAvoidance",
-        scenarioId: "integrated-demo",
-        assignedTaskCount: 3,
-        conflictCount: 2,
-        totalDistance: 38,
-        makespan: 19,
-        deadlineMissCount: 1,
-        failureCount: 0,
-        replanTimeMs: 3.125
-      },
-      {
-        label: "withConflictAvoidance",
-        scenarioId: "integrated-demo",
-        assignedTaskCount: 3,
-        conflictCount: 0,
-        totalDistance: 42,
-        makespan: 21,
-        deadlineMissCount: 0,
-        failureCount: 0,
-        replanTimeMs: 4
-      }
-    ];
-
-    expect(buildExperimentInsightCards(rows)).toEqual([
-      { label: "最佳方案", value: "开启避碰" },
-      { label: "任务完成", value: "3" },
-      { label: "冲突数", value: "0" },
-      { label: "总路径", value: "42" },
-      { label: "完成时间", value: "21" },
-      { label: "截止超期", value: "0" },
-      { label: "失败数", value: "0" },
-      { label: "规划耗时", value: "4ms" }
-    ]);
   });
 });

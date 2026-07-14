@@ -77,6 +77,26 @@ def test_integrated_demo_runs_online_dispatch_flow() -> None:
     assert len(final_payload["metricsHistory"]) >= 2
     assert any("手动标记故障机器人" in event["text"] for event in final_payload["result"]["eventLog"])
 
+    restore_response = client.post(
+        f"/api/sessions/{session_id}/failed-robots/restore",
+        json={"robotId": "R2", "currentTime": 2},
+    )
+    assert restore_response.status_code == 200
+    restored_payload = restore_response.json()
+    assert "R2" not in restored_payload["result"]["unavailableRobotIds"]
+    assert [1, 2] in restored_payload["result"]["extraBlocked"]
+
+    unblock_response = client.post(
+        f"/api/sessions/{session_id}/blocked-cells/remove",
+        json={"cell": [1, 2], "currentTime": 2},
+    )
+    assert unblock_response.status_code == 200
+    final_payload = unblock_response.json()
+    assert "R2" not in final_payload["result"]["unavailableRobotIds"]
+    assert [1, 2] not in final_payload["result"]["extraBlocked"]
+    assert any("手动恢复机器人：R2" in event["text"] for event in final_payload["result"]["eventLog"])
+    assert any("手动解除封锁单元：(1, 2)" in event["text"] for event in final_payload["result"]["eventLog"])
+
 
 def test_integrated_demo_conflict_avoidance_reduces_baseline_conflicts() -> None:
     client = TestClient(app)

@@ -101,7 +101,7 @@ def test_request_models_reject_unknown_fields() -> None:
     assert old_stream_response.status_code == 404
     assert extra_task_field_response.status_code == 422
     payload = client.get(f"/api/sessions/{session_id}").json()
-    assert payload["streamTaskCount"] == 0
+    assert "streamTaskCount" not in payload
     assert all(task["id"] != "EXTRA" for task in payload["result"]["tasks"])
 
 
@@ -121,3 +121,28 @@ def test_dispatch_options_reject_unbounded_assignment_replan_window() -> None:
 
     assert create_response.status_code == 422
     assert client.get("/api/sessions").json() == []
+
+
+def test_task_priority_accepts_zero_and_rejects_values_outside_zero_to_five() -> None:
+    client = TestClient(app)
+
+    zero_priority_scenario = scenario_payload()
+    zero_priority_scenario["tasks"][0]["priority"] = 0
+    assert client.post(
+        "/api/dispatch",
+        json={"scenario": zero_priority_scenario},
+    ).status_code == 200
+
+    negative_priority_scenario = scenario_payload()
+    negative_priority_scenario["tasks"][0]["priority"] = -1
+    assert client.post(
+        "/api/dispatch",
+        json={"scenario": negative_priority_scenario},
+    ).status_code == 422
+
+    excessive_priority_scenario = scenario_payload()
+    excessive_priority_scenario["tasks"][0]["priority"] = 6
+    assert client.post(
+        "/api/dispatch",
+        json={"scenario": excessive_priority_scenario},
+    ).status_code == 422

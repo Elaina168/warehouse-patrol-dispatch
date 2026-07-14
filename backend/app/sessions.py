@@ -68,8 +68,7 @@ class DispatchSession:
     updated_at: float = field(default_factory=_session_now)
     last_accessed_at: float = field(default_factory=_session_now)
     current_time: int = 0
-    manual_task_count: int = 0
-    stream_task_count: int = 0
+    runtime_task_count: int = 0
     planning_started: bool = False
     robot_positions: dict[str, Cell] = field(default_factory=dict)
     robot_path_history: dict[str, list[Cell]] = field(default_factory=dict)
@@ -159,7 +158,7 @@ def add_task(session_id: str, request: AddTaskRequest) -> SessionResult:
         raise HTTPException(status_code=422, detail=diagnostics)
     session.scenario.tasks.append(task)
     _release_locks_for_active_higher_priority_task(session, task, session.current_time)
-    session.manual_task_count += 1
+    session.runtime_task_count += 1
     _invalidate_plan(session)
     _touch_session(session, updated=True)
     _record_session_event(session, session.current_time, f"手动录入任务：{task.id} {task.title}")
@@ -375,8 +374,7 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.scenario = scenario
     session.options = options
     session.current_time = 0
-    session.manual_task_count = 0
-    session.stream_task_count = 0
+    session.runtime_task_count = 0
     session.planning_started = False
     session.robot_positions = {robot.id: robot.start for robot in scenario.robots}
     session.robot_path_history = {robot.id: [robot.start] for robot in scenario.robots}
@@ -430,8 +428,7 @@ def _build_session_summary(session: DispatchSession) -> SessionSummary:
         updatedAt=session.updated_at,
         lastAccessedAt=session.last_accessed_at,
         currentTime=session.current_time,
-        manualTaskCount=session.manual_task_count,
-        streamTaskCount=session.stream_task_count,
+        runtimeTaskCount=session.runtime_task_count,
         runtimeEventCount=len(session.runtime_blocked_cells) + len(session.runtime_failed_robot_ids),
         completedTaskCount=len(session.completed_task_ids),
     )
@@ -455,8 +452,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
             updatedAt=session.updated_at,
             lastAccessedAt=session.last_accessed_at,
             currentTime=session.current_time,
-            manualTaskCount=session.manual_task_count,
-            streamTaskCount=session.stream_task_count,
+            runtimeTaskCount=session.runtime_task_count,
             runtimeEventCount=len(session.runtime_blocked_cells) + len(session.runtime_failed_robot_ids),
             robotStates=robot_states,
             taskStates=task_states,
@@ -505,8 +501,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
         updatedAt=session.updated_at,
         lastAccessedAt=session.last_accessed_at,
         currentTime=session.current_time,
-        manualTaskCount=session.manual_task_count,
-        streamTaskCount=session.stream_task_count,
+        runtimeTaskCount=session.runtime_task_count,
         runtimeEventCount=len(session.runtime_blocked_cells) + len(session.runtime_failed_robot_ids),
         robotStates=robot_states,
         taskStates=task_states,

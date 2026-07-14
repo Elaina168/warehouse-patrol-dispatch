@@ -18,7 +18,7 @@ Target direction:
 
 - The project should evolve toward an online task-flow dispatch system, not a static one-shot batch dispatcher.
 - The backend should maintain ongoing scheduling session state: robot states, task queues, assigned tasks, paths, ticks, events, and metrics history.
-- The frontend should remain an operational control dashboard for online scheduling: start sessions, add tasks, stream tasks, trigger emergencies, inspect paths, inspect events, and observe metrics.
+- The frontend should remain an operational control dashboard for online scheduling: start sessions, add manual or timed generated tasks through the unified task endpoint, trigger emergencies, inspect paths, inspect events, and observe metrics.
 - Do not prioritize final presentation polish before backend scheduling behavior is credible.
 
 ## Current Progress
@@ -62,7 +62,7 @@ Completed and currently expected to remain in the project:
 - Metrics `failureCount` now counts distinct failed tasks through `failureDetails` instead of raw failure event strings, avoiding double-counting when a temporary condition creates both path and assignment failure events.
 - Online sessions support runtime recovery actions for temporary failures: removing runtime blocked cells and restoring runtime failed robots both trigger replanning and clear temporary task failure details when tasks become schedulable again.
 - Runtime update APIs that default `currentTime` now use the session's current tick when callers omit `currentTime`, while explicit past times remain rejected.
-- Automatic stream tasks skip existing `A<n>` task IDs before insertion, preventing task-state and event-log ambiguity when imported or manual tasks already use stream-style IDs.
+- Generated runtime tasks skip existing generated-style task IDs before insertion, preventing task-state and event-log ambiguity when imported or manual tasks already use the same ID style.
 - Online sessions can clear active scenario dynamic blocked cells through the blocked-cell recovery API, so `clearBlockedCells` recovery actions work for both manual runtime blocks and activated scenario dynamic blocks.
 - Online sessions can restore active scenario dynamic failed robots through the robot-restore recovery API, so `restoreRobot` recovery actions work for both manual runtime failures and activated scenario dynamic failures.
 - Manual runtime block or robot failure requests are idempotent when the same condition is already active from a scenario dynamic event, preventing duplicate runtime event counts and duplicate manual event log entries. Duplicate manual block requests for an active dynamic blocked cell bypass ordinary occupancy rejection so the request remains a no-op even if a robot is currently on that already-blocked dynamic cell.
@@ -84,24 +84,24 @@ Completed and currently expected to remain in the project:
 - Session lifecycle metadata, list/delete/reset APIs, idle-session cleanup, maximum in-memory session pruning, initial-session snapshots for reset, and test isolation for the session store.
 - Session store capacity pruning is regression-tested against recent access time, so reopening an older active session protects it from least-recently-accessed eviction.
 - Session list summaries are regression-tested against the latest runtime session response for metadata, current time, task counts, runtime event count, and completion count.
-- Long online pressure regression covering continuous ticks, manual urgent task insertion, repeated stream tasks, scenario dynamic activation, runtime blocked cells, robot failures, runtime recovery actions, event ordering, metrics history, task failure reasons, and path/state consistency.
+- Long online pressure regression covering continuous ticks, urgent and generated task insertion through the unified task endpoint, scenario dynamic activation, runtime blocked cells, robot failures, runtime recovery actions, event ordering, metrics history, task failure reasons, and path/state consistency.
 - Direct dispatch regression covers rolling-window deferred tasks remaining visible in `tasks` without entering current assignments, failures, or `failureCount`.
 - Direct dispatch regression now covers an 8-robot mixed inspection and delivery pressure scenario with conflict avoidance enabled, preserving full task assignment and zero conflict output.
 - Larger online pressure regression covering four robots, denser mixed tasks, repeated automatic arrivals, runtime block/failure recovery, dynamic emergency activation, rolling-window task inclusion, and far-future deferred task visibility.
-- Online session pressure regression now covers 8 robots with manual urgent insertion, repeated stream tasks, scenario dynamic activation, runtime blocked cells, robot failure and restore, metrics history, and deferred far-future task visibility.
-- Online session long-horizon stress regression now covers 8 robots with continuous ticks, repeated stream tasks, two manual urgent tasks, two runtime blocked-cell cycles, runtime robot failure/restore, scenario dynamic blocked-cell recovery, scenario dynamic robot restore, metrics history continuity, active-time conflict safety, and far-future deferred task visibility.
+- Online session pressure regression covers 8 robots with urgent and generated runtime task insertion, scenario dynamic activation, runtime blocked cells, robot failure and restore, metrics history, and deferred far-future task visibility.
+- Online session long-horizon stress regression covers 8 robots with continuous ticks, repeated generated tasks, two urgent runtime tasks, two runtime blocked-cell cycles, runtime robot failure/restore, scenario dynamic blocked-cell recovery, scenario dynamic robot restore, metrics history continuity, active-time conflict safety, and far-future deferred task visibility.
 - Direct dispatch now has a deterministic scale-pressure scenario family covering 3, 5, and 8 robots with increasing mixed task counts and dynamic emergency tasks, preserving full assignment, zero conflicts, zero failures, and bounded planning time.
 - Direct dispatch now has a fixed-seed pressure scenario family covering 4, 6, and 8 robots with randomized obstacles, mixed inspection/delivery tasks, and dynamic emergency tasks, preserving reproducible full assignment, zero conflicts, zero failures, and bounded planning time.
 - Fixed-seed seed-43 pressure boundary is now regression-tested as a passing case: task-complete robots can add a reservation-aware parking step when their task endpoint is needed by a later reserved path, eliminating the previous late vertex conflict while preserving full assignment and zero failures.
 - Path planning candidate evaluation now preserves priority-first planning, tries long static routes as an early fallback, and stops once a zero-failure/zero-conflict/no-deadline-miss candidate is found, keeping the fixed-seed seed-43 boundary inside the extended pressure experiment without the previous multi-second wasted candidate search.
 - Online sessions now reuse the fixed-seed pressure generator in a long-flow regression covering continuous ticks to dynamic activation, manual emergency insertion, runtime blocked-cell insertion and recovery, runtime robot failure and restore, event history, metrics history, and final zero-conflict/zero-failure recovery.
-- Online reset regression now covers sessions after scenario dynamic activation, manual runtime blocks, robot failures, and stream tasks, verifying reset clears runtime state and allows the original dynamic event to trigger again on the same absolute session time.
+- Online reset regression covers sessions after scenario dynamic activation, runtime blocks, robot failures, and generated runtime tasks, verifying reset clears runtime state and allows the original dynamic event to trigger again on the same absolute session time.
 - PowerShell UTF-8 safeguards for Chinese source display: project scripts configure UTF-8 console/Python output, `Get-Content` defaults to UTF-8 inside the scripted environment, and `.editorconfig` declares UTF-8 source files.
 - Project-local PowerShell 7.6.2 is installed under `.tools\powershell`, and npm development scripts use it instead of Windows PowerShell 5.1.
 - API contract regression tests compare backend Pydantic model fields with frontend TypeScript API types for request models, response models, runtime state models, metrics, events, task failure details, and core nested dispatch types; they also verify dispatch/session OpenAPI routes use the expected request and response models.
 - API contract regression tests now include `Scenario` and exported `Zones` frontend/backend field alignment, preventing map zone structure drift.
 - API contract regression tests now verify frontend request optional fields match backend defaulted request fields for `DispatchRequest` and `CreateSessionRequest`.
-- API contract regression tests now also verify runtime request default fields such as stream task and recovery `currentTime`, keeping frontend optionality aligned with backend defaults.
+- API contract regression tests verify runtime recovery request defaults such as optional `currentTime`, keeping frontend optionality aligned with backend defaults.
 - API contract regression tests now verify response nullable fields, including serialized task variant null fields, so frontend task response types match backend `None` serialization.
 - Experiment comparison API now exposes `POST /api/experiments/conflict-avoidance`, returning paired dispatch results for conflict avoidance disabled and enabled on the same scenario.
 - Conflict-avoidance experiment scenarios should not use a fully one-dimensional two-robot position swap as a no-conflict success case; without side-bypass space, the current competition-scope planner may still report unavoidable conflicts.
@@ -112,23 +112,15 @@ Completed and currently expected to remain in the project:
 - Replan-window experiment regression now covers `integrated-demo`: a short window defers the future `E1` task, while a larger window includes it without creating scheduling failures.
 - Experiment comparison API now exposes `POST /api/experiments/scale`, returning one dispatch result per supplied labeled scenario for robot/task scale comparison.
 - Scale experiment regression keeps generated multi-scale cases and verifies that the shared `integrated-demo` payload remains accepted by the same API.
-- Experiment comparison API now exposes `POST /api/experiments/seeded-pressure`, returning compact fixed-seed performance summaries for standard 4/6/8-robot randomized pressure scenarios and an extended seven-case stability set including the fixed seed-43 boundary, with task count, obstacle count, assigned task count, stability, completion rate, conflict count, failure count, total distance, average distance per task, makespan, planning time, and planning-time budget pass status.
-- Fixed-seed pressure experiment responses now include aggregate summary fields for case count, stable-case count, largest scale, total tasks, total assigned tasks, maximum conflict count, total failures, distance cost, completion rate, planning-time budget pass rate, average planning time, and maximum planning time, making scale/performance evidence directly quotable.
-- Frontend experiment comparison panel can run conflict-avoidance, dynamic-event, rolling-window, and robot/task scale experiments and summarize assigned tasks, conflicts, distance, makespan, deadline misses, failures, and planning time in a compact table with general insight cards for best strategy, task completion, deadline misses, failures, and planning time.
-- Frontend experiment comparison panel now generates a concise report paragraph for the current result set and can export stable CSV columns for report/PPT tables.
-- Frontend experiment comparison panel now includes visible delta cards and normalized bar charts for conflict count, total distance, and makespan, making comparison effects easier to read during demonstrations.
-- Frontend experiment comparison panel can now run the extended fixed-seed pressure experiment, render the compact performance summaries through the same table, chart, report paragraph, and CSV export path, and show dedicated pressure insight cards for stable-case count, task completion, planning-time budget pass status, largest scale, distance cost, and planning time above the table.
-- Frontend aggregate experiment paragraphs now state stable-case counts and average path cost per completed task for fixed-seed pressure and robot/task scale experiments, making platform-generated conclusions easier to quote during defense without writing formal competition materials yet.
-- Frontend pairwise experiment paragraphs now use defense-oriented wording for conflict avoidance, dynamic-event, and rolling-window comparisons, explicitly describing conflict changes, task-completion changes, cost changes, and the algorithmic takeaway for each experiment type.
-- Frontend pairwise experiment conclusions now stay evidence-aware when a run still has conflicts or failures: the generated paragraph reports partial improvement and remaining risk instead of claiming a fully successful strategy.
-- Frontend general experiment insight cards now expose the best case's task, conflict, distance, makespan, deadline, failure, and planning-time metrics next to the generated conclusion, making conclusion claims traceable to the same columns shown in the comparison table.
-- Frontend experiment panel now groups generated content under explicit section labels for experiment conclusion, best-case evidence, baseline deltas, and comparison details, making the relationship between conclusion text, evidence cards, delta cards, and metric table easier to follow during live explanation.
-- Frontend experiment panel now has a structured empty state explaining what the conflict-avoidance, dynamic-event, rolling-window, scale, and fixed-seed pressure buttons verify before any experiment has been run.
+- Experiment comparison API now exposes `POST /api/experiments/seeded-pressure`, returning compact fixed-seed performance summaries for standard 4/6/8-robot randomized pressure scenarios and an extended seven-case stability set including the fixed seed-43 boundary. Its `assignmentRatePercent` is assigned tasks divided by total tasks; it is not an execution-completion metric.
+- Experiment comparison API now exposes `POST /api/experiments/online-pressure`, returning fixed-seed online-flow evidence with runtime task insertion, blocked-cell and robot recovery events, task coverage, released-task completion, metrics history, and event logs.
+- Online pressure responses distinguish `coverageRatePercent` from `actualCompletionRatePercent`: coverage measures tasks not left `unassigned`, while actual completion measures completed tasks among tasks released by the experiment end tick.
+- All six experiment endpoints are backend-only evidence interfaces. The main frontend has no experiment panel, experiment API clients, experiment result types, generated report helpers, or experiment-specific styles.
 - Frontend live deadline metric logic handles nullable serialized task deadlines and excludes still-pending tasks, keeping live deadline misses aligned with backend `deadlineMissCount`.
 - Frontend API error handling preserves backend error `detail` text across session creation, updates, ticks, reset, and delete failures, so operational panels surface concrete API failure causes instead of only HTTP status codes.
-- Frontend status strip now exposes both dynamic-event mode and the configured rolling replan window, making the active online scheduling options visible without opening the toolbar.
+- Frontend status strip exposes the configured rolling replan window. Scenario dynamic events are always enabled for main-session creation and are not presented as a user toggle.
 - Frontend scenario-data regression now protects `integrated-demo` as the only persisted frontend scenario and verifies its mixed task, charging, and online-dispatch coverage.
-- Fixed demo e2e now reads the shared `integrated-demo` JSON and verifies tick advancement, urgent task insertion, runtime blocked cells, robot failure, event logs, metrics history, conflict-avoidance comparison, and a derived dynamic-task variant.
+- Fixed demo e2e now reads the shared `integrated-demo` JSON and verifies tick advancement, urgent task insertion, runtime blocked cells, robot failure and recovery, blocked-cell removal, event logs, metrics history, conflict-avoidance comparison, and a derived dynamic-task variant.
 - Integrated online-session regression now runs continuous ticks through `E1` release and manual high-priority task insertion, verifying task states, event logs, conflict metrics, and metrics history remain consistent.
 - Frontend scenario data now lives in `frontend/src/domain/scenarios.json`, with `frontend/src/domain/scenarios.ts` providing typed exports for the React app and tests.
 - Backend tests split by algorithm, session, validation, health, and fixed demo flow.
@@ -137,6 +129,7 @@ Completed and currently expected to remain in the project:
 Recently removed because they are not needed yet:
 
 - Frontend demo acceptance checklist panel.
+- Frontend experiment comparison panel and its client-side helpers, types, tests, and styles.
 
 ## Current Plan
 
@@ -148,7 +141,7 @@ Priority order for future work:
 
 1. Freeze and protect a runnable baseline: keep the current online dispatch demo passing checks and avoid broad rewrites.
 2. Complete the core algorithm module at competition scope: task assignment, A* paths, conflict avoidance, dynamic replanning, task locks, preemption, failure recovery, and metrics must remain stable under larger scenarios.
-3. Complete the online scheduling module: session creation, ticks, manual tasks, stream tasks, runtime blocked cells, robot failures, recovery APIs, event logs, metrics history, reset/list/delete, and validation should stay closed-loop.
+3. Complete the online scheduling module: session creation, ticks, unified runtime task insertion, runtime blocked cells, robot failures, recovery APIs, event logs, metrics history, reset/list/delete, and validation should stay closed-loop.
 4. Complete the frontend operations module: the dashboard must explain maps, robots, task states, paths, conflicts, replanning causes, failure recovery, and metric changes clearly enough for judges.
 5. Build the experiment module: compare conflict avoidance, dynamic replanning, rolling-window settings, and robot/task scale; produce charts and conclusions for the report and defense.
 6. Build competition materials: technical report, project description, slides, demo script, recording, architecture diagrams, algorithm diagrams, and backup scenarios.
@@ -158,19 +151,17 @@ Do not add new frontend showcase panels unless they directly support debugging, 
 
 ## Progress-Ordered Roadmap
 
-Read this section before choosing work in each new session. Continue from the highest-priority incomplete competition module unless the user explicitly directs otherwise. Percentages are working estimates, not formal completion claims; update them only when project scope or verified implementation changes materially.
-
-Current overall estimate: 98%.
+Read this section before choosing work in each new session. Continue from the highest-priority incomplete competition module unless the user explicitly directs otherwise. Progress uses qualitative status only: `稳定基线`, `接近完成`, `部分完成`, `未开始`, and `延后/可选`.
 
 Recommended execution order:
 
-1. Baseline freeze and demo stability - 94%
+1. Baseline freeze and demo stability - 稳定基线
    - The current full check passes and the online dispatch workflow is implemented.
    - The fixed frontend demo scenario IDs and their intended capability coverage are now protected by frontend scenario-data regression tests.
    - The sole frontend `integrated-demo` scenario is protected by shared JSON, frontend data, and backend end-to-end regressions.
    - Next work is to keep this fixed demo flow stable during backend/frontend changes and avoid destabilizing broad refactors.
 
-2. Core algorithm module completion - 95%
+2. Core algorithm module completion - 接近完成
    - Assignment, A* path planning, conflict avoidance, lock stability, preemption scoring, rolling-window behavior, partial-progress replanning, delivery cargo continuity, dynamic timing, and failure recovery classification are implemented with targeted regressions.
    - Dynamic replanning behavior is regression-tested through an `integrated-demo` dynamic-task variant, confirming dynamic task inclusion and zero failures.
    - Rolling-window behavior is regression-tested against `integrated-demo`, confirming far-future task deferral versus inclusion across window settings.
@@ -180,57 +171,60 @@ Recommended execution order:
    - Remaining work is algorithmic quality beyond the current heuristic planner, especially adaptive rolling-window exploration, richer MAPF behavior if needed, and performance tuning on larger instances.
    - Battery and charging are now hard runtime constraints: a robot consumes one unit per moved grid cell, routes to a reachable charger when needed, waits for `chargeTime`, and remains unavailable to preemption while charging.
 
-3. Online scheduling module completion - 97%
+3. Online scheduling module completion - 接近完成
    - Implemented session metadata such as creation time and last access/update time.
    - Implemented idle-session cleanup, least-recently-accessed capacity pruning, explicit delete/reset endpoints, task caps, tick caps, metrics-history caps, and event-note caps.
-   - Implemented manual tasks, stream tasks, runtime blocked cells, robot failure and recovery, scenario dynamic timing, rolling-window triggers, task locks, event logs, and metrics history.
+   - Implemented runtime task insertion through one unified task endpoint, timed frontend task generation through that same endpoint, runtime blocked cells, robot failure and recovery, scenario dynamic timing, rolling-window triggers, task locks, event logs, and metrics history.
    - Integrated-scenario online continuity is regression-tested through ticks, manual insertion, conflict avoidance, runtime events, and metrics consistency; focused generic tests retain recovery edge coverage.
    - Fixed-seed randomized online pressure is now regression-tested through continuous ticks, dynamic activation, manual emergency insertion, runtime block/failure events, recovery APIs, event history, and metrics history.
    - Remaining work is mainly harder online pressure boundary cases or dedicated performance profiling if algorithm scale becomes a priority. Persistence, auth, or external observability remain out of competition scope unless the project scope expands.
 
-4. Online pressure and regression coverage - 98%
-   - Larger and continuous online regressions now cover repeated ticks, stream arrivals, manual urgent tasks, dynamic activation, runtime blocked cells, robot failures, recovery actions, deferred tasks, metrics history, event ordering, and path/state consistency.
+4. Online pressure and regression coverage - 接近完成
+   - Larger and continuous online regressions cover repeated ticks, timed generated arrivals and urgent task insertion through the unified task endpoint, dynamic activation, runtime blocked cells, robot failures, recovery actions, deferred tasks, metrics history, event ordering, and path/state consistency.
    - Direct dispatch now has an 8-robot mixed inspection and delivery pressure regression with conflict avoidance enabled.
    - Direct dispatch now also has a deterministic 3/5/8-robot scale-pressure family with dynamic emergency tasks and bounded planning time.
    - Direct dispatch now also has a fixed-seed 4/6/8-robot randomized pressure family with randomized obstacles, mixed tasks, dynamic emergency tasks, zero conflicts, zero failures, and bounded planning time.
    - Online sessions now also have a fixed-seed randomized long-flow regression with continuous ticks, dynamic activation, manual emergency insertion, runtime blocked-cell recovery, runtime robot failure/restore, preserved event history, and recovered zero-conflict/zero-failure metrics.
-   - Online sessions now have an 8-robot pressure regression with manual urgent insertion, repeated stream tasks, scenario dynamic activation, runtime blocked cells, robot failure and restore, and deferred far-future task visibility.
-   - Online sessions now also have an 8-robot long-horizon runtime stress regression covering continuous ticks, repeated stream tasks, multiple runtime block/failure recovery cycles, scenario dynamic recovery, metrics history continuity, and active-time conflict safety.
+   - Online sessions have an 8-robot pressure regression with urgent insertion, repeated generated tasks through the unified endpoint, scenario dynamic activation, runtime blocked cells, robot failure and restore, and deferred far-future task visibility.
+   - Online sessions also have an 8-robot long-horizon runtime stress regression covering continuous ticks, repeated generated tasks, multiple runtime block/failure recovery cycles, scenario dynamic recovery, metrics history continuity, and active-time conflict safety.
    - Online sessions now also cover `integrated-demo` through continuous ticks, `E1` release, and manual high-priority task insertion.
    - Focused generic scenarios retain dynamic robot failure, block recovery, and emergency handoff regression coverage without adding more persisted demo maps.
    - The integrated conflict-avoidance comparison retains direct-plan baseline and avoidance coverage; active-session conflict safety remains covered through continuous ticks.
    - Remaining work is randomized scenario families or dedicated performance profiling if algorithm scale becomes a priority.
 
-5. Unschedulable task recovery semantics - 93%
+5. Unschedulable task recovery semantics - 接近完成
    - Temporary and permanent failure categories, structured recovery actions, blocking cells, blocking robots, runtime recovery APIs, and frontend recovery buttons are implemented and regression-tested.
    - Online recovery state now has targeted coverage for mixed load-capacity fleets where unrelated runtime blocked cells must not be reported as recovery blockers.
    - Remaining work is edge-case expansion for larger mixed-capacity fleets and clearer operator workflows around permanent definition fixes.
 
-6. API contract alignment infrastructure - 94%
+6. API contract alignment infrastructure - 稳定基线
    - Contract tests now compare backend Pydantic models with frontend TypeScript API types, request optionality, response nullability, runtime literal unions, rolling-window constants, recovery actions, OpenAPI request models, OpenAPI response models, and expected session routes.
    - Remaining work is mostly automation quality, such as schema snapshot generation or client generation if the API grows.
 
-7. Frontend operational clarity - 87%
+7. Frontend operational clarity - 接近完成
    - Keep the frontend as a dense operational dashboard.
-   - Current UI covers online session creation, ticking, manual and stream task insertion, runtime blocked cells, robot failure/recovery, task states, failure recovery actions, metrics history, event replay, scenario import/export, backend status, dynamic mode, rolling-window visibility, experiment summaries, and experiment chart comparison.
-   - Improve only controls, state visibility, event inspection, metrics visibility, experiment visibility, and debugging clarity that support online dispatch.
+   - Current UI covers online session creation, ticking, manual and timed generated task insertion through one endpoint, runtime blocked cells, robot failure/recovery, task states, failure recovery actions, metrics history, event replay, scenario import/export, backend status, and rolling-window visibility.
+   - Scenario dynamic events are enabled automatically for main sessions; the main UI has no dynamic-event toggle and no experiment panel.
+   - Improve only controls, state visibility, event inspection, metrics visibility, and debugging clarity that support online dispatch.
    - Do not add marketing or showcase panels.
 
-8. Experiment and comparison evidence - 80%
-    - The system has metrics, logs, fixed demo documentation, enough scenario support to run comparisons, backend APIs for conflict-avoidance on/off, dynamic-events on/off, rolling-window parameter comparison, robot/task scale comparison, and standard/extended fixed-seed pressure performance summaries with aggregate pressure evidence, plus a frontend panel that runs, summarizes, renders tables, bar charts, and delta cards for conflict, distance, makespan, deadline misses, failures, and planning time, exports CSV, generates short report paragraphs that distinguish baseline comparisons from fixed-seed pressure and robot/task scale aggregate summaries, state stable-case counts, show average path cost per completed task, use experiment-specific conclusion wording for conflict avoidance, dynamic replanning, and rolling-window comparisons, avoid overstating success when comparison results still contain conflicts or failures, keep best-case evidence cards aligned with the table metrics used by the generated conclusion, visually groups conclusion, best-case evidence, baseline deltas, and comparison details, and explains available experiment types before a run.
+8. Experiment and comparison evidence - 部分完成
+   - The backend has six experiment APIs for conflict avoidance, dynamic events, rolling windows, scale, fixed-seed pressure, and online pressure. They are covered by backend tests and OpenAPI contract assertions.
+   - Fixed-seed pressure reports assignment rate. Online pressure separately reports task coverage and actual released-task completion, avoiding the previous metric-name ambiguity.
+   - The main frontend intentionally has no experiment panel; report charts, reviewed conclusions, and final competition evidence tables have not yet been produced.
    - Conflict-avoidance comparison now has backend regression coverage on a real fixed demo scenario instead of only synthetic scenarios.
    - Dynamic-replanning comparison now has backend regression coverage on a real fixed demo scenario instead of only synthetic scenarios.
    - Rolling-window comparison now has backend regression coverage on a real fixed demo scenario instead of only synthetic scenarios.
    - Scale comparison now has backend regression coverage across the real fixed demo scenario set, not only synthetic scale inputs.
-   - Fixed-seed pressure comparison now has backend and frontend API coverage for standard and extended stability sets, including the repaired seed-43 pressure boundary, giving report-ready scale/performance rows, aggregate summaries, stability/completion rates, deadline-miss evidence, planning-time budget pass evidence, total-distance, average-distance-per-task, and max-makespan cost summaries, and visible conclusion cards without requiring manually constructed scenarios.
+   - Fixed-seed pressure comparison has backend coverage for standard and extended stability sets, including the repaired seed-43 pressure boundary, with assignment-rate, deadline-miss, planning-budget, distance, and makespan evidence.
    - Remaining work is manually reviewed final wording after the official competition material requirements are known.
    - Output should feed the report and defense: charts, tables, conclusions, and a short explanation of why the algorithm improves the baseline.
 
-9. Competition materials and demo package - 15%
+9. Competition materials and demo package - 未开始
    - Environment notes, algorithm notes, README, and a fixed demo flow exist.
    - Remaining work is project description, technical report, PPT, demo script, screen recording, architecture diagram, algorithm flow diagram, experiment charts, and backup scenarios.
 
-10. Demo presentation and 3D visualization - 8%
+10. Demo presentation and 3D visualization - 延后/可选
    - Treat 3D visualization as a later phase.
    - The fixed 2D demo flow and documentation exist, but Three.js or another 3D rendering layer has not been added.
    - Do not start this until algorithm evidence, competition materials, and 2D demo stability are substantially stronger or the user explicitly prioritizes presentation.

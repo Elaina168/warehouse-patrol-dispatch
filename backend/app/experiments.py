@@ -145,7 +145,7 @@ def run_seeded_pressure_experiment(request: SeededPressureExperimentRequest) -> 
                 obstacleCount=len(scenario.obstacles),
                 assignedTaskCount=result.metrics.assignedTaskCount,
                 stable=stable,
-                completionRatePercent=_percent(result.metrics.assignedTaskCount, result_task_count),
+                assignmentRatePercent=_percent(result.metrics.assignedTaskCount, result_task_count),
                 conflictCount=result.metrics.conflictCount,
                 deadlineMissCount=result.metrics.deadlineMissCount,
                 failureCount=result.metrics.failureCount,
@@ -173,7 +173,7 @@ def run_seeded_pressure_experiment(request: SeededPressureExperimentRequest) -> 
             totalAssignedTaskCount=total_assigned_task_count,
             stableCaseCount=stable_case_count,
             stableRatePercent=_percent(stable_case_count, len(cases)),
-            completionRatePercent=_percent(total_assigned_task_count, total_task_count),
+            assignmentRatePercent=_percent(total_assigned_task_count, total_task_count),
             planningTimeBudgetMs=SEEDED_PRESSURE_PLANNING_TIME_BUDGET_MS,
             withinPlanningTimeBudgetCount=within_budget_count,
             withinPlanningTimeBudgetRatePercent=_percent(within_budget_count, len(cases)),
@@ -248,6 +248,9 @@ def run_online_pressure_experiment(request: OnlinePressureExperimentRequest) -> 
 
     metrics = session.result.metrics
     task_count = len(session.result.tasks)
+    released_task_count = sum(
+        1 for state in session.taskStates if state.releaseTime <= session.currentTime
+    )
     covered_task_count = sum(1 for state in session.taskStates if state.status != "unassigned")
     runtime_event_evidence = _online_runtime_event_evidence(session.result.eventLog)
     stable = (
@@ -264,8 +267,8 @@ def run_online_pressure_experiment(request: OnlinePressureExperimentRequest) -> 
         robotCount=len(scenario.robots),
         baseTaskCount=len(scenario.tasks),
         scenarioDynamicTaskCount=len(scenario.dynamic.tasks),
-        manualTaskCount=session.manualTaskCount,
-        streamTaskCount=session.streamTaskCount,
+        releasedTaskCount=released_task_count,
+        runtimeTaskCount=session.runtimeTaskCount,
         runtimeEventCount=len(runtime_event_evidence),
         runtimeEventEvidence=runtime_event_evidence,
         tickCount=session.currentTime,
@@ -274,7 +277,8 @@ def run_online_pressure_experiment(request: OnlinePressureExperimentRequest) -> 
         completedTaskCount=session.completedTaskCount,
         assignedTaskCount=metrics.assignedTaskCount,
         stable=stable,
-        completionRatePercent=_percent(covered_task_count, task_count),
+        coverageRatePercent=_percent(covered_task_count, task_count),
+        actualCompletionRatePercent=_percent(session.completedTaskCount, released_task_count),
         conflictCount=metrics.conflictCount,
         deadlineMissCount=metrics.deadlineMissCount,
         failureCount=metrics.failureCount,
@@ -302,6 +306,7 @@ def _online_runtime_event_evidence(event_log: list[EventItem]) -> list[str]:
 def _online_pressure_summary(cases: list[OnlinePressureExperimentCaseResult]) -> OnlinePressureExperimentSummary:
     stable_case_count = sum(1 for case in cases if case.stable)
     total_task_count = sum(case.taskCount for case in cases)
+    total_released_task_count = sum(case.releasedTaskCount for case in cases)
     total_covered_task_count = sum(case.coveredTaskCount for case in cases)
     total_completed_task_count = sum(case.completedTaskCount for case in cases)
     total_assigned_task_count = sum(case.assignedTaskCount for case in cases)
@@ -309,18 +314,19 @@ def _online_pressure_summary(cases: list[OnlinePressureExperimentCaseResult]) ->
     return OnlinePressureExperimentSummary(
         caseCount=len(cases),
         totalTaskCount=total_task_count,
+        totalReleasedTaskCount=total_released_task_count,
         totalCoveredTaskCount=total_covered_task_count,
         totalCompletedTaskCount=total_completed_task_count,
         totalAssignedTaskCount=total_assigned_task_count,
         stableCaseCount=stable_case_count,
         stableRatePercent=_percent(stable_case_count, len(cases)),
-        completionRatePercent=_percent(total_covered_task_count, total_task_count),
+        coverageRatePercent=_percent(total_covered_task_count, total_task_count),
+        actualCompletionRatePercent=_percent(total_completed_task_count, total_released_task_count),
         maxConflictCount=max((case.conflictCount for case in cases), default=0),
         totalDeadlineMissCount=sum(case.deadlineMissCount for case in cases),
         totalFailureCount=sum(case.failureCount for case in cases),
         totalRuntimeEventCount=sum(case.runtimeEventCount for case in cases),
-        totalManualTaskCount=sum(case.manualTaskCount for case in cases),
-        totalStreamTaskCount=sum(case.streamTaskCount for case in cases),
+        totalRuntimeTaskCount=sum(case.runtimeTaskCount for case in cases),
         totalDistance=total_distance,
         averageDistancePerTask=round(total_distance / total_task_count, 1) if total_task_count else 0,
         maxMakespan=max((case.makespan for case in cases), default=0),

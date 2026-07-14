@@ -279,7 +279,7 @@ def test_session_api_accepts_manual_task() -> None:
 
     assert add_response.status_code == 200
     payload = add_response.json()
-    assert payload["manualTaskCount"] == 1
+    assert payload["runtimeTaskCount"] == 1
     assert payload["result"]["metrics"]["assignedTaskCount"] == 0
     assert any(task["id"] == "M1" for task in payload["result"]["tasks"])
 
@@ -583,7 +583,7 @@ def test_session_integrated_demo_flow_stays_consistent_through_online_updates() 
     task_states = {state["taskId"]: state for state in payload["taskStates"]}
     assert payload["scenarioId"] == "integrated-demo"
     assert payload["currentTime"] == 12
-    assert payload["manualTaskCount"] == 0
+    assert payload["runtimeTaskCount"] == 0
     assert payload["result"]["dynamicTriggerTime"] is None
     assert task_states["E1"]["status"] == "running"
     assert task_states["E1"]["failureReason"] is None
@@ -598,7 +598,7 @@ def test_session_integrated_demo_flow_stays_consistent_through_online_updates() 
             "task": {
                 "id": "DEMO-RUNTIME-12",
                 "type": "emergency",
-                "title": "???????",
+                "title": "演示动态后复核",
                 "priority": 5,
                 "releaseTime": 12,
                 "deadline": 24,
@@ -613,8 +613,12 @@ def test_session_integrated_demo_flow_stays_consistent_through_online_updates() 
     task_ids = {task["id"] for task in payload["result"]["tasks"]}
     event_texts = [event["text"] for event in payload["result"]["eventLog"]]
     assert payload["currentTime"] == 12
-    assert payload["manualTaskCount"] == 1
+    assert payload["runtimeTaskCount"] == 1
     assert "DEMO-RUNTIME-12" in task_ids
+    assert any(
+        task["id"] == "DEMO-RUNTIME-12" and task["title"] == "演示动态后复核"
+        for task in payload["result"]["tasks"]
+    )
     assert payload["result"]["metrics"]["failureCount"] == 0
     assert any("DEMO-RUNTIME-12" in text for text in event_texts)
 
@@ -685,7 +689,7 @@ def test_session_fixed_seed_pressure_flow_handles_runtime_events_consistently() 
     payload = manual_response.json()
     _assert_online_payload_consistent(payload)
     task_states = {state["taskId"]: state for state in payload["taskStates"]}
-    assert payload["manualTaskCount"] == 1
+    assert payload["runtimeTaskCount"] == 1
     assert payload["result"]["metrics"]["assignedTaskCount"] == 4
     assert payload["result"]["metrics"]["conflictCount"] == 0
     assert payload["result"]["metrics"]["failureCount"] == 0
@@ -1140,8 +1144,9 @@ def test_session_api_accepts_generated_task_through_unified_queue() -> None:
 
     assert generated_response.status_code == 200
     payload = generated_response.json()
-    assert payload["manualTaskCount"] == 1
-    assert payload["streamTaskCount"] == 0
+    assert payload["runtimeTaskCount"] == 1
+    assert "manualTaskCount" not in payload
+    assert "streamTaskCount" not in payload
     assert any(task["id"] == "G1" and task["releaseTime"] == 7 for task in payload["result"]["tasks"])
     assert any("手动录入任务：G1" in event["text"] for event in payload["result"]["eventLog"])
 
@@ -1210,8 +1215,8 @@ def test_runtime_update_omitted_current_time_uses_session_current_time() -> None
     assert generated_response.status_code == 200
     payload = generated_response.json()
     assert payload["currentTime"] == 4
-    assert payload["manualTaskCount"] == 1
-    assert payload["streamTaskCount"] == 0
+    assert payload["runtimeTaskCount"] == 1
+    assert "streamTaskCount" not in payload
     assert any(task["id"] == "G4" and task["releaseTime"] == 4 for task in payload["result"]["tasks"])
 
 
@@ -1586,7 +1591,7 @@ def test_session_stream_task_replans_from_current_time() -> None:
     assert generated_response.status_code == 200
     payload = generated_response.json()
     assert payload["currentTime"] == 4
-    assert payload["streamTaskCount"] == 0
+    assert "streamTaskCount" not in payload
     generated_events = [event for event in payload["result"]["eventLog"] if event["text"].startswith("手动录入任务：G")]
     assert generated_events
     assert {event["time"] for event in generated_events} == {4}
@@ -2018,7 +2023,7 @@ def test_runtime_event_apis_reject_past_current_time() -> None:
     assert restore_response.status_code == 422
     payload = client.get(f"/api/sessions/{session_id}").json()
     assert payload["currentTime"] == 5
-    assert payload["streamTaskCount"] == 0
+    assert "streamTaskCount" not in payload
     assert payload["runtimeEventCount"] == 0
 
 
@@ -2286,7 +2291,7 @@ def test_runtime_event_apis_reject_unbounded_time_without_mutating_session(monke
     payload = client.get(f"/api/sessions/{session_id}").json()
     assert payload["currentTime"] == 4
     assert payload["updatedAt"] == before_payload["updatedAt"]
-    assert payload["streamTaskCount"] == 0
+    assert "streamTaskCount" not in payload
     assert payload["runtimeEventCount"] == 0
     assert payload["metricsHistory"][-1]["time"] == 4
     assert payload["result"]["extraBlocked"] == []
@@ -3661,8 +3666,8 @@ def test_session_long_online_pressure_sequence_stays_consistent() -> None:
 
     task_states = {state["taskId"]: state for state in payload["taskStates"]}
     assert payload["currentTime"] == 14
-    assert payload["manualTaskCount"] == 4
-    assert payload["streamTaskCount"] == 0
+    assert payload["runtimeTaskCount"] == 4
+    assert "streamTaskCount" not in payload
     assert payload["runtimeEventCount"] == 0
     assert payload["result"]["dynamicTriggerTime"] == 5
     assert runtime_block_cell not in payload["result"]["extraBlocked"]
@@ -3904,8 +3909,8 @@ def test_session_larger_online_pressure_keeps_recovery_and_deferred_tasks_consis
 
     task_states = {state["taskId"]: state for state in payload["taskStates"]}
     assert payload["currentTime"] == 28
-    assert payload["manualTaskCount"] == 6
-    assert payload["streamTaskCount"] == 0
+    assert payload["runtimeTaskCount"] == 6
+    assert "streamTaskCount" not in payload
     assert payload["runtimeEventCount"] == 0
     assert payload["result"]["dynamicTriggerTime"] == 6
     assert runtime_block_cell not in payload["result"]["extraBlocked"]
@@ -4181,8 +4186,8 @@ def test_session_eight_robot_online_pressure_handles_streams_and_recovery() -> N
 
     task_states = {state["taskId"]: state for state in payload["taskStates"]}
     assert payload["currentTime"] == 24
-    assert payload["manualTaskCount"] == 6
-    assert payload["streamTaskCount"] == 0
+    assert payload["runtimeTaskCount"] == 6
+    assert "streamTaskCount" not in payload
     assert payload["runtimeEventCount"] == 0
     assert payload["result"]["dynamicTriggerTime"] == 6
     assert all(conflict["time"] > payload["currentTime"] for conflict in payload["result"]["conflicts"])
@@ -4438,8 +4443,8 @@ def test_session_eight_robot_long_horizon_runtime_stress_stays_consistent() -> N
     metric_times = [snapshot["time"] for snapshot in payload["metricsHistory"]]
     event_texts = [event["text"] for event in payload["result"]["eventLog"]]
     assert payload["currentTime"] == 20
-    assert payload["manualTaskCount"] == 5
-    assert payload["streamTaskCount"] == 0
+    assert payload["runtimeTaskCount"] == 5
+    assert "streamTaskCount" not in payload
     assert payload["runtimeEventCount"] == 0
     assert payload["result"]["extraBlocked"] == []
     assert payload["result"]["unavailableRobotIds"] == []
@@ -4558,8 +4563,8 @@ def test_session_continuous_online_ticks_with_repeated_runtime_events_stays_cons
     task_states = {state["taskId"]: state for state in payload["taskStates"]}
     metric_times = [snapshot["time"] for snapshot in payload["metricsHistory"]]
     assert payload["currentTime"] == 18
-    assert payload["manualTaskCount"] == 4
-    assert payload["streamTaskCount"] == 0
+    assert payload["runtimeTaskCount"] == 4
+    assert "streamTaskCount" not in payload
     assert payload["runtimeEventCount"] == 0
     assert metric_times == list(range(0, 19))
     generated_task_ids = {task_id for task_id in task_states if task_id.startswith("G")}
@@ -4647,8 +4652,8 @@ def test_session_continuous_online_sequence_preserves_recent_metrics_after_histo
     metric_times = [snapshot["time"] for snapshot in payload["metricsHistory"]]
     assert payload["currentTime"] == 12
     assert metric_times == [8, 9, 10, 11, 12]
-    assert payload["manualTaskCount"] == 2
-    assert payload["streamTaskCount"] == 0
+    assert payload["runtimeTaskCount"] == 2
+    assert "streamTaskCount" not in payload
     assert payload["runtimeEventCount"] == 0
     assert "R2" not in payload["result"]["unavailableRobotIds"]
     assert runtime_block_cell not in payload["result"]["extraBlocked"]
@@ -4755,8 +4760,9 @@ def test_session_list_summary_matches_latest_runtime_state(monkeypatch) -> None:
     assert summary["updatedAt"] == latest_payload["updatedAt"]
     assert summary["lastAccessedAt"] == latest_payload["lastAccessedAt"]
     assert summary["currentTime"] == latest_payload["currentTime"]
-    assert summary["manualTaskCount"] == latest_payload["manualTaskCount"]
-    assert summary["streamTaskCount"] == latest_payload["streamTaskCount"]
+    assert summary["runtimeTaskCount"] == latest_payload["runtimeTaskCount"]
+    assert "manualTaskCount" not in summary
+    assert "streamTaskCount" not in summary
     assert summary["runtimeEventCount"] == latest_payload["runtimeEventCount"]
     assert summary["completedTaskCount"] == latest_payload["completedTaskCount"]
 
@@ -4819,8 +4825,9 @@ def test_session_reset_restores_initial_runtime_state(monkeypatch) -> None:
     assert fail_response.status_code == 200
     dirty_payload = fail_response.json()
     assert dirty_payload["currentTime"] == 5
-    assert dirty_payload["manualTaskCount"] == 2
-    assert dirty_payload["streamTaskCount"] == 0
+    assert dirty_payload["runtimeTaskCount"] == 2
+    assert "manualTaskCount" not in dirty_payload
+    assert "streamTaskCount" not in dirty_payload
     assert dirty_payload["runtimeEventCount"] == 2
     assert len(dirty_payload["metricsHistory"]) > 1
 
@@ -4835,8 +4842,9 @@ def test_session_reset_restores_initial_runtime_state(monkeypatch) -> None:
     assert payload["updatedAt"] == 1506.0
     assert payload["lastAccessedAt"] == 1506.0
     assert payload["currentTime"] == 0
-    assert payload["manualTaskCount"] == 0
-    assert payload["streamTaskCount"] == 0
+    assert payload["runtimeTaskCount"] == 0
+    assert "manualTaskCount" not in payload
+    assert "streamTaskCount" not in payload
     assert payload["runtimeEventCount"] == 0
     assert payload["completedTaskCount"] == 0
     assert [item["time"] for item in payload["metricsHistory"]] == [0]
@@ -4907,7 +4915,7 @@ def test_session_reset_after_dynamic_and_runtime_events_restarts_clean_online_fl
     dirty_payload = generated_response.json()
     _assert_online_payload_consistent(dirty_payload)
     assert dirty_payload["currentTime"] == 7
-    assert dirty_payload["streamTaskCount"] == 0
+    assert "streamTaskCount" not in dirty_payload
     assert dirty_payload["runtimeEventCount"] == 2
     assert runtime_block_cell in dirty_payload["result"]["extraBlocked"]
     assert [3, 2] in dirty_payload["result"]["extraBlocked"]
@@ -4924,7 +4932,7 @@ def test_session_reset_after_dynamic_and_runtime_events_restarts_clean_online_fl
     assert reset_payload["updatedAt"] == 8005.0
     assert reset_payload["lastAccessedAt"] == 8005.0
     assert reset_payload["currentTime"] == 0
-    assert reset_payload["streamTaskCount"] == 0
+    assert "streamTaskCount" not in reset_payload
     assert reset_payload["runtimeEventCount"] == 0
     assert reset_payload["completedTaskCount"] == 0
     assert reset_payload["result"]["dynamicTriggerTime"] == 6
@@ -4944,7 +4952,7 @@ def test_session_reset_after_dynamic_and_runtime_events_restarts_clean_online_fl
     _assert_online_payload_consistent(retrigger_payload)
     assert retrigger_payload["currentTime"] == 6
     assert retrigger_payload["runtimeEventCount"] == 0
-    assert retrigger_payload["streamTaskCount"] == 0
+    assert "streamTaskCount" not in retrigger_payload
     assert retrigger_payload["result"]["dynamicTriggerTime"] == 6
     assert retrigger_payload["result"]["extraBlocked"] == [[3, 2]]
     assert retrigger_payload["result"]["unavailableRobotIds"] == []
@@ -5388,7 +5396,7 @@ def test_session_rejects_manual_task_when_task_capacity_is_reached(monkeypatch) 
     assert add_response.status_code == 409
     assert add_response.json()["detail"] == "调度会话任务数已达上限：2 + 1 > 2"
     payload = client.get(f"/api/sessions/{session_id}").json()
-    assert payload["manualTaskCount"] == 0
+    assert payload["runtimeTaskCount"] == 0
     assert all(task["id"] != "OVER-CAP" for task in payload["result"]["tasks"])
 
 
@@ -5412,7 +5420,7 @@ def test_session_rejects_generated_task_when_task_capacity_is_reached(monkeypatc
     assert stream_response.json()["detail"] == "调度会话任务数已达上限：3 + 1 > 3"
     payload = client.get(f"/api/sessions/{session_id}").json()
     assert payload["currentTime"] == 4
-    assert payload["streamTaskCount"] == 0
+    assert "streamTaskCount" not in payload
     assert all(not task["id"].startswith("G") for task in payload["result"]["tasks"])
 
 

@@ -8,7 +8,7 @@ import {
 } from "./domain/sessionApi";
 import { cellKey, getRobotStateAt } from "./domain/view";
 import { scenarios } from "./domain/scenarios";
-import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, ExperimentCaseResult, OnlinePressureExperimentCaseResult, OnlinePressureExperimentSummary, RecoveryAction, ScaleExperimentCaseResult, Scenario, SeededPressureExperimentCaseResult, SeededPressureExperimentSummary, SessionResult, Task, TaskFailureDetail, TaskType } from "./domain/types";
+import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, RecoveryAction, Scenario, SessionResult, Task, TaskFailureDetail, TaskType } from "./domain/types";
 import "./styles.css";
 
 const API_BASE = "http://127.0.0.1:8011";
@@ -97,46 +97,9 @@ type MapContextMenuState = {
 
 type CellKeyLookup = Pick<ReadonlySet<string>, "has">;
 
-type ExperimentStatus = "idle" | "loading" | "ready" | "error";
-
-type ExperimentSummaryRow = {
-  label: string;
-  scenarioId: string;
-  assignedTaskCount: number;
-  taskMetricLabel?: string;
-  conflictCount: number;
-  totalDistance: number;
-  makespan: number;
-  deadlineMissCount: number;
-  failureCount: number;
-  replanTimeMs: number;
-};
-
-type ExperimentRunResult = {
-  rows: ExperimentSummaryRow[];
-  note?: string | null;
-  insightCards?: ExperimentDeltaHighlight[];
-};
-
-type ExperimentChartSeries = {
-  key: "conflictCount" | "totalDistance" | "makespan" | "deadlineMissCount" | "replanTimeMs";
-  label: string;
-  bars: {
-    label: string;
-    value: number;
-    widthPercent: number;
-  }[];
-};
-
-type ExperimentDeltaHighlight = {
-  label: string;
-  value: string;
-};
-
 function App() {
   const [importedScenario, setImportedScenario] = useState<Scenario | null>(null);
   const [avoidConflicts, setAvoidConflicts] = useState(true);
-  const [includeDynamic, setIncludeDynamic] = useState(true);
   const [assignmentReplanWindow, setAssignmentReplanWindow] = useState(DEFAULT_ASSIGNMENT_REPLAN_WINDOW);
   const [sessionResetKey, setSessionResetKey] = useState(0);
   const [time, setTime] = useState(0);
@@ -229,7 +192,7 @@ function App() {
     randomTaskSequenceRef.current = 0;
     setTickInFlight(false);
     setMapContextMenu(null);
-  }, [scenario, avoidConflicts, includeDynamic, assignmentReplanWindow]);
+  }, [scenario, avoidConflicts, assignmentReplanWindow]);
 
   useEffect(() => {
     setManualTask((task) => {
@@ -287,7 +250,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         scenario,
-        options: buildDispatchOptions(avoidConflicts, includeDynamic, assignmentReplanWindow)
+        options: buildDispatchOptions(avoidConflicts, true, assignmentReplanWindow)
       }),
       signal: controller.signal
       })
@@ -306,7 +269,7 @@ function App() {
       });
 
     return () => controller.abort();
-  }, [scenario, avoidConflicts, includeDynamic, assignmentReplanWindow, sessionResetKey]);
+  }, [scenario, avoidConflicts, assignmentReplanWindow, sessionResetKey]);
 
   useEffect(() => {
     if (dispatchStatus === "loading") setMapContextMenu(null);
@@ -590,7 +553,6 @@ function App() {
           <span>T={time}</span>
           <span>{scenario.name}</span>
           <span>{avoidConflicts ? "避碰规划" : "基线对比"}</span>
-          <span>{dynamicModeLabel(includeDynamic)}</span>
           <span>{assignmentReplanWindowLabel(assignmentReplanWindow)}</span>
           <span className={`api ${apiStatus}`}>
             <Server size={15} />
@@ -615,14 +577,6 @@ function App() {
                   </button>
                 </div>
               </div>
-              <label className="toolbar-toggle">
-                <input
-                  checked={includeDynamic}
-                  type="checkbox"
-                  onChange={(event) => setIncludeDynamic(event.target.checked)}
-                />
-                <span>启用突发任务与重规划</span>
-              </label>
               <label className="toolbar-field compact">
                 <span>重规划窗口</span>
                 <input
@@ -760,7 +714,7 @@ function App() {
                   <label>
                     <span>优先级</span>
                     <input
-                      min={1}
+                      min={0}
                       max={5}
                       type="number"
                       value={manualTask.priority}
@@ -1518,341 +1472,6 @@ export function buildReplanStatus(
   };
 }
 
-export function buildExperimentSummaryRows(
-  cases: Array<Pick<ExperimentCaseResult, "label" | "result"> & { scenarioId?: string }>
-): ExperimentSummaryRow[] {
-  return cases.map((item) => ({
-    label: item.label,
-    scenarioId: item.scenarioId ?? item.result.scenarioId,
-    assignedTaskCount: item.result.metrics.assignedTaskCount,
-    conflictCount: item.result.metrics.conflictCount,
-    totalDistance: item.result.metrics.totalDistance,
-    makespan: item.result.metrics.makespan,
-    deadlineMissCount: item.result.metrics.deadlineMissCount,
-    failureCount: item.result.metrics.failureCount,
-    replanTimeMs: item.result.metrics.replanTimeMs
-  }));
-}
-
-export function buildSeededPressureSummaryRows(cases: SeededPressureExperimentCaseResult[]): ExperimentSummaryRow[] {
-  return cases.map((item) => ({
-    label: `${item.label} · ${item.robotCount}R/${item.taskCount}T`,
-    scenarioId: item.scenarioId,
-    assignedTaskCount: item.assignedTaskCount,
-    conflictCount: item.conflictCount,
-    totalDistance: item.totalDistance,
-    makespan: item.makespan,
-    deadlineMissCount: item.deadlineMissCount,
-    failureCount: item.failureCount,
-    replanTimeMs: item.replanTimeMs
-  }));
-}
-
-export function buildSeededPressureSummaryText(summary: SeededPressureExperimentSummary): string {
-  return `压力汇总：${summary.caseCount} 组固定种子场景，稳定 ${summary.stableCaseCount}/${summary.caseCount} 组（${summary.stableRatePercent}%），最大规模 ${summary.largestRobotCount}R/${summary.largestTaskCount}T，完成 ${summary.totalAssignedTaskCount}/${summary.totalTaskCount} 个任务（${summary.completionRatePercent}%），最大冲突 ${summary.maxConflictCount}，总超期 ${summary.totalDeadlineMissCount}，总失败 ${summary.totalFailureCount}，规划预算通过 ${summary.withinPlanningTimeBudgetCount}/${summary.caseCount} 组（${summary.withinPlanningTimeBudgetRatePercent}%，预算 ${summary.planningTimeBudgetMs}ms），总路径 ${summary.totalDistance}，平均每任务路径 ${summary.averageDistancePerTask}，最大完成时间 ${summary.maxMakespan}，平均规划耗时 ${summary.averageReplanTimeMs}ms，最大规划耗时 ${summary.maxReplanTimeMs}ms。`;
-}
-
-export function buildSeededPressureInsightCards(summary: SeededPressureExperimentSummary): ExperimentDeltaHighlight[] {
-  return [
-    { label: "稳定组数", value: `${summary.stableCaseCount}/${summary.caseCount} (${summary.stableRatePercent}%)` },
-    { label: "任务完成", value: `${summary.totalAssignedTaskCount}/${summary.totalTaskCount} (${summary.completionRatePercent}%)` },
-    { label: "预算通过", value: `${summary.withinPlanningTimeBudgetCount}/${summary.caseCount} (${summary.withinPlanningTimeBudgetRatePercent}%)` },
-    { label: "截止超期", value: `${summary.totalDeadlineMissCount}` },
-    { label: "最大规模", value: `${summary.largestRobotCount}R/${summary.largestTaskCount}T` },
-    { label: "总路径", value: `${summary.totalDistance}` },
-    { label: "平均路径/任务", value: `${summary.averageDistancePerTask}` },
-    { label: "规划耗时", value: `${summary.averageReplanTimeMs} / ${summary.maxReplanTimeMs}ms` }
-  ];
-}
-
-export function buildOnlinePressureSummaryRows(cases: OnlinePressureExperimentCaseResult[]): ExperimentSummaryRow[] {
-  return cases.map((item) => ({
-    label: `${item.label} · ${item.robotCount}R/${item.taskCount}T · ${item.runtimeEventCount}事件`,
-    scenarioId: item.scenarioId,
-    assignedTaskCount: item.coveredTaskCount,
-    taskMetricLabel: "任务覆盖",
-    conflictCount: item.conflictCount,
-    totalDistance: item.totalDistance,
-    makespan: item.makespan,
-    deadlineMissCount: item.deadlineMissCount,
-    failureCount: item.failureCount,
-    replanTimeMs: item.replanTimeMs
-  }));
-}
-
-export function buildOnlinePressureSummaryText(summary: OnlinePressureExperimentSummary): string {
-  return `在线压力汇总：${summary.caseCount} 组固定种子在线流程，稳定 ${summary.stableCaseCount}/${summary.caseCount} 组（${summary.stableRatePercent}%），覆盖 ${summary.totalCoveredTaskCount}/${summary.totalTaskCount} 个任务（${summary.completionRatePercent}%），已完成 ${summary.totalCompletedTaskCount} 个任务，运行时事件 ${summary.totalRuntimeEventCount} 个（手动任务 ${summary.totalManualTaskCount} 个，自动任务 ${summary.totalStreamTaskCount} 个），最大冲突 ${summary.maxConflictCount}，总超期 ${summary.totalDeadlineMissCount}，总失败 ${summary.totalFailureCount}，总路径 ${summary.totalDistance}，平均每任务路径 ${summary.averageDistancePerTask}，最大完成时间 ${summary.maxMakespan}，平均规划耗时 ${summary.averageReplanTimeMs}ms，最大规划耗时 ${summary.maxReplanTimeMs}ms，最多指标快照 ${summary.maxMetricsHistoryCount} 条，最多事件日志 ${summary.maxEventLogCount} 条。`;
-}
-
-export function buildOnlinePressureInsightCards(summary: OnlinePressureExperimentSummary): ExperimentDeltaHighlight[] {
-  return [
-    { label: "稳定流程", value: `${summary.stableCaseCount}/${summary.caseCount} (${summary.stableRatePercent}%)` },
-    { label: "任务覆盖", value: `${summary.totalCoveredTaskCount}/${summary.totalTaskCount} (${summary.completionRatePercent}%)` },
-    { label: "已完成", value: `${summary.totalCompletedTaskCount}` },
-    { label: "运行时事件", value: `${summary.totalRuntimeEventCount}` },
-    { label: "手动/自动任务", value: `${summary.totalManualTaskCount} / ${summary.totalStreamTaskCount}` },
-    { label: "冲突/失败", value: `${summary.maxConflictCount} / ${summary.totalFailureCount}` },
-    { label: "指标/日志", value: `${summary.maxMetricsHistoryCount} / ${summary.maxEventLogCount}` },
-    { label: "规划耗时", value: `${summary.averageReplanTimeMs} / ${summary.maxReplanTimeMs}ms` }
-  ];
-}
-
-export function buildExperimentSectionLabels(): {
-  report: string;
-  evidence: string;
-  delta: string;
-  table: string;
-} {
-  return {
-    report: "实验结论",
-    evidence: "最佳方案依据",
-    delta: "相对基线变化",
-    table: "对比明细"
-  };
-}
-
-export function buildExperimentEmptyState(): { title: string; actions: string[] } {
-  return {
-    title: "选择实验类型后显示对比指标。",
-    actions: [
-      "避碰：对比开启/关闭冲突规避后的冲突数和路径代价。",
-      "动态：对比是否处理突发任务、封锁和故障后的完成率与失败数。",
-      "窗口：对比不同滚动重规划窗口对任务纳入和调度代价的影响。",
-      "规模：对比固定场景集合中的机器人/任务规模表现。",
-      "压力：运行固定种子压力场景，检查稳定率、完成率和规划耗时。",
-      "在线：运行固定种子在线流程，检查任务插入、封锁、故障和恢复后的稳定性。"
-    ]
-  };
-}
-
-export function buildExperimentReportDisplayText(
-  title: string,
-  rows: ExperimentSummaryRow[],
-  note: string | null
-): string {
-  return note ?? buildExperimentReportText(title, rows);
-}
-
-export function buildExperimentCsv(rows: ExperimentSummaryRow[]): string {
-  const header = ["组别", "场景", "任务数", "冲突数", "总路径长度", "完成时间", "截止超期", "失败数", "规划耗时(ms)"];
-  const lines = rows.map((row) => [
-    experimentCaseLabel(row.label),
-    row.scenarioId,
-    row.assignedTaskCount,
-    row.conflictCount,
-    row.totalDistance,
-    row.makespan,
-    row.deadlineMissCount,
-    row.failureCount,
-    row.replanTimeMs
-  ].map(csvCell).join(","));
-  return [header.join(","), ...lines].join("\n");
-}
-
-export function buildExperimentTableRows(rows: ExperimentSummaryRow[]): { key: string; cells: string[] }[] {
-  return rows.map((row) => ({
-    key: `${row.scenarioId}-${row.label}`,
-    cells: [
-      experimentCaseLabel(row.label),
-      `${row.assignedTaskCount}`,
-      `${row.conflictCount}`,
-      `${row.totalDistance}`,
-      `${row.makespan}`,
-      `${row.deadlineMissCount}`,
-      `${row.failureCount}`,
-      `${row.replanTimeMs}ms`
-    ]
-  }));
-}
-
-export function buildExperimentReportText(title: string, rows: ExperimentSummaryRow[]): string {
-  if (rows.length === 0) return `${title}：暂无实验结果。`;
-  if (rows.length === 1) {
-    const row = rows[0];
-    return `${title}：在场景 ${row.scenarioId} 中，${experimentCaseLabel(row.label)} ${taskMetricLabel(row)} ${row.assignedTaskCount} 个任务，冲突数 ${row.conflictCount}，总路径长度 ${row.totalDistance}，完成时间 ${row.makespan}，截止超期 ${row.deadlineMissCount}，失败数 ${row.failureCount}，规划耗时 ${row.replanTimeMs}ms。`;
-  }
-
-  if (isAggregateExperimentTitle(title)) {
-    return buildAggregateExperimentReportText(title, rows);
-  }
-
-  const baseline = rows[0];
-  const best = [...rows].sort(compareExperimentRows)[0];
-  return `${title}：在场景 ${best.scenarioId} 中，${experimentCaseLabel(best.label)} 相比 ${experimentCaseLabel(baseline.label)} ${formatConflictChange(baseline.conflictCount, best.conflictCount)}，${formatMetricChange(taskMetricChangeLabel(baseline, best), baseline.assignedTaskCount, best.assignedTaskCount)}，${formatMetricChange("总路径长度", baseline.totalDistance, best.totalDistance)}，${formatMetricChange("完成时间", baseline.makespan, best.makespan)}，${formatMetricChange("截止超期", baseline.deadlineMissCount, best.deadlineMissCount)}，${formatMetricChange("失败数", baseline.failureCount, best.failureCount)}，${formatMetricChange("规划耗时", baseline.replanTimeMs, best.replanTimeMs)}ms。该结果可用于说明${experimentComparisonConclusion(title, baseline, best)}。`;
-}
-
-function taskMetricLabel(row: ExperimentSummaryRow): string {
-  return row.taskMetricLabel ?? "完成";
-}
-
-function taskMetricChangeLabel(baseline: ExperimentSummaryRow, best: ExperimentSummaryRow): string {
-  const baselineLabel = baseline.taskMetricLabel ?? "任务完成";
-  const bestLabel = best.taskMetricLabel ?? "任务完成";
-  const label = baselineLabel === bestLabel ? baselineLabel : "任务";
-  return label.endsWith("数") ? label : `${label}数`;
-}
-
-function isAggregateExperimentTitle(title: string): boolean {
-  return title === "固定种子压力" || title === "机器人/任务规模";
-}
-
-function buildAggregateExperimentReportText(title: string, rows: ExperimentSummaryRow[]): string {
-  const totalAssignedTaskCount = rows.reduce((sum, row) => sum + row.assignedTaskCount, 0);
-  const stableCaseCount = rows.filter((row) => (
-    row.conflictCount === 0
-    && row.deadlineMissCount === 0
-    && row.failureCount === 0
-  )).length;
-  const totalDistance = rows.reduce((sum, row) => sum + row.totalDistance, 0);
-  const averageDistancePerTask = totalAssignedTaskCount ? roundOneDecimal(totalDistance / totalAssignedTaskCount) : 0;
-  const maxMakespan = Math.max(...rows.map((row) => row.makespan), 0);
-  const averageReplanTimeMs = roundOneDecimal(
-    rows.reduce((sum, row) => sum + row.replanTimeMs, 0) / rows.length
-  );
-  const maxReplanTimeMs = Math.max(...rows.map((row) => row.replanTimeMs), 0);
-  const sampleLabel = title === "机器人/任务规模" ? "规模样本" : "固定种子压力样本";
-  const conclusion = title === "机器人/任务规模"
-    ? "不同机器人与任务规模场景下保持调度稳定性与可控代价"
-    : "随机障碍和多规模压力下具备可复现实验稳定性";
-  return `${title}：覆盖 ${rows.length} 组${sampleLabel}，稳定 ${stableCaseCount}/${rows.length} 组（无冲突、无超期、无失败），累计完成 ${totalAssignedTaskCount} 个任务，总路径长度 ${totalDistance}，平均每任务路径 ${averageDistancePerTask}，最大完成时间 ${maxMakespan}，平均规划耗时 ${averageReplanTimeMs}ms，最大规划耗时 ${maxReplanTimeMs}ms。该结果可用于说明算法在${conclusion}。`;
-}
-
-function formatConflictChange(before: number, after: number): string {
-  if (after < before) return `将冲突从 ${before} 降到 ${after}`;
-  if (after > before) return `冲突数从 ${before} 增至 ${after}`;
-  return `冲突数保持 ${after}`;
-}
-
-function formatMetricChange(label: string, before: number, after: number): string {
-  if (after > before) return `${label}增加 ${roundThreeDecimals(after - before)}`;
-  if (after < before) return `${label}减少 ${roundThreeDecimals(before - after)}`;
-  return `${label}保持 ${after}`;
-}
-
-function experimentComparisonConclusion(title: string, baseline: ExperimentSummaryRow, best: ExperimentSummaryRow): string {
-  if (title === "避碰开启/关闭") {
-    if (best.conflictCount > 0 && best.conflictCount < baseline.conflictCount) {
-      return `优先级避碰降低了冲突，但仍有 ${best.conflictCount} 个冲突，需要继续作为压力边界优化`;
-    }
-    if (best.conflictCount > 0) {
-      return "该组结果未体现避碰收益，需要检查地图通道约束和策略参数";
-    }
-    return "优先级避碰能用有限路径和时间代价换取无冲突执行";
-  }
-  if (title === "动态事件开启/关闭") {
-    if (best.failureCount > 0 && best.failureCount < baseline.failureCount) {
-      return `动态重规划降低了失败数，但仍有 ${best.failureCount} 个失败任务，需要继续分析恢复条件`;
-    }
-    if (best.failureCount > 0 || best.conflictCount > 0) {
-      return "动态重规划带来部分改善，但失败或冲突仍需继续关注";
-    }
-    return "动态重规划能在突发任务或故障出现后维持任务完成和低失败";
-  }
-  if (title === "滚动窗口参数") {
-    if (best.failureCount > 0 || best.conflictCount > 0) {
-      return `滚动窗口扩大后纳入了更多任务，但仍有 ${best.conflictCount} 个冲突和 ${best.failureCount} 个失败，需要继续权衡窗口长度`;
-    }
-    return "滚动窗口扩大后能纳入更多近未来任务，同时保持冲突和失败受控";
-  }
-  return "策略在冲突控制、任务稳定性与调度代价之间的权衡";
-}
-
-export function buildExperimentChartSeries(rows: ExperimentSummaryRow[]): ExperimentChartSeries[] {
-  const metrics: ExperimentChartSeries["key"][] = [
-    "conflictCount",
-    "totalDistance",
-    "makespan",
-    "deadlineMissCount",
-    "replanTimeMs"
-  ];
-  const labels: Record<ExperimentChartSeries["key"], string> = {
-    conflictCount: "冲突数",
-    totalDistance: "总路径",
-    makespan: "完成时间",
-    deadlineMissCount: "截止超期",
-    replanTimeMs: "规划耗时"
-  };
-  return metrics.map((key) => {
-    const maxValue = Math.max(...rows.map((row) => row[key]), 0);
-    return {
-      key,
-      label: labels[key],
-      bars: rows.map((row) => ({
-        label: experimentCaseLabel(row.label),
-        value: row[key],
-        widthPercent: maxValue <= 0 ? 0 : roundOneDecimal((row[key] / maxValue) * 100)
-      }))
-    };
-  });
-}
-
-export function buildExperimentDeltaHighlights(rows: ExperimentSummaryRow[]): ExperimentDeltaHighlight[] {
-  if (rows.length < 2) return [];
-  const baseline = rows[0];
-  const best = [...rows].sort(compareExperimentRows)[0];
-    return [
-      { label: "冲突变化", value: formatSigned(best.conflictCount - baseline.conflictCount) },
-      { label: "任务变化", value: formatSigned(best.assignedTaskCount - baseline.assignedTaskCount) },
-      { label: "路径变化", value: formatSigned(best.totalDistance - baseline.totalDistance) },
-      { label: "时间变化", value: formatSigned(best.makespan - baseline.makespan) },
-      { label: "超期变化", value: formatSigned(best.deadlineMissCount - baseline.deadlineMissCount) },
-      { label: "失败变化", value: formatSigned(best.failureCount - baseline.failureCount) },
-      { label: "规划耗时变化", value: `${formatSigned(best.replanTimeMs - baseline.replanTimeMs)}ms` }
-    ];
-  }
-
-export function buildExperimentInsightCards(rows: ExperimentSummaryRow[]): ExperimentDeltaHighlight[] {
-  if (rows.length === 0) return [];
-  const best = [...rows].sort(compareExperimentRows)[0];
-  return [
-    { label: "最佳方案", value: experimentCaseLabel(best.label) },
-    { label: best.taskMetricLabel ?? "任务完成", value: `${best.assignedTaskCount}` },
-    { label: "冲突数", value: `${best.conflictCount}` },
-    { label: "总路径", value: `${best.totalDistance}` },
-    { label: "完成时间", value: `${best.makespan}` },
-    { label: "截止超期", value: `${best.deadlineMissCount}` },
-    { label: "失败数", value: `${best.failureCount}` },
-    { label: "规划耗时", value: `${best.replanTimeMs}ms` }
-  ];
-}
-
-function compareExperimentRows(left: ExperimentSummaryRow, right: ExperimentSummaryRow): number {
-  return left.conflictCount - right.conflictCount
-    || left.failureCount - right.failureCount
-    || left.deadlineMissCount - right.deadlineMissCount
-    || right.assignedTaskCount - left.assignedTaskCount
-    || left.makespan - right.makespan
-    || left.totalDistance - right.totalDistance;
-}
-
-function formatSigned(value: number): string {
-  return value > 0 ? `+${value}` : `${value}`;
-}
-
-function roundOneDecimal(value: number): number {
-  return Math.round(value * 10) / 10;
-}
-
-function roundThreeDecimals(value: number): number {
-  return Math.round(value * 1000) / 1000;
-}
-
-function csvCell(value: string | number): string {
-  const text = String(value);
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
-}
-
-function downloadExperimentCsv(title: string, rows: ExperimentSummaryRow[]) {
-  const content = `${buildExperimentCsv(rows)}\n`;
-  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${safeFileName(title)}.experiment.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
 function getTaskRuntimeStatus(
   task: Task,
   assignedRobotId: string | null,
@@ -2218,12 +1837,12 @@ export function buildDispatchOptions(
   };
 }
 
-export function assignmentReplanWindowLabel(value: number): string {
-  return `窗口 ${normalizeAssignmentReplanWindow(value)}T`;
+export function normalizeTaskPriority(value: number): number {
+  return clamp(Number.isFinite(value) ? Math.floor(value) : 0, 0, 5);
 }
 
-export function dynamicModeLabel(includeDynamic: boolean): string {
-  return includeDynamic ? "动态事件" : "静态流程";
+export function assignmentReplanWindowLabel(value: number): string {
+  return `窗口 ${normalizeAssignmentReplanWindow(value)}T`;
 }
 
 export function simulationTimeLabel(time: number): string {
@@ -2240,23 +1859,6 @@ export function parsePositiveIntegerInput(value: string, min: number, max: numbe
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return null;
   return clamp(parsed, min, max);
-}
-
-function experimentStatusLabel(status: ExperimentStatus): string {
-  if (status === "loading") return "运行中";
-  if (status === "ready") return "已生成";
-  if (status === "error") return "异常";
-  return "待运行";
-}
-
-function experimentCaseLabel(label: string): string {
-  const labels: Record<string, string> = {
-    withoutConflictAvoidance: "关闭避碰",
-    withConflictAvoidance: "开启避碰",
-    withoutDynamicReplanning: "关闭动态",
-    withDynamicReplanning: "开启动态"
-  };
-  return labels[label] ?? label;
 }
 
 function normalizeAssignmentReplanWindow(value: number): number {
@@ -2465,7 +2067,7 @@ function buildManualTask(form: ManualTaskForm, tasks: Task[], currentTime: numbe
   const base = {
     id: nextManualTaskId(tasks),
     title: form.title.trim() || "人工追加任务",
-    priority: clamp(form.priority, 1, 5),
+    priority: normalizeTaskPriority(form.priority),
     releaseTime: currentTime,
     deadline: normalizeManualTaskDeadline(form.deadline, currentTime),
     serviceTime: Math.max(0, Math.floor(Number.isFinite(form.serviceTime) ? form.serviceTime : 0))
@@ -2538,7 +2140,7 @@ export function buildRandomGeneratedTask(
       id,
       type: "emergency",
       title: `随机突发 ${id}`,
-      priority: 3 + (seed % 3),
+      priority: 4 + (seed % 2),
       releaseTime,
       deadline,
       serviceTime,

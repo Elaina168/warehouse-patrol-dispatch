@@ -222,41 +222,6 @@ export type DispatchRequest = {
   options?: DispatchOptions;
 };
 
-export type ConflictAvoidanceExperimentRequest = {
-  scenario: Scenario;
-  options?: DispatchOptions;
-};
-
-export type DynamicReplanningExperimentRequest = {
-  scenario: Scenario;
-  options?: DispatchOptions;
-};
-
-export type ReplanWindowExperimentRequest = {
-  scenario: Scenario;
-  options?: DispatchOptions;
-  windows: number[];
-};
-
-export type ScaleExperimentScenario = {
-  label: string;
-  scenario: Scenario;
-};
-
-export type ScaleExperimentRequest = {
-  cases: ScaleExperimentScenario[];
-  options?: DispatchOptions;
-};
-
-export type SeededPressureExperimentRequest = {
-  caseSet?: "standard" | "extended";
-  options?: DispatchOptions;
-};
-
-export type OnlinePressureExperimentRequest = {
-  options?: DispatchOptions;
-};
-
 export type CreateSessionRequest = {
   scenario: Scenario;
   options?: DispatchOptions;
@@ -298,8 +263,7 @@ export type SessionResult = {
   updatedAt: number;
   lastAccessedAt: number;
   currentTime: number;
-  manualTaskCount: number;
-  streamTaskCount: number;
+  runtimeTaskCount: number;
   runtimeEventCount: number;
   robotStates: RobotRuntimeState[];
   taskStates: TaskRuntimeState[];
@@ -315,8 +279,7 @@ export type SessionSummary = {
   updatedAt: number;
   lastAccessedAt: number;
   currentTime: number;
-  manualTaskCount: number;
-  streamTaskCount: number;
+  runtimeTaskCount: number;
   runtimeEventCount: number;
   completedTaskCount: number;
 };
@@ -324,144 +287,4 @@ export type SessionSummary = {
 export type DeleteSessionResult = {
   sessionId: string;
   deleted: boolean;
-};
-
-export type ExperimentCaseResult = {
-  label: string;
-  options: DispatchOptions;
-  result: DispatchResult;
-};
-
-export type ConflictAvoidanceExperimentResult = {
-  scenarioId: string;
-  cases: ExperimentCaseResult[];
-};
-
-export type DynamicReplanningExperimentResult = {
-  scenarioId: string;
-  cases: ExperimentCaseResult[];
-};
-
-export type ReplanWindowExperimentResult = {
-  scenarioId: string;
-  cases: ExperimentCaseResult[];
-};
-
-export type ScaleExperimentCaseResult = {
-  label: string;
-  scenarioId: string;
-  options: DispatchOptions;
-  result: DispatchResult;
-};
-
-export type ScaleExperimentResult = {
-  cases: ScaleExperimentCaseResult[];
-};
-
-export type SeededPressureExperimentCaseResult = {
-  label: string;
-  seed: number;
-  scenarioId: string;
-  options: DispatchOptions;
-  robotCount: number;
-  taskCount: number;
-  dynamicTaskCount: number;
-  obstacleCount: number;
-  assignedTaskCount: number;
-  stable: boolean;
-  completionRatePercent: number;
-  conflictCount: number;
-  deadlineMissCount: number;
-  failureCount: number;
-  totalDistance: number;
-  averageDistancePerTask: number;
-  makespan: number;
-  replanTimeMs: number;
-  withinPlanningTimeBudget: boolean;
-};
-
-export type SeededPressureExperimentSummary = {
-  caseCount: number;
-  largestRobotCount: number;
-  largestTaskCount: number;
-  totalTaskCount: number;
-  totalAssignedTaskCount: number;
-  stableCaseCount: number;
-  stableRatePercent: number;
-  completionRatePercent: number;
-  planningTimeBudgetMs: number;
-  withinPlanningTimeBudgetCount: number;
-  withinPlanningTimeBudgetRatePercent: number;
-  maxConflictCount: number;
-  totalDeadlineMissCount: number;
-  totalFailureCount: number;
-  totalDistance: number;
-  averageDistancePerTask: number;
-  maxMakespan: number;
-  averageReplanTimeMs: number;
-  maxReplanTimeMs: number;
-};
-
-export type SeededPressureExperimentResult = {
-  cases: SeededPressureExperimentCaseResult[];
-  summary: SeededPressureExperimentSummary;
-};
-
-export type OnlinePressureExperimentCaseResult = {
-  label: string;
-  seed: number;
-  scenarioId: string;
-  options: DispatchOptions;
-  robotCount: number;
-  baseTaskCount: number;
-  scenarioDynamicTaskCount: number;
-  manualTaskCount: number;
-  streamTaskCount: number;
-  runtimeEventCount: number;
-  runtimeEventEvidence: string[];
-  tickCount: number;
-  taskCount: number;
-  coveredTaskCount: number;
-  completedTaskCount: number;
-  assignedTaskCount: number;
-  stable: boolean;
-  completionRatePercent: number;
-  conflictCount: number;
-  deadlineMissCount: number;
-  failureCount: number;
-  totalDistance: number;
-  averageDistancePerTask: number;
-  makespan: number;
-  replanTimeMs: number;
-  metricsHistoryCount: number;
-  eventLogCount: number;
-};
-
-export type OnlinePressureExperimentSummary = {
-  caseCount: number;
-  totalTaskCount: number;
-  totalCoveredTaskCount: number;
-  totalCompletedTaskCount: number;
-  totalAssignedTaskCount: number;
-  stableCaseCount: number;
-  stableRatePercent: number;
-  completionRatePercent: number;
-  maxConflictCount: number;
-  totalDeadlineMissCount: number;
-  totalFailureCount: number;
-  totalRuntimeEventCount: number;
-  totalManualTaskCount: number;
-  totalStreamTaskCount: number;
-  totalDistance: number;
-  averageDistancePerTask: number;
-  maxMakespan: number;
-  averageReplanTimeMs: number;
-  maxReplanTimeMs: number;
-  maxMetricsHistoryCount: number;
-  maxEventLogCount: number;
-};
-
-export type OnlinePressureExperimentResult = {
-  cases: OnlinePressureExperimentCaseResult[];
-  summary: OnlinePressureExperimentSummary;
 };

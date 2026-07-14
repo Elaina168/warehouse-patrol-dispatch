@@ -102,6 +102,20 @@ POST http://127.0.0.1:8011/api/experiments/replan-window
 POST http://127.0.0.1:8011/api/experiments/scale
 ```
 
+固定种子压力接口用于运行标准或扩展的可复现随机压力场景；其中 `assignmentRatePercent` 表示已分配任务数占总任务数，不代表在线执行完成率：
+
+```text
+POST http://127.0.0.1:8011/api/experiments/seeded-pressure
+```
+
+在线压力接口用于运行固定时长的在线任务流、封锁、故障和恢复流程。响应分别提供 `coverageRatePercent`（未处于 `unassigned` 的任务占比）和 `actualCompletionRatePercent`（实验结束时，已完成任务占已释放任务的比例）：
+
+```text
+POST http://127.0.0.1:8011/api/experiments/online-pressure
+```
+
+六个实验接口仅作为后端回归和报告取数入口；主界面没有实验面板。主界面创建在线会话时固定启用场景动态机制，导入场景中的非空动态内容会在 `dynamic.triggerTime` 自动触发。
+
 在线会话接口用于持续追加任务并触发重规划：
 
 ```text
@@ -117,6 +131,10 @@ POST http://127.0.0.1:8011/api/sessions/{sessionId}/blocked-cells/remove
 POST http://127.0.0.1:8011/api/sessions/{sessionId}/failed-robots
 POST http://127.0.0.1:8011/api/sessions/{sessionId}/failed-robots/restore
 ```
+
+人工添加和定时自动生成的任务都使用同一个 `POST /api/sessions/{sessionId}/tasks` 接口；会话响应通过 `runtimeTaskCount` 统一统计成功插入的运行时任务。
+
+任务优先级范围为 `0..5`：数值越大优先级越高，`0` 为普通/后台，`5` 为最高/应急；突发任务至少为 `4`，同优先级任务不触发抢占。
 
 ## 当前机器环境
 

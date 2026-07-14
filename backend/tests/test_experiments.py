@@ -437,7 +437,8 @@ def test_seeded_pressure_experiment_returns_compact_performance_cases() -> None:
     assert summary["totalAssignedTaskCount"] == 65
     assert summary["stableCaseCount"] == 3
     assert summary["stableRatePercent"] == 100
-    assert summary["completionRatePercent"] == 100
+    assert summary["assignmentRatePercent"] == 100
+    assert "completionRatePercent" not in summary
     assert summary["planningTimeBudgetMs"] == 2000
     assert summary["withinPlanningTimeBudgetCount"] == 3
     assert summary["withinPlanningTimeBudgetRatePercent"] == 100
@@ -465,7 +466,8 @@ def test_seeded_pressure_experiment_returns_compact_performance_cases() -> None:
         assert case["obstacleCount"] >= 6
         assert case["assignedTaskCount"] == case["taskCount"]
         assert case["stable"] is True
-        assert case["completionRatePercent"] == 100
+        assert case["assignmentRatePercent"] == 100
+        assert "completionRatePercent" not in case
         assert case["conflictCount"] == 0
         assert case["deadlineMissCount"] == 0
         assert case["failureCount"] == 0
@@ -503,7 +505,8 @@ def test_seeded_pressure_experiment_can_run_extended_stability_cases() -> None:
     assert summary["totalAssignedTaskCount"] == 189
     assert summary["stableCaseCount"] == 7
     assert summary["stableRatePercent"] == 100
-    assert summary["completionRatePercent"] == 100
+    assert summary["assignmentRatePercent"] == 100
+    assert "completionRatePercent" not in summary
     assert summary["planningTimeBudgetMs"] == 2000
     assert summary["withinPlanningTimeBudgetCount"] == 7
     assert summary["withinPlanningTimeBudgetRatePercent"] == 100
@@ -523,7 +526,8 @@ def test_seeded_pressure_experiment_can_run_extended_stability_cases() -> None:
     for case in cases.values():
         assert case["assignedTaskCount"] == case["taskCount"]
         assert case["stable"] is True
-        assert case["completionRatePercent"] == 100
+        assert case["assignmentRatePercent"] == 100
+        assert "completionRatePercent" not in case
         assert case["conflictCount"] == 0
         assert case["deadlineMissCount"] == 0
         assert case["failureCount"] == 0
@@ -548,12 +552,19 @@ def test_online_pressure_experiment_returns_runtime_flow_summary() -> None:
     assert summary["caseCount"] == 1
     assert summary["stableCaseCount"] == 1
     assert summary["stableRatePercent"] == 100
-    assert summary["completionRatePercent"] == 100
+    assert summary["coverageRatePercent"] == 100
+    assert summary["actualCompletionRatePercent"] == round(
+        summary["totalCompletedTaskCount"] / summary["totalReleasedTaskCount"] * 100,
+        1,
+    )
+    assert "completionRatePercent" not in summary
     assert summary["maxConflictCount"] == 0
     assert summary["totalFailureCount"] == 0
     assert summary["totalRuntimeEventCount"] == 6
-    assert summary["totalManualTaskCount"] == 2
-    assert summary["totalStreamTaskCount"] == 0
+    assert summary["totalReleasedTaskCount"] == 17
+    assert summary["totalRuntimeTaskCount"] == 2
+    assert "totalManualTaskCount" not in summary
+    assert "totalStreamTaskCount" not in summary
     assert summary["totalCoveredTaskCount"] == summary["totalTaskCount"]
     assert summary["totalCompletedTaskCount"] > 0
     assert summary["maxReplanTimeMs"] > 0
@@ -567,8 +578,10 @@ def test_online_pressure_experiment_returns_runtime_flow_summary() -> None:
     assert case["robotCount"] == 4
     assert case["baseTaskCount"] == 12
     assert case["scenarioDynamicTaskCount"] == 3
-    assert case["manualTaskCount"] == 2
-    assert case["streamTaskCount"] == 0
+    assert case["releasedTaskCount"] == 17
+    assert case["runtimeTaskCount"] == 2
+    assert "manualTaskCount" not in case
+    assert "streamTaskCount" not in case
     assert case["runtimeEventCount"] == 6
     assert case["runtimeEventEvidence"] == [
         "manualTask",
@@ -583,7 +596,12 @@ def test_online_pressure_experiment_returns_runtime_flow_summary() -> None:
     assert case["completedTaskCount"] > 0
     assert case["assignedTaskCount"] > 0
     assert case["stable"] is True
-    assert case["completionRatePercent"] == 100
+    assert case["coverageRatePercent"] == 100
+    assert case["actualCompletionRatePercent"] == round(
+        case["completedTaskCount"] / case["releasedTaskCount"] * 100,
+        1,
+    )
+    assert "completionRatePercent" not in case
     assert case["conflictCount"] == 0
     assert case["deadlineMissCount"] == 0
     assert case["failureCount"] == 0

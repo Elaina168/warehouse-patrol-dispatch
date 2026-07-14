@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 Cell = tuple[int, int]
 NonNegativeInt = Annotated[int, Field(ge=0)]
 PositiveInt = Annotated[int, Field(gt=0)]
+PriorityInt = Annotated[int, Field(ge=0, le=5)]
 AssignmentReplanWindowInt = Annotated[int, Field(ge=0, le=120)]
 RecoveryAction = Literal[
     "addCapableRobotOrReduceDemand",
@@ -26,7 +27,7 @@ class Task(ApiModel):
     id: str
     type: Literal["inspection", "delivery", "emergency"]
     title: str
-    priority: NonNegativeInt
+    priority: PriorityInt
     releaseTime: NonNegativeInt | None = None
     deadline: NonNegativeInt | None = None
     serviceTime: NonNegativeInt | None = None
@@ -312,7 +313,7 @@ class SeededPressureExperimentCaseResult(ApiModel):
     obstacleCount: int
     assignedTaskCount: int
     stable: bool
-    completionRatePercent: float
+    assignmentRatePercent: float
     conflictCount: int
     deadlineMissCount: int
     failureCount: int
@@ -331,7 +332,7 @@ class SeededPressureExperimentSummary(ApiModel):
     totalAssignedTaskCount: int
     stableCaseCount: int
     stableRatePercent: float
-    completionRatePercent: float
+    assignmentRatePercent: float
     planningTimeBudgetMs: int
     withinPlanningTimeBudgetCount: int
     withinPlanningTimeBudgetRatePercent: float
@@ -358,8 +359,8 @@ class OnlinePressureExperimentCaseResult(ApiModel):
     robotCount: int
     baseTaskCount: int
     scenarioDynamicTaskCount: int
-    manualTaskCount: int
-    streamTaskCount: int
+    releasedTaskCount: int
+    runtimeTaskCount: int
     runtimeEventCount: int
     runtimeEventEvidence: list[str]
     tickCount: int
@@ -368,7 +369,8 @@ class OnlinePressureExperimentCaseResult(ApiModel):
     completedTaskCount: int
     assignedTaskCount: int
     stable: bool
-    completionRatePercent: float
+    coverageRatePercent: float
+    actualCompletionRatePercent: float
     conflictCount: int
     deadlineMissCount: int
     failureCount: int
@@ -383,18 +385,19 @@ class OnlinePressureExperimentCaseResult(ApiModel):
 class OnlinePressureExperimentSummary(ApiModel):
     caseCount: int
     totalTaskCount: int
+    totalReleasedTaskCount: int
     totalCoveredTaskCount: int
     totalCompletedTaskCount: int
     totalAssignedTaskCount: int
     stableCaseCount: int
     stableRatePercent: float
-    completionRatePercent: float
+    coverageRatePercent: float
+    actualCompletionRatePercent: float
     maxConflictCount: int
     totalDeadlineMissCount: int
     totalFailureCount: int
     totalRuntimeEventCount: int
-    totalManualTaskCount: int
-    totalStreamTaskCount: int
+    totalRuntimeTaskCount: int
     totalDistance: int
     averageDistancePerTask: float
     maxMakespan: int
@@ -417,8 +420,7 @@ class SessionResult(ApiModel):
     updatedAt: float
     lastAccessedAt: float
     currentTime: int
-    manualTaskCount: int
-    streamTaskCount: int
+    runtimeTaskCount: int
     runtimeEventCount: int
     robotStates: list[RobotRuntimeState]
     taskStates: list[TaskRuntimeState]
@@ -434,8 +436,7 @@ class SessionSummary(ApiModel):
     updatedAt: float
     lastAccessedAt: float
     currentTime: int
-    manualTaskCount: int
-    streamTaskCount: int
+    runtimeTaskCount: int
     runtimeEventCount: int
     completedTaskCount: int
 
