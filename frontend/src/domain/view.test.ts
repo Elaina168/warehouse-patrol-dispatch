@@ -18,6 +18,49 @@ function expectInsideScenario(scenario: Scenario, cell: Cell): void {
   expect(cell[1]).toBeLessThan(scenario.height);
 }
 
+function expectedShelfCells(): Cell[] {
+  const xGroups = [[2, 3, 4], [7, 8, 9], [12, 13, 14], [17, 18, 19]];
+  const yGroups = [[3, 4], [7, 8], [11, 12]];
+  return yGroups.flatMap((ys) => ys.flatMap((y) => xGroups.flatMap((xs) => xs.map((x) => [x, y] as Cell))));
+}
+
+function cellSet(cells: Cell[]): Set<string> {
+  return new Set(cells.map(cellKey));
+}
+
+const HORIZONTAL_INSPECTION_TARGETS: Cell[] = [
+  [0, 1], [24, 1], [24, 2], [0, 2], [0, 5], [24, 5], [24, 6], [0, 6],
+  [0, 9], [24, 9], [24, 10], [0, 10], [0, 13], [24, 13], [24, 14], [0, 14]
+];
+
+const VERTICAL_INSPECTION_TARGETS: Cell[] = [
+  [0, 1], [0, 14], [1, 14], [1, 1], [5, 1], [5, 14], [6, 14], [6, 1],
+  [10, 1], [10, 14], [11, 14], [11, 1], [15, 1], [15, 14], [16, 14], [16, 1],
+  [20, 1], [20, 14], [21, 14], [21, 1], [22, 1], [22, 14], [23, 14], [23, 1],
+  [24, 1], [24, 14]
+];
+
+function reachableCellKeys(scenario: Scenario, start: Cell): Set<string> {
+  const obstacles = cellSet(scenario.obstacles);
+  const visited = new Set<string>([cellKey(start)]);
+  const queue: Cell[] = [start];
+  for (let index = 0; index < queue.length; index += 1) {
+    const [x, y] = queue[index];
+    const neighbours: Cell[] = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
+    for (const neighbour of neighbours) {
+      const key = cellKey(neighbour);
+      if (
+        neighbour[0] < 0 || neighbour[0] >= scenario.width
+        || neighbour[1] < 0 || neighbour[1] >= scenario.height
+        || obstacles.has(key) || visited.has(key)
+      ) continue;
+      visited.add(key);
+      queue.push(neighbour);
+    }
+  }
+  return visited;
+}
+
 describe("domain view helpers", () => {
   it("uses stable cell keys", () => {
     expect(cellKey([3, 7])).toBe("3,7");
@@ -53,6 +96,58 @@ describe("scenario data", () => {
     expect(integrated?.dynamic.failedRobots).toEqual([]);
     expect(integrated?.description).toContain("避碰");
     expect(integrated?.description).toContain("在线任务");
+  });
+
+  it("protects the realistic warehouse grid and two-cell spacing", () => {
+    const integrated = scenarios[0];
+    expect(integrated.id).toBe("integrated-demo");
+    expect([integrated.width, integrated.height]).toEqual([26, 16]);
+    expect(cellSet(integrated.obstacles)).toEqual(cellSet(expectedShelfCells()));
+    expect(integrated.obstacles).toHaveLength(72);
+
+    expect(integrated.zones.warehouse).toEqual([[2, 0], [5, 0], [8, 0], [11, 0], [14, 0], [17, 0]]);
+    expect(integrated.zones.delivery).toEqual([[2, 15], [5, 15], [8, 15], [11, 15], [14, 15], [17, 15]]);
+    expect(integrated.zones.charging).toEqual([[25, 3], [25, 6], [25, 9], [25, 12]]);
+    expect(cellSet(integrated.zones.inspection)).toEqual(
+      cellSet([...HORIZONTAL_INSPECTION_TARGETS, ...VERTICAL_INSPECTION_TARGETS])
+    );
+    expect(integrated.zones.inspection).toHaveLength(38);
+    expect(integrated.robots.map((robot) => robot.start)).toEqual([[22, 3], [22, 6], [22, 9], [22, 12]]);
+
+    const obstacleKeys = cellSet(integrated.obstacles);
+    const specialCells = [
+      ...integrated.zones.warehouse,
+      ...integrated.zones.inspection,
+      ...integrated.zones.delivery,
+      ...(integrated.zones.charging ?? []),
+      ...integrated.robots.map((robot) => robot.start)
+    ];
+    expect(specialCells.every((cell) => !obstacleKeys.has(cellKey(cell)))).toBe(true);
+
+    const reachable = reachableCellKeys(integrated, [0, 0]);
+    expect(reachable.size).toBe(integrated.width * integrated.height - integrated.obstacles.length);
+  });
+
+  it("protects the six default tasks and calibrated warehouse timing", () => {
+    const integrated = scenarios[0];
+    const tasks = new Map(integrated.tasks.map((task) => [task.id, task]));
+    expect([...tasks.keys()]).toEqual(["T1", "T2", "T3", "T4", "T5", "E1"]);
+
+    expect(tasks.get("T1")).toMatchObject({ pickup: [2, 0], dropoff: [17, 15], deadline: 500 });
+    expect(tasks.get("T2")).toMatchObject({ pickup: [17, 0], dropoff: [2, 15], deadline: 500 });
+    expect(tasks.get("T4")).toMatchObject({ pickup: [8, 0], dropoff: [11, 15], releaseTime: 4, deadline: 500 });
+    expect(tasks.get("E1")).toMatchObject({ target: [11, 10], releaseTime: 12, deadline: 300 });
+    expect(tasks.get("T3")).toMatchObject({ targets: HORIZONTAL_INSPECTION_TARGETS, deadline: 400 });
+    expect(tasks.get("T5")).toMatchObject({
+      targets: VERTICAL_INSPECTION_TARGETS,
+      releaseTime: 8,
+      deadline: 700
+    });
+
+    expect(integrated.robots.map((robot) => [robot.battery, robot.batteryCapacity])).toEqual([
+      [512, 512], [510, 512], [508, 512], [506, 512]
+    ]);
+    expect(integrated.dynamic).toEqual({ triggerTime: 12, blockedCells: [], failedRobots: [], tasks: [] });
   });
 
   it("keeps ids unique and map coordinates inside bounds", () => {
