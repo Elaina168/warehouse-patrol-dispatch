@@ -105,7 +105,7 @@ Completed and currently expected to remain in the project:
 - API contract regression tests now verify response nullable fields, including serialized task variant null fields, so frontend task response types match backend `None` serialization.
 - Experiment comparison API now exposes `POST /api/experiments/conflict-avoidance`, returning paired dispatch results for conflict avoidance disabled and enabled on the same scenario.
 - Conflict-avoidance experiment scenarios should not use a fully one-dimensional two-robot position swap as a no-conflict success case; without side-bypass space, the current competition-scope planner may still report unavoidable conflicts.
-- Conflict-avoidance experiment regression now covers the shared `integrated-demo` scenario: priority avoidance preserves all assignments, reduces direct-plan conflict forecasts, and keeps failure count at zero.
+- Conflict-avoidance experiment regression now covers the shared `integrated-demo` scenario: priority avoidance preserves all assignments, reduces direct-plan conflict forecasts to zero, and keeps failure count at zero.
 - Experiment comparison API now exposes `POST /api/experiments/dynamic-replanning`, returning paired dispatch results for dynamic events disabled and enabled on the same scenario.
 - Dynamic-replanning experiment regression now derives a dynamic-task variant from `integrated-demo`: enabling dynamic replanning introduces `E1` at its configured trigger time while preserving zero failures.
 - Experiment comparison API now exposes `POST /api/experiments/replan-window`, returning one dispatch result per requested `assignmentReplanWindow` value.
@@ -120,7 +120,9 @@ Completed and currently expected to remain in the project:
 - Frontend API error handling preserves backend error `detail` text across session creation, updates, ticks, reset, and delete failures, so operational panels surface concrete API failure causes instead of only HTTP status codes.
 - Frontend status strip exposes the configured rolling replan window. Scenario dynamic events are always enabled for main-session creation and are not presented as a user toggle.
 - Frontend scenario-data regression now protects `integrated-demo` as the only persisted frontend scenario and verifies its mixed task, charging, and online-dispatch coverage.
-- Fixed demo e2e now reads the shared `integrated-demo` JSON and verifies tick advancement, urgent task insertion, runtime blocked cells, robot failure and recovery, blocked-cell removal, event logs, metrics history, conflict-avoidance comparison, and a derived dynamic-task variant.
+- The sole `integrated-demo` baseline now uses a `26 × 16` realistic warehouse grid with twelve `3 × 2` shelf groups, two-cell horizontal and vertical clearances, top inbound cells, bottom outbound cells, right-side robot starts, and right-side charging cells.
+- The fixed default demo regression now uses only the six scenario tasks and completes by T=700 with zero active conflicts, failures, deadline misses, or charging visits; runtime task, block, failure, and recovery behavior remains covered by focused session regressions.
+- Fixed demo e2e reads the shared `integrated-demo` JSON and verifies the default six-task flow, conflict-avoidance comparison, and a derived dynamic-task variant.
 - Integrated online-session regression now runs continuous ticks through `E1` release and manual high-priority task insertion, verifying task states, event logs, conflict metrics, and metrics history remain consistent.
 - Frontend scenario data now lives in `frontend/src/domain/scenarios.json`, with `frontend/src/domain/scenarios.ts` providing typed exports for the React app and tests.
 - Backend tests split by algorithm, session, validation, health, and fixed demo flow.
@@ -159,6 +161,7 @@ Recommended execution order:
    - The current full check passes and the online dispatch workflow is implemented.
    - The fixed frontend demo scenario IDs and their intended capability coverage are now protected by frontend scenario-data regression tests.
    - The sole frontend `integrated-demo` scenario is protected by shared JSON, frontend data, and backend end-to-end regressions.
+   - The fixed baseline is a `26 × 16` realistic warehouse with twelve `3 × 2` shelf groups and two-cell clearances; its default six-task online flow completes by T=700 without runtime task injection, runtime blocks, or robot failures.
    - Next work is to keep this fixed demo flow stable during backend/frontend changes and avoid destabilizing broad refactors.
 
 2. Core algorithm module completion - 接近完成
@@ -175,7 +178,7 @@ Recommended execution order:
    - Implemented session metadata such as creation time and last access/update time.
    - Implemented idle-session cleanup, least-recently-accessed capacity pruning, explicit delete/reset endpoints, task caps, tick caps, metrics-history caps, and event-note caps.
    - Implemented runtime task insertion through one unified task endpoint, timed frontend task generation through that same endpoint, runtime blocked cells, robot failure and recovery, scenario dynamic timing, rolling-window triggers, task locks, event logs, and metrics history.
-   - Integrated-scenario online continuity is regression-tested through ticks, manual insertion, conflict avoidance, runtime events, and metrics consistency; focused generic tests retain recovery edge coverage.
+   - Integrated-scenario default continuity is regression-tested through T=700; manual insertion, runtime events, and recovery edge coverage remain protected by focused session regressions.
    - Fixed-seed randomized online pressure is now regression-tested through continuous ticks, dynamic activation, manual emergency insertion, runtime block/failure events, recovery APIs, event history, and metrics history.
    - Remaining work is mainly harder online pressure boundary cases or dedicated performance profiling if algorithm scale becomes a priority. Persistence, auth, or external observability remain out of competition scope unless the project scope expands.
 
