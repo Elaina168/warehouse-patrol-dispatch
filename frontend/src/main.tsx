@@ -6,7 +6,7 @@ import {
   deleteSession,
   resetSession
 } from "./domain/sessionApi";
-import { cellKey, getRobotStateAt } from "./domain/view";
+import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./domain/view";
 import { scenarios } from "./domain/scenarios";
 import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, RecoveryAction, Scenario, SessionResult, Task, TaskFailureDetail, TaskType } from "./domain/types";
 import "./styles.css";
@@ -1127,6 +1127,10 @@ function MapBoard({
   );
   const taskCells = useMemo(() => collectTaskCells(taskLabelTasks), [taskLabelTasks]);
   const chargingCells = useMemo(() => new Set((scenario.zones.charging ?? []).map(cellKey)), [scenario.zones.charging]);
+  const zoneCellPresentations = useMemo(
+    () => buildZoneCellPresentations(scenario.zones),
+    [scenario.zones]
+  );
   const useRuntimeRobotSnapshot = shouldUseRuntimeRobotSnapshot(time, sessionCurrentTime, robotStates);
   const occupied = useMemo(
     () => useRuntimeRobotSnapshot ? getCellsFromRobotStates(robotStates) : getCellsOnPaths(result.paths, time),
@@ -1160,6 +1164,7 @@ function MapBoard({
       const key = cellKey(cell);
       const robotId = robotAtCell(occupied, key);
       const displayedConflict = activeConflicts.get(key) ?? null;
+      const zonePresentation = zoneCellPresentations.get(key);
       const robot = robotId ? scenario.robots.find((item) => item.id === robotId) : null;
       const robotColor = robotId ? robotColors.get(robotId) : undefined;
       const runtimeState = useRuntimeRobotSnapshot && robotId ? robotStates.find((item) => item.robotId === robotId) : null;
@@ -1172,7 +1177,7 @@ function MapBoard({
         obstacles.has(key) ? "obstacle" : "",
         blocked.has(key) ? "blocked" : "",
         taskCells.has(key) ? "task-cell" : "",
-        chargingCells.has(key) ? "charging-cell" : "",
+        ...(zonePresentation?.classNames ?? []),
         displayedConflict ? "conflict-cell" : "",
         mapPickTarget && !obstacles.has(key) ? "map-pickable-cell" : "",
         robotId ? "robot-cell" : "",
@@ -1234,7 +1239,7 @@ function MapBoard({
                 </span>
               ) : null}
             </span>
-          ) : (taskCells.get(key) ?? (chargingCells.has(key) ? "充" : null))}
+          ) : (taskCells.get(key) ?? zonePresentation?.label ?? null)}
           {displayedConflict ? (
             <span className="conflict-marker active">
               <TriangleAlert size={14} aria-hidden="true" />

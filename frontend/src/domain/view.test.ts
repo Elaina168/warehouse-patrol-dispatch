@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import scenariosData from "./scenarios.json";
 import { fixedDemoScenarioIds, scenarios } from "./scenarios";
-import { cellKey, getRobotStateAt } from "./view";
+import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./view";
 import type { Cell, Scenario, Task } from "./types";
 
 function taskWaypoints(task: Task): Cell[] {
@@ -72,6 +72,24 @@ describe("domain view helpers", () => {
 
     expect(state.position).toEqual([2, 0]);
     expect(state.progress).toBe(1);
+  });
+
+  it("builds single-cell zone classes and labels with stable overlap priority", () => {
+    const presentations = buildZoneCellPresentations({
+      warehouse: [[2, 0]],
+      inspection: [[3, 1], [4, 1]],
+      delivery: [[5, 15]],
+      charging: [[4, 1], [25, 3]]
+    });
+
+    expect(presentations.get("2,0")).toEqual({ classNames: ["warehouse-cell"], label: "进" });
+    expect(presentations.get("3,1")).toEqual({ classNames: ["inspection-cell"], label: "巡" });
+    expect(presentations.get("5,15")).toEqual({ classNames: ["delivery-cell"], label: "出" });
+    expect(presentations.get("25,3")).toEqual({ classNames: ["charging-cell"], label: "充" });
+    expect(presentations.get("4,1")).toEqual({
+      classNames: ["charging-cell", "inspection-cell"],
+      label: "充"
+    });
   });
 });
 

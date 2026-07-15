@@ -606,9 +606,10 @@ input {
 .map-wrap {
   position: relative;
   width: min(100%, 720px);
-  height: 520px;
+  height: auto;
+  aspect-ratio: var(--cols) / var(--rows);
   margin: 0 auto;
-  padding: 16px;
+  padding: 0;
 }
 
 .map-context-menu {
@@ -630,7 +631,7 @@ input {
 
 .active-route-layer {
   position: absolute;
-  inset: 16px;
+  inset: 0;
   z-index: 2;
   display: grid;
   gap: 3px;
@@ -711,6 +712,28 @@ input {
   box-shadow: inset 0 0 0 2px #dcecff;
 }
 
+.cell.warehouse-cell {
+  background: #2f8f5b;
+  border-color: #237247;
+}
+
+.cell.delivery-cell {
+  background: #d48a1f;
+  border-color: #a86713;
+}
+
+.cell.inspection-cell {
+  background: #7654a6;
+  border-color: #5d3d89;
+}
+
+.cell.charging-cell {
+  background: #39a8a2;
+  border-color: #237d78;
+  color: #ffffff;
+  font-weight: 700;
+}
+
 .cell.obstacle {
   background: #38434a;
   border-color: #38434a;
@@ -722,15 +745,12 @@ input {
 }
 
 .cell.task-cell {
-  background: #6f9d3f;
   border-color: #5e8b2f;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.72);
 }
 
-.cell.charging-cell {
-  background: #39a8a2;
-  border-color: #237d78;
-  color: #ffffff;
-  font-weight: 700;
+.cell.task-cell:not(.warehouse-cell):not(.delivery-cell):not(.inspection-cell):not(.charging-cell) {
+  background: #6f9d3f;
 }
 
 .cell.conflict-cell {
