@@ -421,7 +421,10 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
 def _initialize_shelf_inventory(session: DispatchSession) -> None:
     statuses = initial_shelf_statuses(session.scenario)
     bindings: dict[str, ShelfTaskBinding] = {}
-    for task in [*session.scenario.tasks, *session.scenario.dynamic.tasks]:
+    tasks = list(session.scenario.tasks)
+    if session.options.includeDynamic:
+        tasks.extend(session.scenario.dynamic.tasks)
+    for task in tasks:
         reserve_shelf_task(session.scenario, statuses, bindings, task)
     session.shelf_statuses = statuses
     session.shelf_task_bindings = bindings

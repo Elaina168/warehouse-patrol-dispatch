@@ -184,6 +184,38 @@ def test_session_reserves_completes_and_resets_shelf_inventory() -> None:
     assert shelf_states(reset.json()) == {"S01": "empty", "S02": "occupied"}
 
 
+def test_session_ignores_dynamic_shelf_reservations_when_dynamic_events_are_disabled() -> None:
+    client = TestClient(app)
+    scenario = shelf_session_scenario()
+    scenario["dynamic"]["tasks"] = [
+        inbound_runtime_task("D-IN"),
+        outbound_runtime_task("D-OUT"),
+    ]
+
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+    assert shelf_states(created.json()) == {"S01": "empty", "S02": "occupied"}
+
+    inbound = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={"task": inbound_runtime_task()},
+    )
+    assert inbound.status_code == 200
+    assert shelf_states(inbound.json())["S01"] == "inboundReserved"
+
+    reset = client.post(f"/api/sessions/{session_id}/reset")
+    assert reset.status_code == 200
+    assert shelf_states(reset.json()) == {"S01": "empty", "S02": "occupied"}
+
+
 def test_session_shelf_inventory_outbound_pickup_empties_at_actual_visit_time() -> None:
     client = TestClient(app)
     created = client.post(
