@@ -17,7 +17,7 @@ def integrated_dynamic_event_scenario() -> dict:
     return scenario
 
 
-def test_integrated_demo_runs_online_dispatch_flow() -> None:
+def test_integrated_demo_runs_default_online_dispatch_flow() -> None:
     client = TestClient(app)
     create_response = client.post(
         "/api/sessions",
@@ -27,75 +27,80 @@ def test_integrated_demo_runs_online_dispatch_flow() -> None:
         },
     )
     assert create_response.status_code == 200
-    session_id = create_response.json()["sessionId"]
+    create_payload = create_response.json()
+    session_id = create_payload["sessionId"]
+    initial_shelves = {item["shelfId"]: item["status"] for item in create_payload["shelfStates"]}
+    assert sum(status in {"occupied", "outboundReserved"} for status in initial_shelves.values()) == 12
+    assert initial_shelves["S32"] == "outboundReserved"
+    assert initial_shelves["S13"] == "inboundReserved"
+    assert initial_shelves["S43"] == "inboundReserved"
 
-    tick_response = client.post(
+    planning_response = client.post(
         f"/api/sessions/{session_id}/tick",
-        json={"currentTime": 2},
+        json={"currentTime": 1},
     )
-    assert tick_response.status_code == 200
-    tick_payload = tick_response.json()
-    assert tick_payload["scenarioId"] == "integrated-demo"
-    assert tick_payload["currentTime"] == 2
-    assert any(state["locked"] for state in tick_payload["taskStates"])
+    assert planning_response.status_code == 200
+    planning_payload = planning_response.json()
+    t2_assignment = next(
+        assignment
+        for assignment in planning_payload["result"]["assignments"]
+        if any(task["id"] == "T2" for task in assignment["tasks"])
+    )
+    t2_path = planning_payload["result"]["paths"][t2_assignment["robotId"]]
+    pickup_tick = t2_path.index([13, 6])
 
-    urgent_response = client.post(
-        f"/api/sessions/{session_id}/tasks",
-        json={
-            "task": {
-                "id": "DEMO-URGENT",
-                "type": "emergency",
-                "title": "演示紧急复核",
-                "priority": 5,
-                "releaseTime": 2,
-                "deadline": 24,
-                "target": [1, 4],
-            }
-        },
+    release_response = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": 12},
     )
-    assert urgent_response.status_code == 200
-    urgent_payload = urgent_response.json()
-    assert any(task["id"] == "DEMO-URGENT" for task in urgent_payload["result"]["tasks"])
-    assert any("高优先级任务 DEMO-URGENT" in event["text"] for event in urgent_payload["result"]["eventLog"])
+    assert release_response.status_code == 200
+    release_payload = release_response.json()
+    states_at_release = {state["taskId"]: state["status"] for state in release_payload["taskStates"]}
+    assert states_at_release["E1"] in {"running", "completed"}
+    assert release_payload["runtimeTaskCount"] == 0
+    assert release_payload["runtimeEventCount"] == 0
+    assert release_payload["result"]["extraBlocked"] == []
+    assert release_payload["result"]["unavailableRobotIds"] == []
 
-    block_response = client.post(
-        f"/api/sessions/{session_id}/blocked-cells",
-        json={"cell": [1, 2], "currentTime": 2},
+    before_pickup_response = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": pickup_tick - 1},
     )
-    assert block_response.status_code == 200
-    block_payload = block_response.json()
-    assert [1, 2] in block_payload["result"]["extraBlocked"]
-    assert any("手动封锁单元" in event["text"] for event in block_payload["result"]["eventLog"])
+    assert before_pickup_response.status_code == 200
+    assert {
+        item["shelfId"]: item["status"] for item in before_pickup_response.json()["shelfStates"]
+    }["S32"] == "outboundReserved"
 
-    fail_response = client.post(
-        f"/api/sessions/{session_id}/failed-robots",
-        json={"robotId": "R2", "currentTime": 2},
+    pickup_response = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": pickup_tick},
     )
-    assert fail_response.status_code == 200
-    final_payload = fail_response.json()
-    assert "R2" in final_payload["result"]["unavailableRobotIds"]
-    assert len(final_payload["metricsHistory"]) >= 2
-    assert any("手动标记故障机器人" in event["text"] for event in final_payload["result"]["eventLog"])
+    assert pickup_response.status_code == 200
+    pickup_payload = pickup_response.json()
+    assert {item["shelfId"]: item["status"] for item in pickup_payload["shelfStates"]}["S32"] == "empty"
+    assert {"time": pickup_tick, "text": "货架 S32 已取货"} in pickup_payload["result"]["eventLog"]
 
-    restore_response = client.post(
-        f"/api/sessions/{session_id}/failed-robots/restore",
-        json={"robotId": "R2", "currentTime": 2},
+    completion_response = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": 700},
     )
-    assert restore_response.status_code == 200
-    restored_payload = restore_response.json()
-    assert "R2" not in restored_payload["result"]["unavailableRobotIds"]
-    assert [1, 2] in restored_payload["result"]["extraBlocked"]
-
-    unblock_response = client.post(
-        f"/api/sessions/{session_id}/blocked-cells/remove",
-        json={"cell": [1, 2], "currentTime": 2},
-    )
-    assert unblock_response.status_code == 200
-    final_payload = unblock_response.json()
-    assert "R2" not in final_payload["result"]["unavailableRobotIds"]
-    assert [1, 2] not in final_payload["result"]["extraBlocked"]
-    assert any("手动恢复机器人：R2" in event["text"] for event in final_payload["result"]["eventLog"])
-    assert any("手动解除封锁单元：(1, 2)" in event["text"] for event in final_payload["result"]["eventLog"])
+    assert completion_response.status_code == 200
+    payload = completion_response.json()
+    assert payload["scenarioId"] == "integrated-demo"
+    assert payload["completedTaskCount"] == 6
+    assert {state["status"] for state in payload["taskStates"]} == {"completed"}
+    assert payload["runtimeTaskCount"] == 0
+    assert payload["runtimeEventCount"] == 0
+    assert payload["result"]["metrics"]["conflictCount"] == 0
+    assert payload["result"]["metrics"]["deadlineMissCount"] == 0
+    assert payload["result"]["metrics"]["failureCount"] == 0
+    assert payload["result"]["chargingVisits"] == []
+    assert payload["metricsHistory"][-1]["completedTaskCount"] == 6
+    final_shelves = {item["shelfId"]: item["status"] for item in payload["shelfStates"]}
+    assert sum(status == "occupied" for status in final_shelves.values()) == 13
+    assert final_shelves["S13"] == "occupied"
+    assert final_shelves["S32"] == "empty"
+    assert final_shelves["S43"] == "occupied"
 
 
 def test_integrated_demo_conflict_avoidance_reduces_baseline_conflicts() -> None:
@@ -117,7 +122,8 @@ def test_integrated_demo_conflict_avoidance_reduces_baseline_conflicts() -> None
     assert payload["scenarioId"] == "integrated-demo"
     assert without_avoidance["metrics"]["assignedTaskCount"] == 6
     assert with_avoidance["metrics"]["assignedTaskCount"] == 6
-    assert without_avoidance["metrics"]["conflictCount"] > with_avoidance["metrics"]["conflictCount"]
+    assert without_avoidance["metrics"]["conflictCount"] > 0
+    assert with_avoidance["metrics"]["conflictCount"] == 0
     assert without_avoidance["conflicts"]
     assert len(with_avoidance["conflicts"]) == with_avoidance["metrics"]["conflictCount"]
     assert without_avoidance["metrics"]["failureCount"] == 0

@@ -18,6 +18,16 @@ from backend.app.dispatch import (
     task_service_time,
     task_waypoints,
 )
+from backend.app.inventory import (
+    ShelfInventoryError,
+    ShelfTaskBinding,
+    build_shelf_runtime_states,
+    complete_inbound_task,
+    complete_outbound_pickup,
+    initial_shelf_statuses,
+    reserve_shelf_task,
+)
+from backend.app.replan_window import ReplanWindowDecision, decide_replan_window
 from backend.app.schemas import (
     AddBlockRequest,
     AddTaskRequest,
@@ -39,6 +49,7 @@ from backend.app.schemas import (
     SessionResult,
     SessionSummary,
     SessionTickRequest,
+    ShelfStatus,
     Task,
     TaskRuntimeState,
 )
@@ -86,6 +97,11 @@ class DispatchSession:
     metrics_history: list[MetricSnapshot] = field(default_factory=list)
     locked_task_robot_ids: dict[str, str] = field(default_factory=dict)
     preferred_task_robot_ids: dict[str, str] = field(default_factory=dict)
+    shelf_statuses: dict[str, ShelfStatus] = field(default_factory=dict)
+    shelf_task_bindings: dict[str, ShelfTaskBinding] = field(default_factory=dict)
+    effective_assignment_replan_window: int | None = None
+    replan_window_reason: str | None = None
+    last_replan_time_ms: float | None = None
     last_result: DispatchResult | None = None
 
 
@@ -116,6 +132,7 @@ def create_session(request: CreateSessionRequest) -> SessionResult:
         robot_travelled_distance={robot.id: 0 for robot in request.scenario.robots},
         robot_battery_levels={robot.id: robot.battery for robot in request.scenario.robots},
     )
+    _initialize_shelf_inventory(session)
     _sessions[session_id] = session
     return _build_result(session)
 
@@ -156,7 +173,15 @@ def add_task(session_id: str, request: AddTaskRequest) -> SessionResult:
     diagnostics = _validate_runtime_task(session, task)
     if diagnostics:
         raise HTTPException(status_code=422, detail=diagnostics)
+    next_statuses = dict(session.shelf_statuses)
+    next_bindings = dict(session.shelf_task_bindings)
+    try:
+        reserve_shelf_task(session.scenario, next_statuses, next_bindings, task)
+    except ShelfInventoryError as error:
+        raise HTTPException(status_code=422, detail=[str(error)]) from error
     session.scenario.tasks.append(task)
+    session.shelf_statuses = next_statuses
+    session.shelf_task_bindings = next_bindings
     _release_locks_for_active_higher_priority_task(session, task, session.current_time)
     session.runtime_task_count += 1
     _invalidate_plan(session)
@@ -392,8 +417,24 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.metrics_history.clear()
     session.locked_task_robot_ids.clear()
     session.preferred_task_robot_ids.clear()
+    session.effective_assignment_replan_window = None
+    session.replan_window_reason = None
+    session.last_replan_time_ms = None
     session.last_result = None
+    _initialize_shelf_inventory(session)
     _touch_session(session, updated=updated)
+
+
+def _initialize_shelf_inventory(session: DispatchSession) -> None:
+    statuses = initial_shelf_statuses(session.scenario)
+    bindings: dict[str, ShelfTaskBinding] = {}
+    tasks = list(session.scenario.tasks)
+    if session.options.includeDynamic:
+        tasks.extend(session.scenario.dynamic.tasks)
+    for task in tasks:
+        reserve_shelf_task(session.scenario, statuses, bindings, task)
+    session.shelf_statuses = statuses
+    session.shelf_task_bindings = bindings
 
 
 def _cleanup_sessions(now: float | None = None) -> None:
@@ -455,6 +496,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
             runtimeTaskCount=session.runtime_task_count,
             runtimeEventCount=len(session.runtime_blocked_cells) + len(session.runtime_failed_robot_ids),
             robotStates=robot_states,
+            shelfStates=build_shelf_runtime_states(session.scenario, session.shelf_statuses),
             taskStates=task_states,
             metricsHistory=session.metrics_history,
             completedTaskCount=len(session.completed_task_ids),
@@ -462,6 +504,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
         )
     if result is None:
         scenario, options, task_lookup = _build_effective_dispatch_input(session)
+        replan_window_decision = _session_replan_window_decision(session)
         result = _restore_absolute_result(
             run_dispatch(
                 scenario,
@@ -471,11 +514,14 @@ def _build_result(session: DispatchSession) -> SessionResult:
                 include_dynamic_events=_include_scenario_dynamic_events(session),
                 apply_dynamic_constraints_at_start=True,
                 task_limit_per_robot=1,
+                replan_window_decision=replan_window_decision,
             ),
             task_lookup,
             session.current_time,
             session,
         )
+        _record_replan_window_decision(session, replan_window_decision)
+        session.last_replan_time_ms = result.metrics.replanTimeMs
         _update_task_robot_preferences(session, result)
 
         session.last_result = result
@@ -504,6 +550,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
         runtimeTaskCount=session.runtime_task_count,
         runtimeEventCount=len(session.runtime_blocked_cells) + len(session.runtime_failed_robot_ids),
         robotStates=robot_states,
+        shelfStates=build_shelf_runtime_states(session.scenario, session.shelf_statuses),
         taskStates=task_states,
         metricsHistory=session.metrics_history,
         completedTaskCount=len(session.completed_task_ids),
@@ -524,12 +571,15 @@ def _should_delay_initial_planning(session: DispatchSession) -> bool:
 
 def _build_idle_result(session: DispatchSession) -> DispatchResult:
     dynamic_active = _is_scenario_dynamic_active(session)
+    replan_window_decision = _session_replan_window_decision(session)
     active_dynamic_blocked = session.scenario.dynamic.blockedCells if dynamic_active else []
     active_dynamic_failed = session.scenario.dynamic.failedRobots if dynamic_active else []
     return DispatchResult(
         scenarioId=session.scenario.id,
         avoidConflicts=session.options.avoidConflicts,
         includeDynamic=session.options.includeDynamic,
+        effectiveAssignmentReplanWindow=replan_window_decision.window,
+        replanWindowReason=replan_window_decision.reason,
         dynamicTriggerTime=(
             session.scenario.dynamic.triggerTime
             if _include_scenario_dynamic_events(session)
@@ -680,7 +730,19 @@ def _advance_session(session: DispatchSession, target_time: int) -> None:
         session.robot_positions[robot.id] = position
 
     _update_locked_task_assignments(session, result, target_time)
-    _update_task_waypoint_progress(session, result, target_time)
+    outbound_pickup_times = _update_task_waypoint_progress(session, result, target_time)
+
+    for task in _all_tasks(session):
+        binding = session.shelf_task_bindings.get(task.id)
+        if binding is None or binding.kind != "outbound":
+            continue
+        pickup_time = outbound_pickup_times.get(task.id)
+        if (
+            pickup_time is not None
+            and session.task_waypoint_progress.get(task.id, 0) >= 1
+        ):
+            if complete_outbound_pickup(session.shelf_statuses, session.shelf_task_bindings, task.id):
+                _record_session_event(session, pickup_time, f"货架 {binding.shelf_id} 已取货")
 
     completions = _session_task_completion_times(session, result)
     completed_task = False
@@ -695,6 +757,10 @@ def _advance_session(session: DispatchSession, target_time: int) -> None:
             if newly_completed:
                 completed_task = True
                 _record_session_event(session, completion_time, f"任务 {task_id} 已完成")
+                binding = session.shelf_task_bindings.get(task_id)
+                if binding is not None and binding.kind == "inbound":
+                    if complete_inbound_task(session.shelf_statuses, session.shelf_task_bindings, task_id):
+                        _record_session_event(session, completion_time, f"货架 {binding.shelf_id} 已放货")
 
     session.current_time = target_time
     if completed_task:
@@ -768,7 +834,56 @@ def _is_task_available_for_rolling_window(session: DispatchSession, task: Task) 
 
 def _rolling_window_trigger_time(session: DispatchSession, task: Task) -> int:
     release_time = _session_task_release_time(session, task)
-    return max(0, release_time - session.options.assignmentReplanWindow)
+    return max(0, release_time - _session_replan_window_decision(session).window)
+
+
+def _session_replan_window_decision(session: DispatchSession) -> ReplanWindowDecision:
+    tasks = [
+        task
+        for task in _all_tasks(session)
+        if task.id not in session.completed_task_ids
+    ]
+    released_task_count = sum(
+        1
+        for task in tasks
+        if _session_task_release_time(session, task) <= session.current_time
+    )
+    active_dynamic_failed = (
+        session.scenario.dynamic.failedRobots
+        if _is_scenario_dynamic_active(session)
+        else []
+    )
+    unavailable_robot_ids = _merge_text(
+        active_dynamic_failed,
+        session.runtime_failed_robot_ids,
+    )
+    return decide_replan_window(
+        configured_window=session.options.assignmentReplanWindow,
+        adaptive=session.options.adaptiveReplanWindow,
+        released_task_count=released_task_count,
+        future_task_count=len(tasks) - released_task_count,
+        active_robot_count=len(session.scenario.robots) - len(unavailable_robot_ids),
+        recent_replan_time_ms=session.last_replan_time_ms,
+    )
+
+
+def _record_replan_window_decision(
+    session: DispatchSession,
+    decision: ReplanWindowDecision,
+) -> None:
+    previous_window = session.effective_assignment_replan_window
+    session.effective_assignment_replan_window = decision.window
+    session.replan_window_reason = decision.reason
+    if (
+        session.options.adaptiveReplanWindow
+        and previous_window is not None
+        and previous_window != decision.window
+    ):
+        _record_session_event(
+            session,
+            session.current_time,
+            f"自适应重规划窗口调整为 {decision.window}T：{decision.reason}",
+        )
 
 
 def _first_crossed_time(current_time: int, target_time: int, times: list[int | None]) -> int | None:
@@ -1183,7 +1298,12 @@ def _task_execution_window(path: list[Cell], task: Task, start_index: int) -> tu
     return max(start_index, release_time), next_cursor_index
 
 
-def _update_task_waypoint_progress(session: DispatchSession, result: DispatchResult, target_time: int) -> None:
+def _update_task_waypoint_progress(
+    session: DispatchSession,
+    result: DispatchResult,
+    target_time: int,
+) -> dict[str, int]:
+    outbound_pickup_times: dict[str, int] = {}
     for assignment in result.assignments:
         path = result.paths.get(assignment.robotId, [])
         cursor_index = min(session.current_time, max(0, len(path) - 1))
@@ -1193,6 +1313,22 @@ def _update_task_waypoint_progress(session: DispatchSession, result: DispatchRes
                 cursor_index = max(cursor_index, completion_time + 1)
                 continue
             completed_before = session.task_waypoint_progress.get(task.id, 0)
+            pickup_time: int | None = None
+            binding = session.shelf_task_bindings.get(task.id)
+            if (
+                completed_before == 0
+                and binding is not None
+                and binding.kind == "outbound"
+                and task.pickup is not None
+                and path
+            ):
+                release_time = task.releaseTime if task.releaseTime is not None else 0
+                pickup_time = _find_next_visit_until(
+                    path,
+                    task.pickup,
+                    max(cursor_index, release_time),
+                    min(target_time, len(path) - 1),
+                )
             completed_count, cursor_index, completion_index = _completed_remaining_waypoints(
                 path,
                 task,
@@ -1202,6 +1338,8 @@ def _update_task_waypoint_progress(session: DispatchSession, result: DispatchRes
             )
             if completed_count > completed_before:
                 session.task_waypoint_progress[task.id] = completed_count
+                if pickup_time is not None and completed_count >= 1:
+                    outbound_pickup_times[task.id] = pickup_time
             _update_payload_position(session, task, path, target_time, completed_count)
             if _is_task_fully_completed(task, completed_count):
                 service_started_at = session.task_service_started_times.get(task.id, completion_index)
@@ -1211,6 +1349,7 @@ def _update_task_waypoint_progress(session: DispatchSession, result: DispatchRes
                     cursor_index = max(cursor_index, completion_time + 1)
                     if completion_time <= target_time:
                         session.task_completion_times[task.id] = completion_time
+    return outbound_pickup_times
 
 
 def _completed_remaining_waypoints(
@@ -1349,12 +1488,14 @@ def _release_locks_for_active_higher_priority_task(
         if task_id not in candidate_task_ids
     }
     scenario, options, _ = _build_effective_dispatch_input(session)
+    replan_window_decision = _session_replan_window_decision(session)
     current_result = run_dispatch(
         scenario,
         options,
         current_locks,
         apply_dynamic_constraints_at_start=True,
         task_limit_per_robot=1,
+        replan_window_decision=replan_window_decision,
     )
     proposed_result = run_dispatch(
         scenario,
@@ -1362,6 +1503,7 @@ def _release_locks_for_active_higher_priority_task(
         proposed_locks,
         apply_dynamic_constraints_at_start=True,
         task_limit_per_robot=1,
+        replan_window_decision=replan_window_decision,
     )
 
     if _preemption_plan_score(proposed_result, task.id) >= _preemption_plan_score(current_result, task.id):
@@ -1482,6 +1624,7 @@ def _robot_at_cell_at_time(session: DispatchSession, cell: Cell, target_time: in
 
 def _preview_dispatch_result(session: DispatchSession) -> DispatchResult:
     scenario, options, task_lookup = _build_effective_dispatch_input(session)
+    replan_window_decision = _session_replan_window_decision(session)
     return _restore_absolute_result(
         run_dispatch(
             scenario,
@@ -1491,6 +1634,7 @@ def _preview_dispatch_result(session: DispatchSession) -> DispatchResult:
             include_dynamic_events=_include_scenario_dynamic_events(session),
             apply_dynamic_constraints_at_start=True,
             task_limit_per_robot=1,
+            replan_window_decision=replan_window_decision,
         ),
         task_lookup,
         session.current_time,

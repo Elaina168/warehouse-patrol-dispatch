@@ -5,6 +5,7 @@ import math
 import time
 from dataclasses import dataclass, field
 
+from backend.app.replan_window import ReplanWindowDecision, decide_replan_window
 from backend.app.schemas import (
     Assignment,
     Cell,
@@ -1666,10 +1667,10 @@ def run_dispatch(
     include_dynamic_events: bool | None = None,
     apply_dynamic_constraints_at_start: bool | None = None,
     task_limit_per_robot: int | None = None,
+    replan_window_decision: ReplanWindowDecision | None = None,
 ) -> DispatchResult:
     avoid_conflicts = options.avoidConflicts
     include_dynamic = options.includeDynamic
-    assignment_replan_window = options.assignmentReplanWindow
     if include_dynamic_events is None:
         include_dynamic_events = include_dynamic and has_dynamic_event(scenario.dynamic)
     dynamic_active_at_start = include_dynamic and (
@@ -1688,6 +1689,21 @@ def run_dispatch(
         for task in scenario.dynamic.tasks
     ]
     tasks = [*scenario.tasks, *dynamic_tasks] if include_dynamic else [*scenario.tasks]
+    if replan_window_decision is None:
+        released_task_count = sum(
+            1
+            for task in tasks
+            if (task.releaseTime if task.releaseTime is not None else 0) <= 0
+        )
+        replan_window_decision = decide_replan_window(
+            configured_window=options.assignmentReplanWindow,
+            adaptive=options.adaptiveReplanWindow,
+            released_task_count=released_task_count,
+            future_task_count=len(tasks) - released_task_count,
+            active_robot_count=len(scenario.robots) - len(unavailable_robot_ids),
+            recent_replan_time_ms=None,
+        )
+    assignment_replan_window = replan_window_decision.window
     planning_tasks, deferred_tasks = split_tasks_for_planning(
         tasks,
         locked_task_robot_ids,
@@ -1780,6 +1796,8 @@ def run_dispatch(
         scenarioId=scenario.id,
         avoidConflicts=avoid_conflicts,
         includeDynamic=include_dynamic,
+        effectiveAssignmentReplanWindow=assignment_replan_window,
+        replanWindowReason=replan_window_decision.reason,
         dynamicTriggerTime=scenario.dynamic.triggerTime if include_dynamic_events else None,
         extraBlocked=extra_blocked,
         unavailableRobotIds=unavailable_robot_ids,

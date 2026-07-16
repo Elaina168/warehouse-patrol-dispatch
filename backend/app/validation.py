@@ -3,6 +3,7 @@ from __future__ import annotations
 from math import isfinite
 
 from backend.app.dispatch import astar, cell_key, is_inside, task_waypoints
+from backend.app.inventory import ShelfInventoryError, initial_shelf_statuses, reserve_shelf_task
 from backend.app.schemas import Cell, DispatchOptions, Robot, Scenario, Task
 
 
@@ -17,9 +18,11 @@ def validate_scenario(scenario: Scenario, options: DispatchOptions) -> list[str]
     errors.extend(_dynamic_failed_robot_errors(scenario))
     errors.extend(_duplicate_errors("任务 ID", [task.id for task in _all_tasks(scenario)]))
     errors.extend(_duplicate_errors("障碍/封锁坐标", [cell_key(cell) for cell in blocked_cells]))
+    errors.extend(_shelf_errors(scenario, options))
     errors.extend(_cell_bounds_errors(scenario))
     errors.extend(_blocked_point_errors(scenario, options))
     errors.extend(_reachability_errors(scenario, options))
+    errors.extend(_shelf_inventory_errors(scenario))
 
     return errors
 
@@ -41,6 +44,54 @@ def _dynamic_failed_robot_errors(scenario: Scenario) -> list[str]:
         for robot_id in scenario.dynamic.failedRobots
         if robot_id not in robot_ids
     ]
+
+
+def _shelf_errors(scenario: Scenario, options: DispatchOptions) -> list[str]:
+    errors: list[str] = []
+    obstacle_keys = {cell_key(cell) for cell in scenario.obstacles}
+    shelf_ids: set[str] = set()
+    shelf_cells: set[str] = set()
+    service_cells: set[str] = set()
+    active_dynamic_blocked = (
+        {cell_key(cell) for cell in scenario.dynamic.blockedCells}
+        if options.includeDynamic and scenario.dynamic.triggerTime == 0
+        else set()
+    )
+    for shelf in scenario.shelves:
+        shelf_key = cell_key(shelf.cell)
+        service_key = cell_key(shelf.serviceCell)
+        if shelf.id in shelf_ids:
+            errors.append(f"货架 ID 重复：{shelf.id}")
+        if shelf_key in shelf_cells:
+            errors.append(f"货架坐标重复：{shelf_key}")
+        if service_key in service_cells:
+            errors.append(f"货架作业格重复：{service_key}")
+        if shelf_key not in obstacle_keys:
+            errors.append(f"货架格不在固定障碍中：{shelf.id} {shelf_key}")
+        if abs(shelf.cell[0] - shelf.serviceCell[0]) + abs(shelf.cell[1] - shelf.serviceCell[1]) != 1:
+            errors.append(f"货架作业格不相邻：{shelf.id}")
+        if service_key in obstacle_keys:
+            errors.append(f"货架作业格位于固定障碍：{shelf.id} {service_key}")
+        if service_key in active_dynamic_blocked:
+            errors.append(f"货架作业格位于当前生效的动态封锁：{shelf.id} {service_key}")
+        shelf_ids.add(shelf.id)
+        shelf_cells.add(shelf_key)
+        service_cells.add(service_key)
+    return errors
+
+
+def _shelf_inventory_errors(scenario: Scenario) -> list[str]:
+    if not scenario.shelves:
+        return []
+    statuses = initial_shelf_statuses(scenario)
+    bindings = {}
+    errors: list[str] = []
+    for task in _all_tasks(scenario):
+        try:
+            reserve_shelf_task(scenario, statuses, bindings, task)
+        except ShelfInventoryError as error:
+            errors.append(str(error))
+    return errors
 
 
 def _cell_bounds_errors(scenario: Scenario) -> list[str]:
@@ -153,6 +204,9 @@ def _named_cells(scenario: Scenario) -> list[tuple[str, Cell]]:
     cells.extend((f"巡检区 {index + 1}", cell) for index, cell in enumerate(scenario.zones.inspection))
     cells.extend((f"投递区 {index + 1}", cell) for index, cell in enumerate(scenario.zones.delivery))
     cells.extend((f"充电区 {index + 1}", cell) for index, cell in enumerate(scenario.zones.charging))
+    for shelf in scenario.shelves:
+        cells.append((f"货架 {shelf.id} 货架格", shelf.cell))
+        cells.append((f"货架 {shelf.id} 作业格", shelf.serviceCell))
     cells.extend((f"机器人 {robot.id} 起点", robot.start) for robot in scenario.robots)
     cells.extend(
         (f"动态封锁 {index + 1}", cell)

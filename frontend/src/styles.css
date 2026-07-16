@@ -374,6 +374,7 @@ input {
 }
 
 .workspace {
+  container-type: inline-size;
   overflow: visible;
 }
 
@@ -384,6 +385,16 @@ input {
   align-items: end;
   padding: 14px;
   border-bottom: 1px solid var(--line);
+}
+
+@container (max-width: 840px) {
+  .map-toolbar {
+    grid-template-columns: minmax(150px, 1fr) minmax(200px, 1fr) minmax(160px, 0.8fr) auto;
+  }
+
+  .map-toolbar > * {
+    min-width: 0;
+  }
 }
 
 .scenario-title {
@@ -606,9 +617,10 @@ input {
 .map-wrap {
   position: relative;
   width: min(100%, 720px);
-  height: 520px;
+  height: auto;
+  aspect-ratio: var(--cols) / var(--rows);
   margin: 0 auto;
-  padding: 16px;
+  padding: 0;
 }
 
 .map-context-menu {
@@ -630,7 +642,7 @@ input {
 
 .active-route-layer {
   position: absolute;
-  inset: 16px;
+  inset: 0;
   z-index: 2;
   display: grid;
   gap: 3px;
@@ -711,19 +723,19 @@ input {
   box-shadow: inset 0 0 0 2px #dcecff;
 }
 
-.cell.obstacle {
-  background: #38434a;
-  border-color: #38434a;
+.cell.warehouse-cell {
+  background: #2f8f5b;
+  border-color: #237247;
 }
 
-.cell.blocked {
-  background: repeating-linear-gradient(45deg, #1f272c 0 6px, #526069 6px 12px);
-  border-color: #1f272c;
+.cell.delivery-cell {
+  background: #d48a1f;
+  border-color: #a86713;
 }
 
-.cell.task-cell {
-  background: #6f9d3f;
-  border-color: #5e8b2f;
+.cell.inspection-cell {
+  background: #7654a6;
+  border-color: #5d3d89;
 }
 
 .cell.charging-cell {
@@ -733,9 +745,42 @@ input {
   font-weight: 700;
 }
 
+.cell.obstacle {
+  background: #38434a;
+  border-color: #38434a;
+}
+
+.cell.shelf-cell {
+  background: #38434a;
+  border-color: #263138;
+}
+
+.cell.shelf-stocked {
+  background: #d8a11f;
+  border-color: #fff0a6;
+  box-shadow: inset 0 0 0 2px rgba(255, 244, 185, 0.9), 0 0 8px rgba(230, 171, 39, 0.85);
+}
+
+.cell.task-cell {
+  border-color: #5e8b2f;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.72);
+}
+
+.cell.task-cell:not(.warehouse-cell):not(.delivery-cell):not(.inspection-cell):not(.charging-cell) {
+  background: #6f9d3f;
+}
+
+.cell.blocked {
+  background: repeating-linear-gradient(45deg, #1f272c 0 6px, #526069 6px 12px);
+  border-color: #1f272c;
+  box-shadow: none;
+}
+
 .cell.conflict-cell {
   outline: 3px solid var(--conflict);
   background: #dc5b43;
+  border-color: var(--conflict);
+  box-shadow: none;
 }
 
 .cell.map-pickable-cell {
@@ -763,8 +808,10 @@ input {
   z-index: 1;
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: min(28px, 100%);
+  height: auto;
+  max-height: 100%;
+  aspect-ratio: 1;
   border-radius: 50%;
   background: var(--robot-color, var(--robot));
   color: #ffffff;

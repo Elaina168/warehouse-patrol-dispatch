@@ -6,9 +6,10 @@ import {
   deleteSession,
   resetSession
 } from "./domain/sessionApi";
-import { cellKey, getRobotStateAt } from "./domain/view";
+import { buildShelfCellPresentations, buildWarehouseDeliveryCandidates } from "./domain/inventory";
+import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./domain/view";
 import { scenarios } from "./domain/scenarios";
-import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, RecoveryAction, Scenario, SessionResult, Task, TaskFailureDetail, TaskType } from "./domain/types";
+import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, RecoveryAction, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
 import "./styles.css";
 
 const API_BASE = "http://127.0.0.1:8011";
@@ -101,6 +102,7 @@ function App() {
   const [importedScenario, setImportedScenario] = useState<Scenario | null>(null);
   const [avoidConflicts, setAvoidConflicts] = useState(true);
   const [assignmentReplanWindow, setAssignmentReplanWindow] = useState(DEFAULT_ASSIGNMENT_REPLAN_WINDOW);
+  const [adaptiveReplanWindow, setAdaptiveReplanWindow] = useState(false);
   const [sessionResetKey, setSessionResetKey] = useState(0);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -192,7 +194,7 @@ function App() {
     randomTaskSequenceRef.current = 0;
     setTickInFlight(false);
     setMapContextMenu(null);
-  }, [scenario, avoidConflicts, assignmentReplanWindow]);
+  }, [scenario, avoidConflicts, assignmentReplanWindow, adaptiveReplanWindow]);
 
   useEffect(() => {
     setManualTask((task) => {
@@ -250,7 +252,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         scenario,
-        options: buildDispatchOptions(avoidConflicts, true, assignmentReplanWindow)
+        options: buildDispatchOptions(avoidConflicts, true, assignmentReplanWindow, adaptiveReplanWindow)
       }),
       signal: controller.signal
       })
@@ -269,7 +271,7 @@ function App() {
       });
 
     return () => controller.abort();
-  }, [scenario, avoidConflicts, assignmentReplanWindow, sessionResetKey]);
+  }, [scenario, avoidConflicts, assignmentReplanWindow, adaptiveReplanWindow, sessionResetKey]);
 
   useEffect(() => {
     if (dispatchStatus === "loading") setMapContextMenu(null);
@@ -338,7 +340,13 @@ function App() {
 
   async function pushGeneratedTask() {
     if (!result) return;
-    const task = buildRandomGeneratedTask(result.tasks, runtimeActionTime, scenario, randomTaskSequenceRef.current + 1);
+    const task = buildRandomGeneratedTask(
+      result.tasks,
+      runtimeActionTime,
+      scenario,
+      randomTaskSequenceRef.current + 1,
+      session?.shelfStates ?? []
+    );
     if (!task) return;
     randomTaskSequenceRef.current += 1;
     await enqueueTask(task);
@@ -553,7 +561,13 @@ function App() {
           <span>T={time}</span>
           <span>{scenario.name}</span>
           <span>{avoidConflicts ? "避碰规划" : "基线对比"}</span>
-          <span>{assignmentReplanWindowLabel(assignmentReplanWindow)}</span>
+          <span title={adaptiveReplanWindow ? result?.replanWindowReason : undefined}>
+            {assignmentReplanWindowStatusLabel(
+              assignmentReplanWindow,
+              adaptiveReplanWindow,
+              result?.effectiveAssignmentReplanWindow
+            )}
+          </span>
           <span className={`api ${apiStatus}`}>
             <Server size={15} />
             {apiStatusLabel(apiStatus)}
@@ -588,6 +602,15 @@ function App() {
                   value={assignmentReplanWindow}
                   onChange={(event) => setAssignmentReplanWindow(normalizeAssignmentReplanWindow(Number(event.target.value)))}
                 />
+              </label>
+              <label className="toolbar-toggle">
+                <input
+                  aria-label="启用自适应重规划窗口"
+                  checked={adaptiveReplanWindow}
+                  type="checkbox"
+                  onChange={(event) => setAdaptiveReplanWindow(event.target.checked)}
+                />
+                <span>自适应</span>
               </label>
               <button type="button" onClick={resetCurrentSession}>
                 <RefreshCcw size={16} />
@@ -630,6 +653,7 @@ function App() {
                     scenario={scenario}
                     result={result}
                     robotStates={session?.robotStates ?? []}
+                    shelfStates={session?.shelfStates ?? []}
                     sessionCurrentTime={session?.currentTime ?? null}
                     time={time}
                     routeHintsEnabled={routeHintsEnabled}
@@ -861,7 +885,7 @@ function App() {
         <aside className="rightbar">
           <Panel title="事件日志" className={RIGHTBAR_EVENT_LOG_CLASS}>
             <div className="event-log">
-              {result ? visibleRuntimeEvents(result.eventLog, routeHintsEnabled, time).map((event, index) => {
+              {result ? visibleRuntimeEvents(result.eventLog, time).map((event, index) => {
                 const canJump = session ? canJumpToEvent(event.time, session.currentTime) : false;
                 return (
                   <div className={`event ${event.time <= time ? "active" : ""}`} key={`${event.time}-${index}`}>
@@ -1083,10 +1107,11 @@ function TaskQueueItem({
   );
 }
 
-function MapBoard({
+export function MapBoard({
   scenario,
   result,
   robotStates,
+  shelfStates,
   sessionCurrentTime,
   time,
   routeHintsEnabled,
@@ -1104,6 +1129,7 @@ function MapBoard({
   scenario: Scenario;
   result: DispatchResult;
   robotStates: SessionResult["robotStates"];
+  shelfStates: ShelfRuntimeState[];
   sessionCurrentTime: number | null;
   time: number;
   routeHintsEnabled: boolean;
@@ -1127,6 +1153,14 @@ function MapBoard({
   );
   const taskCells = useMemo(() => collectTaskCells(taskLabelTasks), [taskLabelTasks]);
   const chargingCells = useMemo(() => new Set((scenario.zones.charging ?? []).map(cellKey)), [scenario.zones.charging]);
+  const zoneCellPresentations = useMemo(
+    () => buildZoneCellPresentations(scenario.zones),
+    [scenario.zones]
+  );
+  const shelfCellPresentations = useMemo(
+    () => buildShelfCellPresentations(scenario.shelves ?? [], shelfStates),
+    [scenario.shelves, shelfStates]
+  );
   const useRuntimeRobotSnapshot = shouldUseRuntimeRobotSnapshot(time, sessionCurrentTime, robotStates);
   const occupied = useMemo(
     () => useRuntimeRobotSnapshot ? getCellsFromRobotStates(robotStates) : getCellsOnPaths(result.paths, time),
@@ -1160,6 +1194,8 @@ function MapBoard({
       const key = cellKey(cell);
       const robotId = robotAtCell(occupied, key);
       const displayedConflict = activeConflicts.get(key) ?? null;
+      const zonePresentation = zoneCellPresentations.get(key);
+      const shelfPresentation = shelfCellPresentations.get(key);
       const robot = robotId ? scenario.robots.find((item) => item.id === robotId) : null;
       const robotColor = robotId ? robotColors.get(robotId) : undefined;
       const runtimeState = useRuntimeRobotSnapshot && robotId ? robotStates.find((item) => item.robotId === robotId) : null;
@@ -1172,11 +1208,12 @@ function MapBoard({
         obstacles.has(key) ? "obstacle" : "",
         blocked.has(key) ? "blocked" : "",
         taskCells.has(key) ? "task-cell" : "",
-        chargingCells.has(key) ? "charging-cell" : "",
+        ...(zonePresentation?.classNames ?? []),
+        ...(shelfPresentation?.classNames ?? []),
         displayedConflict ? "conflict-cell" : "",
         mapPickTarget && !obstacles.has(key) ? "map-pickable-cell" : "",
         robotId ? "robot-cell" : "",
-        robotState?.status === "failed" ? "failed-robot-cell" : "",
+        runtimeState?.status === "failed" ? "failed-robot-cell" : "",
         isSelectedRobotCell(robotId, selectedRobotId) ? "selected-robot-cell" : ""
       ]
         .filter(Boolean)
@@ -1187,6 +1224,7 @@ function MapBoard({
           aria-label={mapPickTarget ? `选择${mapPickLabel(mapPickTarget)}坐标 ${x}, ${y}` : `选择封锁单元 ${x}, ${y}`}
           className={classNames}
           key={key}
+          title={shelfPresentation?.label}
           onClick={() => {
             onCloseContextMenu();
             if (mapPickTarget && !obstacles.has(key)) {
@@ -1234,7 +1272,7 @@ function MapBoard({
                 </span>
               ) : null}
             </span>
-          ) : (taskCells.get(key) ?? (chargingCells.has(key) ? "充" : null))}
+          ) : (taskCells.get(key) ?? zonePresentation?.label ?? null)}
           {displayedConflict ? (
             <span className="conflict-marker active">
               <TriangleAlert size={14} aria-hidden="true" />
@@ -1783,8 +1821,7 @@ export function canJumpToEvent(eventTime: number, sessionCurrentTime: number): b
   return eventTime <= sessionCurrentTime;
 }
 
-export function visibleRuntimeEvents<T extends { time: number }>(events: T[], started: boolean, currentTime: number): T[] {
-  if (!started) return [];
+export function visibleRuntimeEvents<T extends { time: number }>(events: T[], currentTime: number): T[] {
   return events.filter((event) => event.time <= currentTime);
 }
 
@@ -1828,12 +1865,14 @@ export function getRuntimeActionTime(displayTime: number, sessionCurrentTime: nu
 export function buildDispatchOptions(
   avoidConflicts: boolean,
   includeDynamic: boolean,
-  assignmentReplanWindow: number
+  assignmentReplanWindow: number,
+  adaptiveReplanWindow = false
 ): DispatchOptions {
   return {
     avoidConflicts,
     includeDynamic,
-    assignmentReplanWindow: normalizeAssignmentReplanWindow(assignmentReplanWindow)
+    assignmentReplanWindow: normalizeAssignmentReplanWindow(assignmentReplanWindow),
+    adaptiveReplanWindow
   };
 }
 
@@ -1843,6 +1882,18 @@ export function normalizeTaskPriority(value: number): number {
 
 export function assignmentReplanWindowLabel(value: number): string {
   return `窗口 ${normalizeAssignmentReplanWindow(value)}T`;
+}
+
+export function assignmentReplanWindowStatusLabel(
+  configuredValue: number,
+  adaptive: boolean,
+  effectiveValue?: number
+): string {
+  if (!adaptive) return assignmentReplanWindowLabel(configuredValue);
+  const effectiveWindow = Number.isFinite(effectiveValue)
+    ? normalizeAssignmentReplanWindow(effectiveValue as number)
+    : normalizeAssignmentReplanWindow(configuredValue);
+  return `自适应 ${effectiveWindow}T`;
 }
 
 export function simulationTimeLabel(time: number): string {
@@ -1894,10 +1945,12 @@ function apiStatusLabel(status: string): string {
   return "检测中";
 }
 
-function createManualTaskForm(scenario: Scenario): ManualTaskForm {
+export function createManualTaskForm(scenario: Scenario): ManualTaskForm {
   const target = scenario.zones.inspection[0] ?? scenario.robots[0]?.start ?? [0, 0];
   const pickup = scenario.zones.warehouse[0] ?? target;
-  const dropoff = scenario.zones.delivery[0] ?? target;
+  const dropoff = scenario.shelves.find((shelf) => !shelf.initialOccupied)?.serviceCell
+    ?? scenario.zones.delivery[0]
+    ?? target;
   return {
     type: "inspection",
     title: "人工追加任务",
@@ -2106,11 +2159,14 @@ export function buildRandomGeneratedTask(
   tasks: Task[],
   currentTime: number,
   scenario: Scenario,
-  sequence: number
+  sequence: number,
+  shelfStates: ShelfRuntimeState[]
 ): Task | null {
   const id = nextGeneratedTaskId(tasks);
   const seed = Math.abs(currentTime * 31 + sequence * 17);
-  const candidates = buildGeneratedTaskCandidates(scenario);
+  const candidates = scenario.shelves.length > 0
+    ? buildWarehouseGeneratedTaskCandidates(scenario, shelfStates, seed)
+    : buildGeneratedTaskCandidates(scenario);
   if (candidates.length === 0) return null;
   const existingSignatures = new Set(tasks.map(generatedTaskSignature));
   const availableCandidates = candidates.filter((candidate) => !existingSignatures.has(candidate.signature));
@@ -2158,6 +2214,26 @@ export function buildRandomGeneratedTask(
     serviceTime,
     targets: [candidate.target]
   };
+}
+
+function buildWarehouseGeneratedTaskCandidates(
+  scenario: Scenario,
+  shelfStates: ShelfRuntimeState[],
+  seed: number
+): GeneratedTaskCandidate[] {
+  const warehouseCandidates = buildWarehouseDeliveryCandidates(scenario, shelfStates);
+  const inboundCandidates = warehouseCandidates
+    .filter((candidate) => candidate.kind === "inbound")
+    .map(({ pickup, dropoff, signature }) => ({ type: "delivery" as const, pickup, dropoff, signature }));
+  const outboundCandidates = warehouseCandidates
+    .filter((candidate) => candidate.kind === "outbound")
+    .map(({ pickup, dropoff, signature }) => ({ type: "delivery" as const, pickup, dropoff, signature }));
+  if (inboundCandidates.length > 0 && outboundCandidates.length > 0) {
+    return seed % 2 === 0 ? inboundCandidates : outboundCandidates;
+  }
+  if (inboundCandidates.length > 0) return inboundCandidates;
+  if (outboundCandidates.length > 0) return outboundCandidates;
+  return buildGeneratedTaskCandidates(scenario).filter((candidate) => candidate.type !== "delivery");
 }
 
 type GeneratedTaskCandidate =
@@ -2234,12 +2310,13 @@ export function parseScenario(value: unknown): Scenario {
   if (!isScenario(value)) {
     throw new Error("JSON 必须是 Scenario 对象，并包含 id、name、description、width、height、obstacles、zones、robots、tasks、dynamic");
   }
-  assertScenarioCellsInside(value);
-  const diagnostics = diagnoseScenario(value);
+  const scenario = { ...value, shelves: value.shelves ?? [] };
+  assertScenarioCellsInside(scenario);
+  const diagnostics = diagnoseScenario(scenario);
   if (diagnostics.length > 0) {
     throw new Error(diagnostics.join("；"));
   }
-  return value;
+  return scenario;
 }
 
 function isScenario(value: unknown): value is Scenario {
@@ -2251,6 +2328,10 @@ function isScenario(value: unknown): value is Scenario {
     && isNonNegativeInteger(value.height)
     && Array.isArray(value.obstacles)
     && value.obstacles.every(isCell)
+    && (value.shelves === undefined || (
+      Array.isArray(value.shelves)
+      && value.shelves.every(isShelf)
+    ))
     && isRecord(value.zones)
     && Array.isArray(value.zones.warehouse)
     && value.zones.warehouse.every(isCell)
@@ -2265,6 +2346,14 @@ function isScenario(value: unknown): value is Scenario {
     && value.tasks.every(isTask)
     && isDynamicEvent(value.dynamic)
     && (value.chargeTime === undefined || isPositiveInteger(value.chargeTime));
+}
+
+function isShelf(value: unknown): value is Scenario["shelves"][number] {
+  return isRecord(value)
+    && isString(value.id)
+    && isCell(value.cell)
+    && isCell(value.serviceCell)
+    && typeof value.initialOccupied === "boolean";
 }
 
 function isRobot(value: unknown): value is Scenario["robots"][number] {
@@ -2323,6 +2412,7 @@ function isTask(value: unknown): value is Task {
 function assertScenarioCellsInside(scenario: Scenario): void {
   const cells = [
     ...scenario.obstacles,
+    ...(scenario.shelves ?? []).flatMap((shelf) => [shelf.cell, shelf.serviceCell]),
     ...scenario.zones.warehouse,
     ...scenario.zones.inspection,
     ...scenario.zones.delivery,

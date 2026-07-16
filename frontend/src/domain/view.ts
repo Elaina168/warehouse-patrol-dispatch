@@ -1,7 +1,34 @@
-import type { Cell, Robot } from "./types";
+import type { Cell, Robot, Scenario } from "./types";
+
+export type ZoneCellPresentation = {
+  classNames: string[];
+  label: string;
+};
+
+const ZONE_CELL_STYLES = [
+  ["charging", "charging-cell", "充"],
+  ["warehouse", "warehouse-cell", "进"],
+  ["delivery", "delivery-cell", "出"],
+  ["inspection", "inspection-cell", "巡"]
+] as const;
 
 export function cellKey(cell: Cell): string {
   return `${cell[0]},${cell[1]}`;
+}
+
+export function buildZoneCellPresentations(zones: Scenario["zones"]): Map<string, ZoneCellPresentation> {
+  const presentations = new Map<string, ZoneCellPresentation>();
+  for (const [zoneName, className, label] of ZONE_CELL_STYLES) {
+    for (const cell of zones[zoneName] ?? []) {
+      const key = cellKey(cell);
+      const current = presentations.get(key);
+      presentations.set(key, {
+        classNames: [...(current?.classNames ?? []), className],
+        label: current?.label ?? label
+      });
+    }
+  }
+  return presentations;
 }
 
 function pathAt(path: Cell[], time: number): Cell | null {

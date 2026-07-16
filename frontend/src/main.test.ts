@@ -1,9 +1,15 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+// Vitest 在 Node.js 中运行；项目构建不包含 Node 类型，仅在样式回归中读取源码。
+// @ts-expect-error 测试运行时提供 node:fs。
+import { readFileSync } from "node:fs";
 import {
   buildLiveMetrics,
   buildDispatchOptions,
   buildReplanStatus,
   assignmentReplanWindowLabel,
+  assignmentReplanWindowStatusLabel,
   buildRecoveryTargets,
   buildTaskSnapshots,
   buildTaskQueueMetricRows,
@@ -38,6 +44,8 @@ import {
   routeHintsAfterSessionUpdate,
   parseScenario,
   parseCoordinateInput,
+  createManualTaskForm,
+  MapBoard,
   resetSessionConflictState,
   RIGHTBAR_EVENT_LOG_CLASS,
   RIGHTBAR_TASK_QUEUE_CLASS,
@@ -46,7 +54,7 @@ import {
   taskTimingFields
 } from "./main";
 import { scenarios } from "./domain/scenarios";
-import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, Task } from "./domain/types";
+import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, ShelfRuntimeState, Task } from "./domain/types";
 
 describe("robot charging runtime status contract", () => {
   it("declares toCharge and charging runtime statuses", () => {
@@ -55,6 +63,148 @@ describe("robot charging runtime status contract", () => {
     expect(statuses).toEqual(["toCharge", "charging"]);
   });
 });
+
+describe("warehouse shelf map", () => {
+  it("keeps robot markers circular and bounded by responsive map cells", () => {
+    const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    const robotMarkerRule = styles.match(/(?:^|\r?\n)\.robot-marker\s*\{(?<rule>[^}]*)\}/)?.groups?.rule;
+
+    expect(robotMarkerRule).toBeDefined();
+    expect(robotMarkerRule).toMatch(/width:\s*min\(28px,\s*100%\);/);
+    expect(robotMarkerRule).toMatch(/max-height:\s*100%;/);
+    expect(robotMarkerRule).toMatch(/aspect-ratio:\s*1;/);
+    expect(robotMarkerRule).toMatch(/border-radius:\s*50%;/);
+    expect(robotMarkerRule).not.toMatch(/height:\s*28px;/);
+  });
+
+  it("renders shelf stock classes and labels from the session shelf states", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const result = buildMapTestResult(scenario);
+
+    const markup = renderToStaticMarkup(createElement(MapBoard, {
+      scenario,
+      result,
+      robotStates: [],
+      shelfStates: [
+        { shelfId: "S02", cell: [3, 3], serviceCell: [3, 2], status: "occupied" }
+      ],
+      sessionCurrentTime: 0,
+      time: 0,
+      routeHintsEnabled: false,
+      selectedRobotId: "",
+      onSelectRobot: () => undefined,
+      mapPickTarget: null,
+      onPickCell: () => undefined,
+      unresolvedConflictAlert: null,
+      contextMenu: null,
+      canManageBlocks: false,
+      onOpenContextMenu: () => undefined,
+      onCloseContextMenu: () => undefined,
+      onRunContextAction: () => undefined
+    }));
+
+    expect(markup).toContain('class="cell shelf-cell shelf-stocked"');
+    expect(markup).toContain('title="货架 S02 · 已有货物"');
+  });
+
+  it("lets blocked and conflict styles fully override stocked shelf highlights", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const result: DispatchResult = {
+      ...buildMapTestResult(scenario),
+      extraBlocked: [[3, 3]],
+      conflicts: [{ time: 0, type: "vertex", robots: ["R1", "R2"], cell: [3, 3] }]
+    };
+    const markup = renderToStaticMarkup(createElement(MapBoard, {
+      scenario,
+      result,
+      robotStates: [],
+      shelfStates: [
+        { shelfId: "S02", cell: [3, 3], serviceCell: [3, 2], status: "occupied" }
+      ],
+      sessionCurrentTime: 0,
+      time: 0,
+      routeHintsEnabled: false,
+      selectedRobotId: "",
+      onSelectRobot: () => undefined,
+      mapPickTarget: null,
+      onPickCell: () => undefined,
+      unresolvedConflictAlert: null,
+      contextMenu: null,
+      canManageBlocks: false,
+      onOpenContextMenu: () => undefined,
+      onCloseContextMenu: () => undefined,
+      onRunContextAction: () => undefined
+    }));
+
+    expect(markup).toContain('class="cell blocked shelf-cell shelf-stocked conflict-cell"');
+  });
+
+  it("marks a failed runtime robot cell with the failure style", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const result = buildMapTestResult(scenario);
+    const robot = scenario.robots[0];
+    const markup = renderToStaticMarkup(createElement(MapBoard, {
+      scenario,
+      result,
+      robotStates: [{
+        robotId: robot.id,
+        name: robot.name,
+        position: robot.start,
+        status: "failed",
+        battery: robot.battery,
+        load: robot.load,
+        moveTicks: robot.moveTicks ?? 1,
+        currentTaskId: null
+      }],
+      shelfStates: [],
+      sessionCurrentTime: 0,
+      time: 0,
+      routeHintsEnabled: false,
+      selectedRobotId: "",
+      onSelectRobot: () => undefined,
+      mapPickTarget: null,
+      onPickCell: () => undefined,
+      unresolvedConflictAlert: null,
+      contextMenu: null,
+      canManageBlocks: false,
+      onOpenContextMenu: () => undefined,
+      onCloseContextMenu: () => undefined,
+      onRunContextAction: () => undefined
+    }));
+
+    expect(markup).toContain("cell robot-cell failed-robot-cell");
+  });
+});
+
+function buildMapTestResult(scenario: Scenario): DispatchResult {
+  return {
+    scenarioId: scenario.id,
+    avoidConflicts: true,
+    includeDynamic: true,
+    dynamicTriggerTime: null,
+    extraBlocked: [],
+    unavailableRobotIds: [],
+    assignments: [],
+    paths: {},
+    conflicts: [],
+    metrics: {
+      makespan: 0,
+      totalDistance: 0,
+      conflictCount: 0,
+      loadBalance: 0,
+      assignedTaskCount: 0,
+      deadlineMissCount: 0,
+      averageLateness: 0,
+      failureCount: 0,
+      replanTimeMs: 0
+    },
+    failureReasons: {},
+    failureDetails: {},
+    eventLog: [],
+    tasks: []
+  };
+}
+
 describe("charging scenario import", () => {
   it("accepts legacy scenarios without charging fields", () => {
     const scenario = structuredClone(scenarios[0]);
@@ -488,19 +638,31 @@ describe("event navigation", () => {
     expect(canJumpToEvent(6, 5)).toBe(false);
   });
 
-  it("hides future events until playback reaches their tick", () => {
+  it("shows events that already happened even before playback starts", () => {
     const events = [
       { time: 0, text: "启动" },
       { time: 2, text: "实际锁定" }
     ];
 
-    expect(visibleRuntimeEvents(events, false, 0)).toEqual([]);
-    expect(visibleRuntimeEvents(events, true, 1)).toEqual([{ time: 0, text: "启动" }]);
-    expect(visibleRuntimeEvents(events, true, 2)).toEqual(events);
+    expect(visibleRuntimeEvents(events, 0)).toEqual([{ time: 0, text: "启动" }]);
+    expect(visibleRuntimeEvents(events, 1)).toEqual([{ time: 0, text: "启动" }]);
+    expect(visibleRuntimeEvents(events, 2)).toEqual(events);
   });
 });
 
 describe("manual task coordinates", () => {
+  it("defaults warehouse delivery dropoff to the first initially empty shelf service cell", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+
+    expect(createManualTaskForm(scenario).dropoff).toBe("2, 2");
+  });
+
+  it("keeps the delivery-zone default for scenarios without shelves", () => {
+    const scenario = { ...buildWarehouseGeneratorScenario(), shelves: [] };
+
+    expect(createManualTaskForm(scenario).dropoff).toBe("2, 15");
+  });
+
   it("parses one coordinate field only when the pair is inside the map", () => {
     const map = { width: 8, height: 6 };
 
@@ -617,6 +779,7 @@ describe("manual task coordinates", () => {
     const scenario: Scenario = {
       id: "generated-task-map",
       name: "generated-task-map",
+      shelves: [],
       description: "",
       width: 6,
       height: 5,
@@ -631,7 +794,7 @@ describe("manual task coordinates", () => {
       dynamic: { triggerTime: 20, blockedCells: [], failedRobots: [], tasks: [] }
     };
 
-    const task = buildRandomGeneratedTask(scenario.tasks, 8, scenario, 1);
+    const task = buildRandomGeneratedTask(scenario.tasks, 8, scenario, 1, []);
 
     expect(task).not.toBeNull();
     expect(task?.id).toBe("G2");
@@ -645,6 +808,7 @@ describe("manual task coordinates", () => {
     const scenario: Scenario = {
       id: "generated-emergency-priority",
       name: "generated-emergency-priority",
+      shelves: [],
       description: "",
       width: 6,
       height: 5,
@@ -659,7 +823,7 @@ describe("manual task coordinates", () => {
       dynamic: { triggerTime: 20, blockedCells: [], failedRobots: [], tasks: [] }
     };
 
-    const emergency = buildRandomGeneratedTask([], 8, scenario, 2);
+    const emergency = buildRandomGeneratedTask([], 8, scenario, 2, []);
 
     expect(emergency?.type).toBe("emergency");
     expect(emergency?.priority).toBeGreaterThanOrEqual(4);
@@ -670,6 +834,7 @@ describe("manual task coordinates", () => {
     const scenario: Scenario = {
       id: "generated-task-variety",
       name: "generated-task-variety",
+      shelves: [],
       description: "",
       width: 8,
       height: 6,
@@ -687,7 +852,7 @@ describe("manual task coordinates", () => {
     const signatures = new Set<string>();
 
     for (let sequence = 1; sequence <= 6; sequence += 1) {
-      const task = buildRandomGeneratedTask(tasks, sequence * 8, scenario, sequence);
+      const task = buildRandomGeneratedTask(tasks, sequence * 8, scenario, sequence, []);
       expect(task).not.toBeNull();
       if (!task) continue;
       const signature = generatedTaskSignature(task);
@@ -696,7 +861,114 @@ describe("manual task coordinates", () => {
       tasks.push(task);
     }
   });
+
+  it("generates outbound deliveries only from occupied unreserved shelves", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const task = buildRandomGeneratedTask([], 8, scenario, 1, buildWarehouseShelfStates());
+
+    expect(task).toMatchObject({
+      type: "delivery",
+      pickup: [3, 2],
+      dropoff: [2, 15]
+    });
+  });
+
+  it("alternates twenty warehouse deliveries evenly between inbound and outbound candidates", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const shelfStates = buildWarehouseShelfStates();
+    const tasks = Array.from({ length: 20 }, (_, index) =>
+      buildRandomGeneratedTask([], 8, scenario, index + 1, shelfStates)
+    );
+
+    expect(tasks.every((task) => task?.type === "delivery")).toBe(true);
+    const deliveries = tasks.filter((task): task is Extract<Task, { type: "delivery" }> => task?.type === "delivery");
+    expect(deliveries.filter((task) => task.pickup[1] === 0)).toHaveLength(10);
+    expect(deliveries.filter((task) => task.dropoff[1] === 15)).toHaveLength(10);
+
+    const excludedOutboundPickups = new Set(["2,2", "4,2", "5,2"]);
+    for (const task of deliveries.filter((item) => item.dropoff[1] === 15)) {
+      expect(excludedOutboundPickups.has(task.pickup.join(","))).toBe(false);
+    }
+  });
+
+  it("falls back to inspection or emergency tasks only when no warehouse delivery is legal", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const reservedStates = buildWarehouseShelfStates().map((state, index): ShelfRuntimeState => ({
+      ...state,
+      status: index % 2 === 0 ? "inboundReserved" : "outboundReserved"
+    }));
+
+    for (let sequence = 1; sequence <= 6; sequence += 1) {
+      expect(["inspection", "emergency"]).toContain(
+        buildRandomGeneratedTask([], 8, scenario, sequence, reservedStates)?.type
+      );
+    }
+  });
+
+  it("generates only inbound deliveries while empty is the only authoritative shelf state", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const states: ShelfRuntimeState[] = [
+      { shelfId: "S01", cell: [2, 3], serviceCell: [2, 2], status: "empty" }
+    ];
+
+    for (let sequence = 1; sequence <= 8; sequence += 1) {
+      expect(buildRandomGeneratedTask([], 8, scenario, sequence, states)).toMatchObject({
+        type: "delivery",
+        pickup: [2, 0],
+        dropoff: [2, 2]
+      });
+    }
+  });
+
+  it("generates only outbound deliveries while occupied is the only authoritative shelf state", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const states: ShelfRuntimeState[] = [
+      { shelfId: "S02", cell: [3, 3], serviceCell: [3, 2], status: "occupied" }
+    ];
+
+    for (let sequence = 1; sequence <= 8; sequence += 1) {
+      expect(buildRandomGeneratedTask([], 8, scenario, sequence, states)).toMatchObject({
+        type: "delivery",
+        pickup: [3, 2],
+        dropoff: [2, 15]
+      });
+    }
+  });
 });
+
+function buildWarehouseGeneratorScenario(): Scenario {
+  return {
+    id: "warehouse-generated-task",
+    name: "warehouse-generated-task",
+    description: "",
+    width: 8,
+    height: 16,
+    obstacles: [],
+    zones: {
+      warehouse: [[2, 0]],
+      inspection: [[0, 1]],
+      delivery: [[2, 15]]
+    },
+    shelves: [
+      { id: "S01", cell: [2, 3], serviceCell: [2, 2], initialOccupied: false },
+      { id: "S02", cell: [3, 3], serviceCell: [3, 2], initialOccupied: true },
+      { id: "S03", cell: [4, 3], serviceCell: [4, 2], initialOccupied: false },
+      { id: "S04", cell: [5, 3], serviceCell: [5, 2], initialOccupied: true }
+    ],
+    robots: [{ id: "R1", name: "R1", start: [0, 0], battery: 90, load: 2 }],
+    tasks: [],
+    dynamic: { triggerTime: 20, blockedCells: [], failedRobots: [], tasks: [] }
+  };
+}
+
+function buildWarehouseShelfStates(): ShelfRuntimeState[] {
+  return [
+    { shelfId: "S01", cell: [2, 3], serviceCell: [2, 2], status: "empty" },
+    { shelfId: "S02", cell: [3, 3], serviceCell: [3, 2], status: "occupied" },
+    { shelfId: "S03", cell: [4, 3], serviceCell: [4, 2], status: "inboundReserved" },
+    { shelfId: "S04", cell: [5, 3], serviceCell: [5, 2], status: "outboundReserved" }
+  ];
+}
 
 function generatedTaskSignature(task: Scenario["tasks"][number]): string {
   if (task.type === "delivery") return `delivery:${task.pickup.join(",")}>${task.dropoff.join(",")}`;
@@ -755,6 +1027,7 @@ describe("replan status", () => {
       runtimeTaskCount: 0,
       runtimeEventCount: 0,
       robotStates: [],
+      shelfStates: [],
       taskStates: [
         {
           taskId: "T1",
@@ -1011,8 +1284,10 @@ describe("dispatch options", () => {
     expect(buildDispatchOptions(true, true, 18)).toEqual({
       avoidConflicts: true,
       includeDynamic: true,
-      assignmentReplanWindow: 18
+      assignmentReplanWindow: 18,
+      adaptiveReplanWindow: false
     });
+    expect(buildDispatchOptions(true, true, 18, true).adaptiveReplanWindow).toBe(true);
     expect(buildDispatchOptions(true, true, 3.8).assignmentReplanWindow).toBe(3);
     expect(buildDispatchOptions(false, false, -5).assignmentReplanWindow).toBe(0);
     expect(buildDispatchOptions(true, false, 999).assignmentReplanWindow).toBe(120);
@@ -1023,6 +1298,9 @@ describe("dispatch options", () => {
     expect(assignmentReplanWindowLabel(24)).toBe("窗口 24T");
     expect(assignmentReplanWindowLabel(3.8)).toBe("窗口 3T");
     expect(assignmentReplanWindowLabel(Number.NaN)).toBe("窗口 24T");
+    expect(assignmentReplanWindowStatusLabel(24, false, 48)).toBe("窗口 24T");
+    expect(assignmentReplanWindowStatusLabel(24, true, 48)).toBe("自适应 48T");
+    expect(assignmentReplanWindowStatusLabel(24, true)).toBe("自适应 24T");
   });
 
 });

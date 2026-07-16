@@ -105,7 +105,7 @@ Completed and currently expected to remain in the project:
 - API contract regression tests now verify response nullable fields, including serialized task variant null fields, so frontend task response types match backend `None` serialization.
 - Experiment comparison API now exposes `POST /api/experiments/conflict-avoidance`, returning paired dispatch results for conflict avoidance disabled and enabled on the same scenario.
 - Conflict-avoidance experiment scenarios should not use a fully one-dimensional two-robot position swap as a no-conflict success case; without side-bypass space, the current competition-scope planner may still report unavoidable conflicts.
-- Conflict-avoidance experiment regression now covers the shared `integrated-demo` scenario: priority avoidance preserves all assignments, reduces direct-plan conflict forecasts, and keeps failure count at zero.
+- Conflict-avoidance experiment regression now covers the shared `integrated-demo` scenario: priority avoidance preserves all assignments, reduces direct-plan conflict forecasts to zero, and keeps failure count at zero.
 - Experiment comparison API now exposes `POST /api/experiments/dynamic-replanning`, returning paired dispatch results for dynamic events disabled and enabled on the same scenario.
 - Dynamic-replanning experiment regression now derives a dynamic-task variant from `integrated-demo`: enabling dynamic replanning introduces `E1` at its configured trigger time while preserving zero failures.
 - Experiment comparison API now exposes `POST /api/experiments/replan-window`, returning one dispatch result per requested `assignmentReplanWindow` value.
@@ -119,8 +119,16 @@ Completed and currently expected to remain in the project:
 - Frontend live deadline metric logic handles nullable serialized task deadlines and excludes still-pending tasks, keeping live deadline misses aligned with backend `deadlineMissCount`.
 - Frontend API error handling preserves backend error `detail` text across session creation, updates, ticks, reset, and delete failures, so operational panels surface concrete API failure causes instead of only HTTP status codes.
 - Frontend status strip exposes the configured rolling replan window. Scenario dynamic events are always enabled for main-session creation and are not presented as a user toggle.
+- Rolling windows now support an optional explainable adaptive mode while fixed mode remains the default. Adaptive decisions use recent planning latency, released-task pressure, future-task availability, and active robot count; dispatch results expose the effective window and reason, and the frontend status strip displays them without adding an experiment panel.
 - Frontend scenario-data regression now protects `integrated-demo` as the only persisted frontend scenario and verifies its mixed task, charging, and online-dispatch coverage.
-- Fixed demo e2e now reads the shared `integrated-demo` JSON and verifies tick advancement, urgent task insertion, runtime blocked cells, robot failure and recovery, blocked-cell removal, event logs, metrics history, conflict-avoidance comparison, and a derived dynamic-task variant.
+- The sole `integrated-demo` baseline now uses a `26 × 16` realistic warehouse grid with twelve `3 × 2` shelf groups, two-cell horizontal and vertical clearances, top inbound cells, bottom outbound cells, right-side robot starts, and right-side charging cells.
+- The 72 shelf entity cells are impassable, and every shelf has one unique adjacent service cell where robots perform pickup or putaway operations.
+- Online sessions are the inventory authority and expose `shelfStates` with `empty`, `inboundReserved`, `occupied`, and `outboundReserved`; the frontend renders these states instead of inferring inventory.
+- Inbound tasks run from an inbound-zone cell to an empty shelf service cell, while outbound tasks run from an occupied shelf service cell to an outbound-zone cell. Scenario, manual, and generated delivery tasks use the same backend inventory validation and reservation rules through the unified runtime task endpoint.
+- Default delivery coordinates are `T1` inbound `[2,0] -> [2,5]` for shelf `[2,4]`, `T2` outbound `[13,6] -> [2,15]` for shelf `[13,7]`, and `T4` inbound `[8,0] -> [12,9]` for shelf `[12,8]`.
+- The fixed demo starts with 12 highlighted stocked shelves. `T2` turns its shelf off when pickup occurs; `T1` and `T4` turn their shelves on only after putaway service completes, leaving 13 stocked shelves at the end.
+- The fixed default demo regression now uses only the six scenario tasks and completes by T=700 with zero active conflicts, failures, deadline misses, or charging visits; runtime task, block, failure, and recovery behavior remains covered by focused session regressions.
+- Fixed demo e2e reads the shared `integrated-demo` JSON and verifies the default six-task flow, conflict-avoidance comparison, and a derived dynamic-task variant.
 - Integrated online-session regression now runs continuous ticks through `E1` release and manual high-priority task insertion, verifying task states, event logs, conflict metrics, and metrics history remain consistent.
 - Frontend scenario data now lives in `frontend/src/domain/scenarios.json`, with `frontend/src/domain/scenarios.ts` providing typed exports for the React app and tests.
 - Backend tests split by algorithm, session, validation, health, and fixed demo flow.
@@ -159,6 +167,8 @@ Recommended execution order:
    - The current full check passes and the online dispatch workflow is implemented.
    - The fixed frontend demo scenario IDs and their intended capability coverage are now protected by frontend scenario-data regression tests.
    - The sole frontend `integrated-demo` scenario is protected by shared JSON, frontend data, and backend end-to-end regressions.
+   - The fixed baseline is a `26 × 16` realistic warehouse with twelve `3 × 2` shelf groups, 72 impassable shelf entity cells, 72 unique adjacent service cells, and two-cell clearances.
+   - Its default six-task online flow starts with 12 stocked shelves and finishes with 13 by T=700 without runtime task injection, runtime blocks, or robot failures.
    - Next work is to keep this fixed demo flow stable during backend/frontend changes and avoid destabilizing broad refactors.
 
 2. Core algorithm module completion - 接近完成
@@ -168,14 +178,15 @@ Recommended execution order:
    - Deterministic scale-pressure coverage now verifies increasing 3/5/8-robot scenario families with mixed tasks and dynamic emergency tasks while preserving full assignment, zero conflicts, zero failures, and bounded planning time.
    - Fixed-seed pressure coverage now verifies randomized 4/6/8-robot scenario families with mixed tasks, randomized obstacles, dynamic emergency tasks, full assignment, zero conflicts, zero failures, and bounded planning time.
    - The previous 8-robot seed-43 late-goal conflict boundary is now a passing regression through reservation-aware post-task parking.
-   - Remaining work is algorithmic quality beyond the current heuristic planner, especially adaptive rolling-window exploration, richer MAPF behavior if needed, and performance tuning on larger instances.
+   - An explainable adaptive rolling-window policy is implemented with fixed-mode compatibility, task-pressure and planning-latency contraction, low-load future-work expansion, effective-window explanations, and experiment comparison support. Fixed mode remains the cross-environment deterministic regression baseline because wall-clock latency feedback can vary by machine load.
+   - Remaining work is algorithmic quality beyond the current heuristic planner, especially richer MAPF behavior if needed, adaptive-threshold calibration, and performance tuning on larger instances.
    - Battery and charging are now hard runtime constraints: a robot consumes one unit per moved grid cell, routes to a reachable charger when needed, waits for `chargeTime`, and remains unavailable to preemption while charging.
 
 3. Online scheduling module completion - 接近完成
    - Implemented session metadata such as creation time and last access/update time.
    - Implemented idle-session cleanup, least-recently-accessed capacity pruning, explicit delete/reset endpoints, task caps, tick caps, metrics-history caps, and event-note caps.
    - Implemented runtime task insertion through one unified task endpoint, timed frontend task generation through that same endpoint, runtime blocked cells, robot failure and recovery, scenario dynamic timing, rolling-window triggers, task locks, event logs, and metrics history.
-   - Integrated-scenario online continuity is regression-tested through ticks, manual insertion, conflict avoidance, runtime events, and metrics consistency; focused generic tests retain recovery edge coverage.
+   - Integrated-scenario default continuity is regression-tested through T=700; manual insertion, runtime events, and recovery edge coverage remain protected by focused session regressions.
    - Fixed-seed randomized online pressure is now regression-tested through continuous ticks, dynamic activation, manual emergency insertion, runtime block/failure events, recovery APIs, event history, and metrics history.
    - Remaining work is mainly harder online pressure boundary cases or dedicated performance profiling if algorithm scale becomes a priority. Persistence, auth, or external observability remain out of competition scope unless the project scope expands.
 
@@ -214,7 +225,7 @@ Recommended execution order:
    - The main frontend intentionally has no experiment panel; report charts, reviewed conclusions, and final competition evidence tables have not yet been produced.
    - Conflict-avoidance comparison now has backend regression coverage on a real fixed demo scenario instead of only synthetic scenarios.
    - Dynamic-replanning comparison now has backend regression coverage on a real fixed demo scenario instead of only synthetic scenarios.
-   - Rolling-window comparison now has backend regression coverage on a real fixed demo scenario instead of only synthetic scenarios.
+   - Rolling-window comparison now has backend regression coverage on a real fixed demo scenario and can include an adaptive case alongside fixed-window cases.
    - Scale comparison now has backend regression coverage across the real fixed demo scenario set, not only synthetic scale inputs.
    - Fixed-seed pressure comparison has backend coverage for standard and extended stability sets, including the repaired seed-43 pressure boundary, with assignment-rate, deadline-miss, planning-budget, distance, and makespan evidence.
    - Remaining work is manually reviewed final wording after the official competition material requirements are known.
@@ -392,6 +403,7 @@ The backend returns:
 - `failureDetails`
 - `eventLog`
 - `tasks`
+- `shelfStates`
 - dynamic replanning metadata
 
 Schema definitions live in:

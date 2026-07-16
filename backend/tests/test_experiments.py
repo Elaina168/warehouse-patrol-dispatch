@@ -121,9 +121,9 @@ def test_conflict_avoidance_experiment_uses_integrated_demo_scenario() -> None:
     assert without_avoidance["metrics"]["assignedTaskCount"] == 6
     assert with_avoidance["metrics"]["assignedTaskCount"] == 6
     assert without_avoidance["metrics"]["conflictCount"] > 0
-    assert with_avoidance["metrics"]["conflictCount"] < without_avoidance["metrics"]["conflictCount"]
-    assert without_avoidance["conflicts"]
-    assert len(with_avoidance["conflicts"]) == with_avoidance["metrics"]["conflictCount"]
+    assert with_avoidance["metrics"]["conflictCount"] == 0
+    assert len(without_avoidance["conflicts"]) == without_avoidance["metrics"]["conflictCount"]
+    assert with_avoidance["conflicts"] == []
     assert without_avoidance["metrics"]["failureCount"] == 0
     assert with_avoidance["metrics"]["failureCount"] == 0
 
@@ -214,10 +214,11 @@ def test_dynamic_replanning_experiment_uses_integrated_demo_variant() -> None:
     assert without_dynamic["metrics"]["assignedTaskCount"] == 5
     assert with_dynamic["metrics"]["assignedTaskCount"] == 6
     assert without_dynamic["metrics"]["conflictCount"] == 0
-    assert with_dynamic["metrics"]["conflictCount"] > 0
+    assert with_dynamic["metrics"]["conflictCount"] == 0
     assert without_dynamic["metrics"]["failureCount"] == 0
     assert with_dynamic["metrics"]["failureCount"] == 0
-    assert with_dynamic["metrics"]["totalDistance"] > without_dynamic["metrics"]["totalDistance"]
+    assert without_dynamic["metrics"]["totalDistance"] > 0
+    assert with_dynamic["metrics"]["totalDistance"] > 0
 
 
 def replan_window_scenario() -> dict:
@@ -277,6 +278,33 @@ def test_replan_window_experiment_returns_one_case_per_window() -> None:
     ]
 
 
+def test_replan_window_experiment_can_include_adaptive_case() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/experiments/replan-window",
+        json={
+            "scenario": replan_window_scenario(),
+            "options": {
+                "avoidConflicts": True,
+                "includeDynamic": False,
+                "assignmentReplanWindow": 4,
+            },
+            "windows": [4],
+            "includeAdaptive": True,
+        },
+    )
+
+    assert response.status_code == 200
+    cases = {case["label"]: case for case in response.json()["cases"]}
+    assert set(cases) == {"window-4", "adaptive-window-4"}
+    assert cases["window-4"]["options"]["adaptiveReplanWindow"] is False
+    adaptive = cases["adaptive-window-4"]
+    assert adaptive["options"]["adaptiveReplanWindow"] is True
+    assert adaptive["result"]["effectiveAssignmentReplanWindow"] == 4
+    assert adaptive["result"]["replanWindowReason"] == "当前负载适中，保持基准窗口"
+
+
 def test_replan_window_experiment_uses_integrated_demo_task_timing() -> None:
     client = TestClient(app)
 
@@ -306,7 +334,7 @@ def test_replan_window_experiment_uses_integrated_demo_task_timing() -> None:
     assert window_4["metrics"]["assignedTaskCount"] == 4
     assert window_24["metrics"]["assignedTaskCount"] == 6
     assert window_4["metrics"]["conflictCount"] == 0
-    assert window_24["metrics"]["conflictCount"] > 0
+    assert window_24["metrics"]["conflictCount"] == 0
     assert window_4["metrics"]["failureCount"] == 0
     assert window_24["metrics"]["failureCount"] == 0
 

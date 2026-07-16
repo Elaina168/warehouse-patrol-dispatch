@@ -2,212 +2,132 @@
   {
     "id": "integrated-demo",
     "name": "综合调度演示",
-    "description": "同一张地图内展示巡检、取送、避碰、在线任务和运行时重规划。",
-    "width": 14,
-    "height": 10,
+    "description": "真实仓库双格通道中展示巡检、取送、避碰、默认在线任务、作业时间和充电基础设施。",
+    "width": 26,
+    "height": 16,
     "obstacles": [
-      [
-        2,
-        1
-      ],
-      [
-        2,
-        2
-      ],
-      [
-        2,
-        3
-      ],
-      [
-        2,
-        5
-      ],
-      [
-        2,
-        6
-      ],
-      [
-        2,
-        7
-      ],
-      [
-        5,
-        0
-      ],
-      [
-        5,
-        1
-      ],
-      [
-        5,
-        2
-      ],
-      [
-        5,
-        3
-      ],
-      [
-        5,
-        5
-      ],
-      [
-        5,
-        6
-      ],
-      [
-        5,
-        7
-      ],
-      [
-        5,
-        8
-      ],
-      [
-        8,
-        1
-      ],
-      [
-        8,
-        2
-      ],
-      [
-        8,
-        3
-      ],
-      [
-        8,
-        5
-      ],
-      [
-        8,
-        6
-      ],
-      [
-        8,
-        7
-      ],
-      [
-        11,
-        1
-      ],
-      [
-        11,
-        2
-      ],
-      [
-        11,
-        6
-      ],
-      [
-        11,
-        7
-      ]
+      [2, 3], [3, 3], [4, 3], [7, 3], [8, 3], [9, 3], [12, 3], [13, 3], [14, 3], [17, 3], [18, 3], [19, 3],
+      [2, 4], [3, 4], [4, 4], [7, 4], [8, 4], [9, 4], [12, 4], [13, 4], [14, 4], [17, 4], [18, 4], [19, 4],
+      [2, 7], [3, 7], [4, 7], [7, 7], [8, 7], [9, 7], [12, 7], [13, 7], [14, 7], [17, 7], [18, 7], [19, 7],
+      [2, 8], [3, 8], [4, 8], [7, 8], [8, 8], [9, 8], [12, 8], [13, 8], [14, 8], [17, 8], [18, 8], [19, 8],
+      [2, 11], [3, 11], [4, 11], [7, 11], [8, 11], [9, 11], [12, 11], [13, 11], [14, 11], [17, 11], [18, 11], [19, 11],
+      [2, 12], [3, 12], [4, 12], [7, 12], [8, 12], [9, 12], [12, 12], [13, 12], [14, 12], [17, 12], [18, 12], [19, 12]
     ],
     "zones": {
-      "warehouse": [
-        [
-          0,
-          4
-        ],
-        [
-          13,
-          4
-        ],
-        [
-          1,
-          8
-        ]
-      ],
-      "inspection": [
-        [
-          3,
-          0
-        ],
-        [
-          7,
-          9
-        ],
-        [
-          10,
-          0
-        ],
-        [
-          12,
-          8
-        ]
-      ],
-      "delivery": [
-        [
-          3,
-          9
-        ],
-        [
-          10,
-          9
-        ],
-        [
-          13,
-          8
-        ]
-      ],
-      "charging": [
-        [
-          0,
-          9
-        ],
-        [
-          13,
-          0
-        ]
-      ]
+      "warehouse": [[2, 0], [5, 0], [8, 0], [11, 0], [14, 0], [17, 0]],
+      "inspection": [[0, 1], [24, 1], [24, 2], [0, 2], [0, 5], [24, 5], [24, 6], [0, 6], [0, 9], [24, 9], [24, 10], [0, 10], [0, 13], [24, 13], [24, 14], [0, 14], [1, 14], [1, 1], [5, 1], [5, 14], [6, 14], [6, 1], [10, 1], [10, 14], [11, 14], [11, 1], [15, 1], [15, 14], [16, 14], [16, 1], [20, 1], [20, 14], [21, 14], [21, 1], [22, 1], [22, 14], [23, 14], [23, 1]],
+      "delivery": [[2, 15], [5, 15], [8, 15], [11, 15], [14, 15], [17, 15]],
+      "charging": [[25, 3], [25, 6], [25, 9], [25, 12]]
     },
+    "shelves": [
+      {"id": "S01", "cell": [2, 3], "serviceCell": [2, 2], "initialOccupied": false},
+      {"id": "S02", "cell": [3, 3], "serviceCell": [3, 2], "initialOccupied": true},
+      {"id": "S03", "cell": [4, 3], "serviceCell": [4, 2], "initialOccupied": false},
+      {"id": "S04", "cell": [7, 3], "serviceCell": [7, 2], "initialOccupied": false},
+      {"id": "S05", "cell": [8, 3], "serviceCell": [8, 2], "initialOccupied": true},
+      {"id": "S06", "cell": [9, 3], "serviceCell": [9, 2], "initialOccupied": false},
+      {"id": "S07", "cell": [12, 3], "serviceCell": [12, 2], "initialOccupied": false},
+      {"id": "S08", "cell": [13, 3], "serviceCell": [13, 2], "initialOccupied": true},
+      {"id": "S09", "cell": [14, 3], "serviceCell": [14, 2], "initialOccupied": false},
+      {"id": "S10", "cell": [17, 3], "serviceCell": [17, 2], "initialOccupied": false},
+      {"id": "S11", "cell": [18, 3], "serviceCell": [18, 2], "initialOccupied": true},
+      {"id": "S12", "cell": [19, 3], "serviceCell": [19, 2], "initialOccupied": false},
+      {"id": "S13", "cell": [2, 4], "serviceCell": [2, 5], "initialOccupied": false},
+      {"id": "S14", "cell": [3, 4], "serviceCell": [3, 5], "initialOccupied": false},
+      {"id": "S15", "cell": [4, 4], "serviceCell": [4, 5], "initialOccupied": false},
+      {"id": "S16", "cell": [7, 4], "serviceCell": [7, 5], "initialOccupied": false},
+      {"id": "S17", "cell": [8, 4], "serviceCell": [8, 5], "initialOccupied": false},
+      {"id": "S18", "cell": [9, 4], "serviceCell": [9, 5], "initialOccupied": false},
+      {"id": "S19", "cell": [12, 4], "serviceCell": [12, 5], "initialOccupied": false},
+      {"id": "S20", "cell": [13, 4], "serviceCell": [13, 5], "initialOccupied": false},
+      {"id": "S21", "cell": [14, 4], "serviceCell": [14, 5], "initialOccupied": false},
+      {"id": "S22", "cell": [17, 4], "serviceCell": [17, 5], "initialOccupied": false},
+      {"id": "S23", "cell": [18, 4], "serviceCell": [18, 5], "initialOccupied": false},
+      {"id": "S24", "cell": [19, 4], "serviceCell": [19, 5], "initialOccupied": false},
+      {"id": "S25", "cell": [2, 7], "serviceCell": [2, 6], "initialOccupied": false},
+      {"id": "S26", "cell": [3, 7], "serviceCell": [3, 6], "initialOccupied": true},
+      {"id": "S27", "cell": [4, 7], "serviceCell": [4, 6], "initialOccupied": false},
+      {"id": "S28", "cell": [7, 7], "serviceCell": [7, 6], "initialOccupied": false},
+      {"id": "S29", "cell": [8, 7], "serviceCell": [8, 6], "initialOccupied": true},
+      {"id": "S30", "cell": [9, 7], "serviceCell": [9, 6], "initialOccupied": false},
+      {"id": "S31", "cell": [12, 7], "serviceCell": [12, 6], "initialOccupied": false},
+      {"id": "S32", "cell": [13, 7], "serviceCell": [13, 6], "initialOccupied": true},
+      {"id": "S33", "cell": [14, 7], "serviceCell": [14, 6], "initialOccupied": false},
+      {"id": "S34", "cell": [17, 7], "serviceCell": [17, 6], "initialOccupied": false},
+      {"id": "S35", "cell": [18, 7], "serviceCell": [18, 6], "initialOccupied": true},
+      {"id": "S36", "cell": [19, 7], "serviceCell": [19, 6], "initialOccupied": false},
+      {"id": "S37", "cell": [2, 8], "serviceCell": [2, 9], "initialOccupied": false},
+      {"id": "S38", "cell": [3, 8], "serviceCell": [3, 9], "initialOccupied": false},
+      {"id": "S39", "cell": [4, 8], "serviceCell": [4, 9], "initialOccupied": false},
+      {"id": "S40", "cell": [7, 8], "serviceCell": [7, 9], "initialOccupied": false},
+      {"id": "S41", "cell": [8, 8], "serviceCell": [8, 9], "initialOccupied": false},
+      {"id": "S42", "cell": [9, 8], "serviceCell": [9, 9], "initialOccupied": false},
+      {"id": "S43", "cell": [12, 8], "serviceCell": [12, 9], "initialOccupied": false},
+      {"id": "S44", "cell": [13, 8], "serviceCell": [13, 9], "initialOccupied": false},
+      {"id": "S45", "cell": [14, 8], "serviceCell": [14, 9], "initialOccupied": false},
+      {"id": "S46", "cell": [17, 8], "serviceCell": [17, 9], "initialOccupied": false},
+      {"id": "S47", "cell": [18, 8], "serviceCell": [18, 9], "initialOccupied": false},
+      {"id": "S48", "cell": [19, 8], "serviceCell": [19, 9], "initialOccupied": false},
+      {"id": "S49", "cell": [2, 11], "serviceCell": [2, 10], "initialOccupied": false},
+      {"id": "S50", "cell": [3, 11], "serviceCell": [3, 10], "initialOccupied": true},
+      {"id": "S51", "cell": [4, 11], "serviceCell": [4, 10], "initialOccupied": false},
+      {"id": "S52", "cell": [7, 11], "serviceCell": [7, 10], "initialOccupied": false},
+      {"id": "S53", "cell": [8, 11], "serviceCell": [8, 10], "initialOccupied": true},
+      {"id": "S54", "cell": [9, 11], "serviceCell": [9, 10], "initialOccupied": false},
+      {"id": "S55", "cell": [12, 11], "serviceCell": [12, 10], "initialOccupied": false},
+      {"id": "S56", "cell": [13, 11], "serviceCell": [13, 10], "initialOccupied": true},
+      {"id": "S57", "cell": [14, 11], "serviceCell": [14, 10], "initialOccupied": false},
+      {"id": "S58", "cell": [17, 11], "serviceCell": [17, 10], "initialOccupied": false},
+      {"id": "S59", "cell": [18, 11], "serviceCell": [18, 10], "initialOccupied": true},
+      {"id": "S60", "cell": [19, 11], "serviceCell": [19, 10], "initialOccupied": false},
+      {"id": "S61", "cell": [2, 12], "serviceCell": [2, 13], "initialOccupied": false},
+      {"id": "S62", "cell": [3, 12], "serviceCell": [3, 13], "initialOccupied": false},
+      {"id": "S63", "cell": [4, 12], "serviceCell": [4, 13], "initialOccupied": false},
+      {"id": "S64", "cell": [7, 12], "serviceCell": [7, 13], "initialOccupied": false},
+      {"id": "S65", "cell": [8, 12], "serviceCell": [8, 13], "initialOccupied": false},
+      {"id": "S66", "cell": [9, 12], "serviceCell": [9, 13], "initialOccupied": false},
+      {"id": "S67", "cell": [12, 12], "serviceCell": [12, 13], "initialOccupied": false},
+      {"id": "S68", "cell": [13, 12], "serviceCell": [13, 13], "initialOccupied": false},
+      {"id": "S69", "cell": [14, 12], "serviceCell": [14, 13], "initialOccupied": false},
+      {"id": "S70", "cell": [17, 12], "serviceCell": [17, 13], "initialOccupied": false},
+      {"id": "S71", "cell": [18, 12], "serviceCell": [18, 13], "initialOccupied": false},
+      {"id": "S72", "cell": [19, 12], "serviceCell": [19, 13], "initialOccupied": false}
+    ],
     "chargeTime": 4,
     "robots": [
       {
         "id": "R1",
         "name": "左侧搬运车",
-        "start": [
-          0,
-          4
-        ],
-        "battery": 92,
-        "batteryCapacity": 100,
+        "start": [22, 3],
+        "battery": 512,
+        "batteryCapacity": 512,
         "load": 2,
         "moveTicks": 1
       },
       {
         "id": "R2",
         "name": "右侧搬运车",
-        "start": [
-          13,
-          4
-        ],
-        "battery": 88,
-        "batteryCapacity": 100,
+        "start": [22, 6],
+        "battery": 510,
+        "batteryCapacity": 512,
         "load": 2,
         "moveTicks": 2
       },
       {
         "id": "R3",
         "name": "巡检车",
-        "start": [
-          6,
-          4
-        ],
-        "battery": 80,
-        "batteryCapacity": 100,
+        "start": [22, 9],
+        "battery": 508,
+        "batteryCapacity": 512,
         "load": 1,
         "moveTicks": 3
       },
       {
         "id": "R4",
         "name": "备用协作车",
-        "start": [
-          13,
-          9
-        ],
-        "battery": 84,
-        "batteryCapacity": 100,
+        "start": [22, 12],
+        "battery": 506,
+        "batteryCapacity": 512,
         "load": 2,
         "moveTicks": 4
       }
@@ -218,102 +138,63 @@
         "type": "delivery",
         "title": "左库到右端补货",
         "priority": 3,
-        "pickup": [
-          0,
-          4
-        ],
-        "dropoff": [
-          10,
-          9
-        ],
+        "pickup": [2, 0],
+        "dropoff": [2, 5],
         "demand": 1,
         "serviceTime": 2,
-        "deadline": 32
+        "deadline": 500
       },
       {
         "id": "T2",
         "type": "delivery",
         "title": "右库到左端回收",
         "priority": 3,
-        "pickup": [
-          13,
-          4
-        ],
-        "dropoff": [
-          3,
-          9
-        ],
+        "pickup": [13, 6],
+        "dropoff": [2, 15],
         "demand": 1,
         "serviceTime": 2,
-        "deadline": 32
+        "deadline": 500
       },
       {
         "id": "T3",
         "type": "inspection",
-        "title": "巷道顶部巡检",
+        "title": "巷道横向巡检",
         "priority": 2,
-        "targets": [
-          [
-            3,
-            0
-          ],
-          [
-            10,
-            0
-          ]
-        ],
+        "targets": [[0, 1], [24, 1], [24, 2], [0, 2], [0, 5], [24, 5], [24, 6], [0, 6], [0, 9], [24, 9], [24, 10], [0, 10], [0, 13], [24, 13], [24, 14], [0, 14]],
         "serviceTime": 1,
-        "deadline": 42
+        "deadline": 400
       },
       {
         "id": "T4",
         "type": "delivery",
         "title": "备件送达设备间",
         "priority": 2,
-        "pickup": [
-          1,
-          8
-        ],
-        "dropoff": [
-          13,
-          8
-        ],
+        "pickup": [8, 0],
+        "dropoff": [12, 9],
         "demand": 1,
         "releaseTime": 4,
         "serviceTime": 3,
-        "deadline": 44
+        "deadline": 500
       },
       {
         "id": "T5",
         "type": "inspection",
-        "title": "园区南侧巡检",
+        "title": "巷道纵向巡检",
         "priority": 1,
-        "targets": [
-          [
-            7,
-            9
-          ],
-          [
-            12,
-            8
-          ]
-        ],
+        "targets": [[0, 1], [0, 14], [1, 14], [1, 1], [5, 1], [5, 14], [6, 14], [6, 1], [10, 1], [10, 14], [11, 14], [11, 1], [15, 1], [15, 14], [16, 14], [16, 1], [20, 1], [20, 14], [21, 14], [21, 1], [22, 1], [22, 14], [23, 14], [23, 1], [24, 1], [24, 14]],
         "releaseTime": 8,
         "serviceTime": 1,
-        "deadline": 52
+        "deadline": 700
       },
       {
         "id": "E1",
         "type": "emergency",
         "title": "冷链告警应急复核",
         "priority": 5,
-        "target": [
-          7,
-          9
-        ],
+        "target": [11, 10],
         "releaseTime": 12,
         "serviceTime": 2,
-        "deadline": 36
+        "deadline": 300
       }
     ],
     "dynamic": {
