@@ -102,6 +102,7 @@ function App() {
   const [importedScenario, setImportedScenario] = useState<Scenario | null>(null);
   const [avoidConflicts, setAvoidConflicts] = useState(true);
   const [assignmentReplanWindow, setAssignmentReplanWindow] = useState(DEFAULT_ASSIGNMENT_REPLAN_WINDOW);
+  const [adaptiveReplanWindow, setAdaptiveReplanWindow] = useState(false);
   const [sessionResetKey, setSessionResetKey] = useState(0);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -193,7 +194,7 @@ function App() {
     randomTaskSequenceRef.current = 0;
     setTickInFlight(false);
     setMapContextMenu(null);
-  }, [scenario, avoidConflicts, assignmentReplanWindow]);
+  }, [scenario, avoidConflicts, assignmentReplanWindow, adaptiveReplanWindow]);
 
   useEffect(() => {
     setManualTask((task) => {
@@ -251,7 +252,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         scenario,
-        options: buildDispatchOptions(avoidConflicts, true, assignmentReplanWindow)
+        options: buildDispatchOptions(avoidConflicts, true, assignmentReplanWindow, adaptiveReplanWindow)
       }),
       signal: controller.signal
       })
@@ -270,7 +271,7 @@ function App() {
       });
 
     return () => controller.abort();
-  }, [scenario, avoidConflicts, assignmentReplanWindow, sessionResetKey]);
+  }, [scenario, avoidConflicts, assignmentReplanWindow, adaptiveReplanWindow, sessionResetKey]);
 
   useEffect(() => {
     if (dispatchStatus === "loading") setMapContextMenu(null);
@@ -560,7 +561,13 @@ function App() {
           <span>T={time}</span>
           <span>{scenario.name}</span>
           <span>{avoidConflicts ? "避碰规划" : "基线对比"}</span>
-          <span>{assignmentReplanWindowLabel(assignmentReplanWindow)}</span>
+          <span title={adaptiveReplanWindow ? result?.replanWindowReason : undefined}>
+            {assignmentReplanWindowStatusLabel(
+              assignmentReplanWindow,
+              adaptiveReplanWindow,
+              result?.effectiveAssignmentReplanWindow
+            )}
+          </span>
           <span className={`api ${apiStatus}`}>
             <Server size={15} />
             {apiStatusLabel(apiStatus)}
@@ -595,6 +602,15 @@ function App() {
                   value={assignmentReplanWindow}
                   onChange={(event) => setAssignmentReplanWindow(normalizeAssignmentReplanWindow(Number(event.target.value)))}
                 />
+              </label>
+              <label className="toolbar-toggle">
+                <input
+                  aria-label="启用自适应重规划窗口"
+                  checked={adaptiveReplanWindow}
+                  type="checkbox"
+                  onChange={(event) => setAdaptiveReplanWindow(event.target.checked)}
+                />
+                <span>自适应</span>
               </label>
               <button type="button" onClick={resetCurrentSession}>
                 <RefreshCcw size={16} />
@@ -1850,12 +1866,14 @@ export function getRuntimeActionTime(displayTime: number, sessionCurrentTime: nu
 export function buildDispatchOptions(
   avoidConflicts: boolean,
   includeDynamic: boolean,
-  assignmentReplanWindow: number
+  assignmentReplanWindow: number,
+  adaptiveReplanWindow = false
 ): DispatchOptions {
   return {
     avoidConflicts,
     includeDynamic,
-    assignmentReplanWindow: normalizeAssignmentReplanWindow(assignmentReplanWindow)
+    assignmentReplanWindow: normalizeAssignmentReplanWindow(assignmentReplanWindow),
+    adaptiveReplanWindow
   };
 }
 
@@ -1865,6 +1883,18 @@ export function normalizeTaskPriority(value: number): number {
 
 export function assignmentReplanWindowLabel(value: number): string {
   return `窗口 ${normalizeAssignmentReplanWindow(value)}T`;
+}
+
+export function assignmentReplanWindowStatusLabel(
+  configuredValue: number,
+  adaptive: boolean,
+  effectiveValue?: number
+): string {
+  if (!adaptive) return assignmentReplanWindowLabel(configuredValue);
+  const effectiveWindow = Number.isFinite(effectiveValue)
+    ? normalizeAssignmentReplanWindow(effectiveValue as number)
+    : normalizeAssignmentReplanWindow(configuredValue);
+  return `自适应 ${effectiveWindow}T`;
 }
 
 export function simulationTimeLabel(time: number): string {

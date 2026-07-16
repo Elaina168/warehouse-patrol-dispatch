@@ -3347,6 +3347,120 @@ def test_session_uses_configured_assignment_replan_window_for_rolling_trigger() 
     assert "T=1 滚动窗口纳入远期任务" in event_texts
 
 
+def test_session_reports_and_resets_adaptive_replan_window() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "session-adaptive-window",
+        "name": "session-adaptive-window",
+        "description": "adaptive window should expose the effective decision",
+        "width": 8,
+        "height": 1,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [[0, 0]],
+            "inspection": [[7, 0]],
+            "delivery": [],
+        },
+        "robots": [
+            {"id": "R1", "name": "R1", "start": [0, 0], "battery": 90, "load": 1},
+        ],
+        "tasks": [
+            {
+                "id": "FUTURE",
+                "type": "inspection",
+                "title": "FUTURE",
+                "priority": 1,
+                "releaseTime": 40,
+                "targets": [[7, 0]],
+            },
+        ],
+        "dynamic": {
+            "triggerTime": 0,
+            "blockedCells": [],
+            "failedRobots": [],
+            "tasks": [],
+        },
+    }
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario,
+            "options": {
+                "avoidConflicts": True,
+                "includeDynamic": False,
+                "assignmentReplanWindow": 24,
+                "adaptiveReplanWindow": True,
+            },
+        },
+    )
+
+    assert created.status_code == 200
+    payload = created.json()
+    assert payload["options"]["adaptiveReplanWindow"] is True
+    assert payload["result"]["effectiveAssignmentReplanWindow"] == 48
+    assert payload["result"]["replanWindowReason"] == "当前负载较低且存在远期任务，扩大窗口"
+
+    reset = client.post(f"/api/sessions/{payload['sessionId']}/reset")
+    assert reset.status_code == 200
+    reset_payload = reset.json()
+    assert reset_payload["options"]["adaptiveReplanWindow"] is True
+    assert reset_payload["result"]["effectiveAssignmentReplanWindow"] == 48
+
+
+def test_session_slow_replan_feedback_changes_window_trigger_time() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "session-adaptive-slow-window",
+            "name": "session-adaptive-slow-window",
+            "description": "slow feedback should contract the rolling trigger",
+            "width": 8,
+            "height": 1,
+            "obstacles": [],
+            "zones": {
+                "warehouse": [[0, 0]],
+                "inspection": [[7, 0]],
+                "delivery": [],
+            },
+            "robots": [
+                {"id": "R1", "name": "R1", "start": [0, 0], "battery": 90, "load": 1},
+            ],
+            "tasks": [
+                {
+                    "id": "FUTURE",
+                    "type": "inspection",
+                    "title": "FUTURE",
+                    "priority": 1,
+                    "releaseTime": 40,
+                    "targets": [[7, 0]],
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+    session = sessions_module.DispatchSession(
+        session_id="adaptive-slow",
+        scenario=scenario,
+        options=DispatchOptions(
+            avoidConflicts=True,
+            includeDynamic=False,
+            assignmentReplanWindow=24,
+            adaptiveReplanWindow=True,
+        ),
+        last_replan_time_ms=50,
+    )
+    task = scenario.tasks[0]
+
+    decision = sessions_module._session_replan_window_decision(session)
+
+    assert decision.window == 12
+    assert sessions_module._rolling_window_trigger_time(session, task) == 28
+
+
 def test_session_task_state_recovers_after_runtime_robot_restore() -> None:
     client = TestClient(app)
     scenario = {

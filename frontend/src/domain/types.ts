@@ -212,6 +212,8 @@ export type DispatchResult = {
   scenarioId: string;
   avoidConflicts: boolean;
   includeDynamic: boolean;
+  effectiveAssignmentReplanWindow?: number;
+  replanWindowReason?: string;
   dynamicTriggerTime: number | null;
   extraBlocked: Cell[];
   unavailableRobotIds: string[];
@@ -231,6 +233,7 @@ export type DispatchOptions = {
   avoidConflicts: boolean;
   includeDynamic: boolean;
   assignmentReplanWindow: number;
+  adaptiveReplanWindow?: boolean;
 };
 
 export type DispatchRequest = {

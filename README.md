@@ -108,7 +108,7 @@ POST http://127.0.0.1:8011/api/experiments/conflict-avoidance
 POST http://127.0.0.1:8011/api/experiments/dynamic-replanning
 ```
 
-滚动窗口实验对比接口用于同一场景下自动生成多个 `assignmentReplanWindow` 参数结果：
+滚动窗口实验对比接口用于同一场景下生成多个固定 `assignmentReplanWindow` 结果，并可通过 `includeAdaptive=true` 增加自适应窗口结果：
 
 ```text
 POST http://127.0.0.1:8011/api/experiments/replan-window

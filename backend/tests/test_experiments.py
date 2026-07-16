@@ -278,6 +278,33 @@ def test_replan_window_experiment_returns_one_case_per_window() -> None:
     ]
 
 
+def test_replan_window_experiment_can_include_adaptive_case() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/experiments/replan-window",
+        json={
+            "scenario": replan_window_scenario(),
+            "options": {
+                "avoidConflicts": True,
+                "includeDynamic": False,
+                "assignmentReplanWindow": 4,
+            },
+            "windows": [4],
+            "includeAdaptive": True,
+        },
+    )
+
+    assert response.status_code == 200
+    cases = {case["label"]: case for case in response.json()["cases"]}
+    assert set(cases) == {"window-4", "adaptive-window-4"}
+    assert cases["window-4"]["options"]["adaptiveReplanWindow"] is False
+    adaptive = cases["adaptive-window-4"]
+    assert adaptive["options"]["adaptiveReplanWindow"] is True
+    assert adaptive["result"]["effectiveAssignmentReplanWindow"] == 4
+    assert adaptive["result"]["replanWindowReason"] == "当前负载适中，保持基准窗口"
+
+
 def test_replan_window_experiment_uses_integrated_demo_task_timing() -> None:
     client = TestClient(app)
 

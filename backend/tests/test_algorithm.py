@@ -561,6 +561,57 @@ def test_dispatch_uses_configured_assignment_replan_window() -> None:
     assert any(event.text == "1 个远期任务等待滚动窗口调度" for event in result.eventLog)
 
 
+def test_dispatch_adaptive_window_expands_to_include_future_task() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "adaptive-future-window",
+            "name": "adaptive-future-window",
+            "description": "adaptive low-load window should include future work",
+            "width": 8,
+            "height": 1,
+            "obstacles": [],
+            "zones": {
+                "warehouse": [[0, 0]],
+                "inspection": [[7, 0]],
+                "delivery": [],
+            },
+            "robots": [
+                {"id": "R1", "name": "R1", "start": [0, 0], "battery": 90, "load": 1},
+            ],
+            "tasks": [
+                {
+                    "id": "FUTURE",
+                    "type": "inspection",
+                    "title": "FUTURE",
+                    "priority": 1,
+                    "releaseTime": 40,
+                    "targets": [[7, 0]],
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(
+            avoidConflicts=True,
+            includeDynamic=False,
+            assignmentReplanWindow=24,
+            adaptiveReplanWindow=True,
+        ),
+    )
+
+    assert result.effectiveAssignmentReplanWindow == 48
+    assert result.replanWindowReason == "当前负载较低且存在远期任务，扩大窗口"
+    assert [task.id for assignment in result.assignments for task in assignment.tasks] == ["FUTURE"]
+
+
 def test_dispatch_keeps_locked_far_future_task_inside_current_planning_window() -> None:
     scenario = Scenario.model_validate(
         {

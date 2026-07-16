@@ -93,16 +93,30 @@ def compare_dynamic_replanning(request: DynamicReplanningExperimentRequest) -> D
 
 
 def compare_replan_windows(request: ReplanWindowExperimentRequest) -> ReplanWindowExperimentResult:
+    cases = [
+        _run_case(
+            f"window-{window}",
+            request,
+            request.options.model_copy(
+                update={
+                    "assignmentReplanWindow": window,
+                    "adaptiveReplanWindow": False,
+                }
+            ),
+        )
+        for window in request.windows
+    ]
+    if request.includeAdaptive:
+        cases.append(
+            _run_case(
+                f"adaptive-window-{request.options.assignmentReplanWindow}",
+                request,
+                request.options.model_copy(update={"adaptiveReplanWindow": True}),
+            )
+        )
     return ReplanWindowExperimentResult(
         scenarioId=request.scenario.id,
-        cases=[
-            _run_case(
-                f"window-{window}",
-                request,
-                request.options.model_copy(update={"assignmentReplanWindow": window}),
-            )
-            for window in request.windows
-        ],
+        cases=cases,
     )
 
 

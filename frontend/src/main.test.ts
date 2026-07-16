@@ -9,6 +9,7 @@ import {
   buildDispatchOptions,
   buildReplanStatus,
   assignmentReplanWindowLabel,
+  assignmentReplanWindowStatusLabel,
   buildRecoveryTargets,
   buildTaskSnapshots,
   buildTaskQueueMetricRows,
@@ -1247,8 +1248,10 @@ describe("dispatch options", () => {
     expect(buildDispatchOptions(true, true, 18)).toEqual({
       avoidConflicts: true,
       includeDynamic: true,
-      assignmentReplanWindow: 18
+      assignmentReplanWindow: 18,
+      adaptiveReplanWindow: false
     });
+    expect(buildDispatchOptions(true, true, 18, true).adaptiveReplanWindow).toBe(true);
     expect(buildDispatchOptions(true, true, 3.8).assignmentReplanWindow).toBe(3);
     expect(buildDispatchOptions(false, false, -5).assignmentReplanWindow).toBe(0);
     expect(buildDispatchOptions(true, false, 999).assignmentReplanWindow).toBe(120);
@@ -1259,6 +1262,9 @@ describe("dispatch options", () => {
     expect(assignmentReplanWindowLabel(24)).toBe("窗口 24T");
     expect(assignmentReplanWindowLabel(3.8)).toBe("窗口 3T");
     expect(assignmentReplanWindowLabel(Number.NaN)).toBe("窗口 24T");
+    expect(assignmentReplanWindowStatusLabel(24, false, 48)).toBe("窗口 24T");
+    expect(assignmentReplanWindowStatusLabel(24, true, 48)).toBe("自适应 48T");
+    expect(assignmentReplanWindowStatusLabel(24, true)).toBe("自适应 24T");
   });
 
 });

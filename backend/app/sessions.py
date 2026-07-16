@@ -27,6 +27,7 @@ from backend.app.inventory import (
     initial_shelf_statuses,
     reserve_shelf_task,
 )
+from backend.app.replan_window import ReplanWindowDecision, decide_replan_window
 from backend.app.schemas import (
     AddBlockRequest,
     AddTaskRequest,
@@ -98,6 +99,9 @@ class DispatchSession:
     preferred_task_robot_ids: dict[str, str] = field(default_factory=dict)
     shelf_statuses: dict[str, ShelfStatus] = field(default_factory=dict)
     shelf_task_bindings: dict[str, ShelfTaskBinding] = field(default_factory=dict)
+    effective_assignment_replan_window: int | None = None
+    replan_window_reason: str | None = None
+    last_replan_time_ms: float | None = None
     last_result: DispatchResult | None = None
 
 
@@ -413,6 +417,9 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.metrics_history.clear()
     session.locked_task_robot_ids.clear()
     session.preferred_task_robot_ids.clear()
+    session.effective_assignment_replan_window = None
+    session.replan_window_reason = None
+    session.last_replan_time_ms = None
     session.last_result = None
     _initialize_shelf_inventory(session)
     _touch_session(session, updated=updated)
@@ -497,6 +504,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
         )
     if result is None:
         scenario, options, task_lookup = _build_effective_dispatch_input(session)
+        replan_window_decision = _session_replan_window_decision(session)
         result = _restore_absolute_result(
             run_dispatch(
                 scenario,
@@ -506,11 +514,14 @@ def _build_result(session: DispatchSession) -> SessionResult:
                 include_dynamic_events=_include_scenario_dynamic_events(session),
                 apply_dynamic_constraints_at_start=True,
                 task_limit_per_robot=1,
+                replan_window_decision=replan_window_decision,
             ),
             task_lookup,
             session.current_time,
             session,
         )
+        _record_replan_window_decision(session, replan_window_decision)
+        session.last_replan_time_ms = result.metrics.replanTimeMs
         _update_task_robot_preferences(session, result)
 
         session.last_result = result
@@ -560,12 +571,15 @@ def _should_delay_initial_planning(session: DispatchSession) -> bool:
 
 def _build_idle_result(session: DispatchSession) -> DispatchResult:
     dynamic_active = _is_scenario_dynamic_active(session)
+    replan_window_decision = _session_replan_window_decision(session)
     active_dynamic_blocked = session.scenario.dynamic.blockedCells if dynamic_active else []
     active_dynamic_failed = session.scenario.dynamic.failedRobots if dynamic_active else []
     return DispatchResult(
         scenarioId=session.scenario.id,
         avoidConflicts=session.options.avoidConflicts,
         includeDynamic=session.options.includeDynamic,
+        effectiveAssignmentReplanWindow=replan_window_decision.window,
+        replanWindowReason=replan_window_decision.reason,
         dynamicTriggerTime=(
             session.scenario.dynamic.triggerTime
             if _include_scenario_dynamic_events(session)
@@ -820,7 +834,56 @@ def _is_task_available_for_rolling_window(session: DispatchSession, task: Task) 
 
 def _rolling_window_trigger_time(session: DispatchSession, task: Task) -> int:
     release_time = _session_task_release_time(session, task)
-    return max(0, release_time - session.options.assignmentReplanWindow)
+    return max(0, release_time - _session_replan_window_decision(session).window)
+
+
+def _session_replan_window_decision(session: DispatchSession) -> ReplanWindowDecision:
+    tasks = [
+        task
+        for task in _all_tasks(session)
+        if task.id not in session.completed_task_ids
+    ]
+    released_task_count = sum(
+        1
+        for task in tasks
+        if _session_task_release_time(session, task) <= session.current_time
+    )
+    active_dynamic_failed = (
+        session.scenario.dynamic.failedRobots
+        if _is_scenario_dynamic_active(session)
+        else []
+    )
+    unavailable_robot_ids = _merge_text(
+        active_dynamic_failed,
+        session.runtime_failed_robot_ids,
+    )
+    return decide_replan_window(
+        configured_window=session.options.assignmentReplanWindow,
+        adaptive=session.options.adaptiveReplanWindow,
+        released_task_count=released_task_count,
+        future_task_count=len(tasks) - released_task_count,
+        active_robot_count=len(session.scenario.robots) - len(unavailable_robot_ids),
+        recent_replan_time_ms=session.last_replan_time_ms,
+    )
+
+
+def _record_replan_window_decision(
+    session: DispatchSession,
+    decision: ReplanWindowDecision,
+) -> None:
+    previous_window = session.effective_assignment_replan_window
+    session.effective_assignment_replan_window = decision.window
+    session.replan_window_reason = decision.reason
+    if (
+        session.options.adaptiveReplanWindow
+        and previous_window is not None
+        and previous_window != decision.window
+    ):
+        _record_session_event(
+            session,
+            session.current_time,
+            f"自适应重规划窗口调整为 {decision.window}T：{decision.reason}",
+        )
 
 
 def _first_crossed_time(current_time: int, target_time: int, times: list[int | None]) -> int | None:
@@ -1425,12 +1488,14 @@ def _release_locks_for_active_higher_priority_task(
         if task_id not in candidate_task_ids
     }
     scenario, options, _ = _build_effective_dispatch_input(session)
+    replan_window_decision = _session_replan_window_decision(session)
     current_result = run_dispatch(
         scenario,
         options,
         current_locks,
         apply_dynamic_constraints_at_start=True,
         task_limit_per_robot=1,
+        replan_window_decision=replan_window_decision,
     )
     proposed_result = run_dispatch(
         scenario,
@@ -1438,6 +1503,7 @@ def _release_locks_for_active_higher_priority_task(
         proposed_locks,
         apply_dynamic_constraints_at_start=True,
         task_limit_per_robot=1,
+        replan_window_decision=replan_window_decision,
     )
 
     if _preemption_plan_score(proposed_result, task.id) >= _preemption_plan_score(current_result, task.id):
@@ -1558,6 +1624,7 @@ def _robot_at_cell_at_time(session: DispatchSession, cell: Cell, target_time: in
 
 def _preview_dispatch_result(session: DispatchSession) -> DispatchResult:
     scenario, options, task_lookup = _build_effective_dispatch_input(session)
+    replan_window_decision = _session_replan_window_decision(session)
     return _restore_absolute_result(
         run_dispatch(
             scenario,
@@ -1567,6 +1634,7 @@ def _preview_dispatch_result(session: DispatchSession) -> DispatchResult:
             include_dynamic_events=_include_scenario_dynamic_events(session),
             apply_dynamic_constraints_at_start=True,
             task_limit_per_robot=1,
+            replan_window_decision=replan_window_decision,
         ),
         task_lookup,
         session.current_time,

@@ -81,13 +81,15 @@ POST http://127.0.0.1:8011/api/experiments/replan-window
   "options": {
     "avoidConflicts": true,
     "includeDynamic": false,
-    "assignmentReplanWindow": 24
+    "assignmentReplanWindow": 24,
+    "adaptiveReplanWindow": false
   },
-  "windows": [4, 24, 48]
+  "windows": [4, 24, 48],
+  "includeAdaptive": true
 }
 ```
 
-`windows` 中的每个值都会生成一个 case，标签格式为 `window-<value>`。接口会保留其他 `options` 设置，只覆盖 `assignmentReplanWindow`。
+`windows` 中的每个值都会生成固定窗口 case，标签格式为 `window-<value>`。`includeAdaptive=true` 时额外生成 `adaptive-window-<base>`，其中 `<base>` 为 `options.assignmentReplanWindow`。每个结果通过 `effectiveAssignmentReplanWindow` 和 `replanWindowReason` 说明实际窗口与原因。
 
 该接口用于竞赛材料中的第三组实验：
 
@@ -198,7 +200,7 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 
 - 避碰对比：同一场景下，对比关闭避碰和开启避碰后的冲突数量、路径长度、任务完成情况和事件日志。
 - 动态重规划对比：同一场景下，对比是否启用动态事件后的任务完成情况、路径变化和重规划指标。
-- 滚动窗口对比：同一场景下，对比不同窗口参数对当前规划规模、路径代价和失败数的影响。
+- 滚动窗口对比：同一场景下，对比不同固定窗口以及可选自适应窗口对当前规划规模、路径代价、失败数和规划耗时的影响。
 - 规模对比：不同机器人数量、任务数量或地图规模下，对比完成时间、总路径长度、冲突数量、失败任务数和重规划耗时。
 - 固定种子压力：验证随机障碍和多规模下的分配稳定性、冲突安全与规划耗时预算。
 - 在线压力：验证持续任务到达、运行时封锁、机器人故障和恢复后的覆盖率、实际完成率、事件历史与指标连续性。

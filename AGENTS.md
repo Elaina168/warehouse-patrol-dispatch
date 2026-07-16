@@ -119,6 +119,7 @@ Completed and currently expected to remain in the project:
 - Frontend live deadline metric logic handles nullable serialized task deadlines and excludes still-pending tasks, keeping live deadline misses aligned with backend `deadlineMissCount`.
 - Frontend API error handling preserves backend error `detail` text across session creation, updates, ticks, reset, and delete failures, so operational panels surface concrete API failure causes instead of only HTTP status codes.
 - Frontend status strip exposes the configured rolling replan window. Scenario dynamic events are always enabled for main-session creation and are not presented as a user toggle.
+- Rolling windows now support an optional explainable adaptive mode while fixed mode remains the default. Adaptive decisions use recent planning latency, released-task pressure, future-task availability, and active robot count; dispatch results expose the effective window and reason, and the frontend status strip displays them without adding an experiment panel.
 - Frontend scenario-data regression now protects `integrated-demo` as the only persisted frontend scenario and verifies its mixed task, charging, and online-dispatch coverage.
 - The sole `integrated-demo` baseline now uses a `26 × 16` realistic warehouse grid with twelve `3 × 2` shelf groups, two-cell horizontal and vertical clearances, top inbound cells, bottom outbound cells, right-side robot starts, and right-side charging cells.
 - The 72 shelf entity cells are impassable, and every shelf has one unique adjacent service cell where robots perform pickup or putaway operations.
@@ -177,7 +178,8 @@ Recommended execution order:
    - Deterministic scale-pressure coverage now verifies increasing 3/5/8-robot scenario families with mixed tasks and dynamic emergency tasks while preserving full assignment, zero conflicts, zero failures, and bounded planning time.
    - Fixed-seed pressure coverage now verifies randomized 4/6/8-robot scenario families with mixed tasks, randomized obstacles, dynamic emergency tasks, full assignment, zero conflicts, zero failures, and bounded planning time.
    - The previous 8-robot seed-43 late-goal conflict boundary is now a passing regression through reservation-aware post-task parking.
-   - Remaining work is algorithmic quality beyond the current heuristic planner, especially adaptive rolling-window exploration, richer MAPF behavior if needed, and performance tuning on larger instances.
+   - An explainable adaptive rolling-window policy is implemented with fixed-mode compatibility, task-pressure and planning-latency contraction, low-load future-work expansion, effective-window explanations, and experiment comparison support. Fixed mode remains the cross-environment deterministic regression baseline because wall-clock latency feedback can vary by machine load.
+   - Remaining work is algorithmic quality beyond the current heuristic planner, especially richer MAPF behavior if needed, adaptive-threshold calibration, and performance tuning on larger instances.
    - Battery and charging are now hard runtime constraints: a robot consumes one unit per moved grid cell, routes to a reachable charger when needed, waits for `chargeTime`, and remains unavailable to preemption while charging.
 
 3. Online scheduling module completion - 接近完成
@@ -223,7 +225,7 @@ Recommended execution order:
    - The main frontend intentionally has no experiment panel; report charts, reviewed conclusions, and final competition evidence tables have not yet been produced.
    - Conflict-avoidance comparison now has backend regression coverage on a real fixed demo scenario instead of only synthetic scenarios.
    - Dynamic-replanning comparison now has backend regression coverage on a real fixed demo scenario instead of only synthetic scenarios.
-   - Rolling-window comparison now has backend regression coverage on a real fixed demo scenario instead of only synthetic scenarios.
+   - Rolling-window comparison now has backend regression coverage on a real fixed demo scenario and can include an adaptive case alongside fixed-window cases.
    - Scale comparison now has backend regression coverage across the real fixed demo scenario set, not only synthetic scale inputs.
    - Fixed-seed pressure comparison has backend coverage for standard and extended stability sets, including the repaired seed-43 pressure boundary, with assignment-rate, deadline-miss, planning-budget, distance, and makespan evidence.
    - Remaining work is manually reviewed final wording after the official competition material requirements are known.

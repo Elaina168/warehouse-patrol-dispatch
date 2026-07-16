@@ -102,6 +102,7 @@ class DispatchOptions(ApiModel):
     avoidConflicts: bool = True
     includeDynamic: bool = True
     assignmentReplanWindow: AssignmentReplanWindowInt = 24
+    adaptiveReplanWindow: bool = False
 
 
 class DispatchRequest(ApiModel):
@@ -123,6 +124,7 @@ class ReplanWindowExperimentRequest(ApiModel):
     scenario: Scenario
     options: DispatchOptions = Field(default_factory=DispatchOptions)
     windows: list[AssignmentReplanWindowInt]
+    includeAdaptive: bool = False
 
 
 class ScaleExperimentScenario(ApiModel):
@@ -271,6 +273,8 @@ class DispatchResult(ApiModel):
     scenarioId: str
     avoidConflicts: bool
     includeDynamic: bool
+    effectiveAssignmentReplanWindow: AssignmentReplanWindowInt = 24
+    replanWindowReason: str = "固定窗口"
     dynamicTriggerTime: int | None
     extraBlocked: list[Cell]
     unavailableRobotIds: list[str]
