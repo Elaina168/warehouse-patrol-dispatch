@@ -1,6 +1,9 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+// Vitest 在 Node.js 中运行；项目构建不包含 Node 类型，仅在样式回归中读取源码。
+// @ts-expect-error 测试运行时提供 node:fs。
+import { readFileSync } from "node:fs";
 import {
   buildLiveMetrics,
   buildDispatchOptions,
@@ -61,6 +64,17 @@ describe("robot charging runtime status contract", () => {
 });
 
 describe("warehouse shelf map", () => {
+  it("keeps robot markers circular and bounded by responsive map cells", () => {
+    const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    const robotMarkerRule = styles.match(/(?:^|\r?\n)\.robot-marker\s*\{(?<rule>[^}]*)\}/)?.groups?.rule;
+
+    expect(robotMarkerRule).toBeDefined();
+    expect(robotMarkerRule).toMatch(/width:\s*min\(28px,\s*100%\);/);
+    expect(robotMarkerRule).toMatch(/max-height:\s*100%;/);
+    expect(robotMarkerRule).toMatch(/aspect-ratio:\s*1;/);
+    expect(robotMarkerRule).not.toMatch(/height:\s*28px;/);
+  });
+
   it("renders shelf stock classes and labels from the session shelf states", () => {
     const scenario = buildWarehouseGeneratorScenario();
     const result = buildMapTestResult(scenario);

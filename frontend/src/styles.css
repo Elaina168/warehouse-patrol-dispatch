@@ -797,8 +797,10 @@ input {
   z-index: 1;
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: min(28px, 100%);
+  height: auto;
+  max-height: 100%;
+  aspect-ratio: 1;
   border-radius: 50%;
   background: var(--robot-color, var(--robot));
   color: #ffffff;
