@@ -86,6 +86,247 @@ def _post_generated_task(
     )
 
 
+def shelf_session_scenario() -> dict[str, Any]:
+    return {
+        "id": "shelf-session",
+        "name": "shelf-session",
+        "description": "货架库存在线会话测试",
+        "width": 7,
+        "height": 5,
+        "obstacles": [[2, 2], [4, 2]],
+        "zones": {
+            "warehouse": [[0, 0]],
+            "inspection": [[3, 0]],
+            "delivery": [[6, 4]],
+            "charging": [],
+        },
+        "shelves": [
+            {"id": "S01", "cell": [2, 2], "serviceCell": [2, 1], "initialOccupied": False},
+            {"id": "S02", "cell": [4, 2], "serviceCell": [4, 1], "initialOccupied": True},
+        ],
+        "robots": [{"id": "R1", "name": "R1", "start": [0, 4], "battery": 100, "load": 1}],
+        "tasks": [],
+        "dynamic": {"triggerTime": 10, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+
+
+def inbound_runtime_task(task_id: str = "IN") -> dict[str, Any]:
+    return {
+        "id": task_id,
+        "type": "delivery",
+        "title": task_id,
+        "priority": 2,
+        "pickup": [0, 0],
+        "dropoff": [2, 1],
+        "demand": 1,
+        "serviceTime": 3,
+    }
+
+
+def outbound_runtime_task(task_id: str = "OUT", pickup: list[int] | None = None) -> dict[str, Any]:
+    return {
+        "id": task_id,
+        "type": "delivery",
+        "title": task_id,
+        "priority": 2,
+        "pickup": pickup if pickup is not None else [4, 1],
+        "dropoff": [6, 4],
+        "demand": 1,
+    }
+
+
+def shelf_states(payload: dict[str, Any]) -> dict[str, str]:
+    return {item["shelfId"]: item["status"] for item in payload["shelfStates"]}
+
+
+def _assigned_task_path(payload: dict[str, Any], task_id: str) -> list[list[int]]:
+    assignment = next(
+        item
+        for item in payload["result"]["assignments"]
+        if any(task["id"] == task_id for task in item["tasks"])
+    )
+    return payload["result"]["paths"][assignment["robotId"]]
+
+
+def test_session_reserves_completes_and_resets_shelf_inventory() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": shelf_session_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+    assert shelf_states(created.json()) == {"S01": "empty", "S02": "occupied"}
+
+    inbound = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={"task": inbound_runtime_task()},
+    )
+    assert inbound.status_code == 200
+    assert shelf_states(inbound.json())["S01"] == "inboundReserved"
+
+    outbound = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={"task": outbound_runtime_task()},
+    )
+    assert outbound.status_code == 200
+    assert shelf_states(outbound.json())["S02"] == "outboundReserved"
+
+    completed = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 40})
+    assert completed.status_code == 200
+    assert shelf_states(completed.json()) == {"S01": "occupied", "S02": "empty"}
+
+    reset = client.post(f"/api/sessions/{session_id}/reset")
+    assert reset.status_code == 200
+    assert shelf_states(reset.json()) == {"S01": "empty", "S02": "occupied"}
+
+
+def test_session_shelf_inventory_outbound_pickup_empties_at_actual_visit_time() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": shelf_session_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    session_id = created.json()["sessionId"]
+    added = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={"task": outbound_runtime_task()},
+    ).json()
+    path = _assigned_task_path(added, "OUT")
+    pickup_tick = path.index([4, 1])
+
+    before_pickup = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": pickup_tick - 1},
+    ).json()
+    at_pickup = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": pickup_tick},
+    ).json()
+
+    assert shelf_states(before_pickup)["S02"] == "outboundReserved"
+    assert shelf_states(at_pickup)["S02"] == "empty"
+    assert any(
+        event == {"time": pickup_tick, "text": "货架 S02 已取货"}
+        for event in at_pickup["result"]["eventLog"]
+    )
+
+
+def test_session_shelf_inventory_inbound_waits_full_service_time() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": shelf_session_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    session_id = created.json()["sessionId"]
+    added = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={"task": inbound_runtime_task()},
+    ).json()
+    path = _assigned_task_path(added, "IN")
+    dropoff_tick = path.index([2, 1], path.index([0, 0]))
+
+    at_dropoff = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": dropoff_tick},
+    ).json()
+    before_service_done = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": dropoff_tick + 2},
+    ).json()
+    after_service_done = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": dropoff_tick + 3},
+    ).json()
+
+    assert shelf_states(at_dropoff)["S01"] == "inboundReserved"
+    assert shelf_states(before_service_done)["S01"] == "inboundReserved"
+    assert shelf_states(after_service_done)["S01"] == "occupied"
+    assert any(
+        event == {"time": dropoff_tick + 3, "text": "货架 S01 已放货"}
+        for event in after_service_done["result"]["eventLog"]
+    )
+
+
+def test_session_shelf_task_rejection_has_no_runtime_side_effects() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": shelf_session_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    session_id = created.json()["sessionId"]
+    accepted = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={"task": inbound_runtime_task()},
+    ).json()
+
+    for invalid_task in [
+        inbound_runtime_task("IN-2"),
+        outbound_runtime_task("OUT-EMPTY", pickup=[2, 1]),
+    ]:
+        rejected = client.post(
+            f"/api/sessions/{session_id}/tasks",
+            json={"task": invalid_task},
+        )
+        assert rejected.status_code == 422
+        current = client.get(f"/api/sessions/{session_id}").json()
+        assert current["currentTime"] == accepted["currentTime"]
+        assert current["runtimeTaskCount"] == accepted["runtimeTaskCount"]
+        assert current["metricsHistory"] == accepted["metricsHistory"]
+        assert [task["id"] for task in current["result"]["tasks"]] == [
+            task["id"] for task in accepted["result"]["tasks"]
+        ]
+        assert shelf_states(current) == shelf_states(accepted)
+        assert current["result"] == accepted["result"]
+
+
+def test_session_shelf_inventory_reservations_survive_robot_failure_and_restore() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": shelf_session_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    session_id = created.json()["sessionId"]
+    client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={"task": inbound_runtime_task()},
+    )
+    reserved = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={"task": outbound_runtime_task()},
+    ).json()
+    assert shelf_states(reserved) == {"S01": "inboundReserved", "S02": "outboundReserved"}
+
+    failed = client.post(
+        f"/api/sessions/{session_id}/failed-robots",
+        json={"robotId": "R1", "currentTime": 0},
+    )
+    restored = client.post(
+        f"/api/sessions/{session_id}/failed-robots/restore",
+        json={"robotId": "R1", "currentTime": 0},
+    )
+
+    assert failed.status_code == 200
+    assert restored.status_code == 200
+    assert shelf_states(failed.json()) == shelf_states(reserved)
+    assert shelf_states(restored.json()) == shelf_states(reserved)
+
+
 def test_conflict_states_follow_current_robot_overlap() -> None:
     conflict = Conflict(time=1, type="vertex", robots=["R1", "R2"], cell=(7, 4))
     paths = {

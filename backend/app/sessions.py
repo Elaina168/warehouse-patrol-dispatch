@@ -18,6 +18,15 @@ from backend.app.dispatch import (
     task_service_time,
     task_waypoints,
 )
+from backend.app.inventory import (
+    ShelfInventoryError,
+    ShelfTaskBinding,
+    build_shelf_runtime_states,
+    complete_inbound_task,
+    complete_outbound_pickup,
+    initial_shelf_statuses,
+    reserve_shelf_task,
+)
 from backend.app.schemas import (
     AddBlockRequest,
     AddTaskRequest,
@@ -39,6 +48,7 @@ from backend.app.schemas import (
     SessionResult,
     SessionSummary,
     SessionTickRequest,
+    ShelfStatus,
     Task,
     TaskRuntimeState,
 )
@@ -86,6 +96,8 @@ class DispatchSession:
     metrics_history: list[MetricSnapshot] = field(default_factory=list)
     locked_task_robot_ids: dict[str, str] = field(default_factory=dict)
     preferred_task_robot_ids: dict[str, str] = field(default_factory=dict)
+    shelf_statuses: dict[str, ShelfStatus] = field(default_factory=dict)
+    shelf_task_bindings: dict[str, ShelfTaskBinding] = field(default_factory=dict)
     last_result: DispatchResult | None = None
 
 
@@ -116,6 +128,7 @@ def create_session(request: CreateSessionRequest) -> SessionResult:
         robot_travelled_distance={robot.id: 0 for robot in request.scenario.robots},
         robot_battery_levels={robot.id: robot.battery for robot in request.scenario.robots},
     )
+    _initialize_shelf_inventory(session)
     _sessions[session_id] = session
     return _build_result(session)
 
@@ -156,7 +169,15 @@ def add_task(session_id: str, request: AddTaskRequest) -> SessionResult:
     diagnostics = _validate_runtime_task(session, task)
     if diagnostics:
         raise HTTPException(status_code=422, detail=diagnostics)
+    next_statuses = dict(session.shelf_statuses)
+    next_bindings = dict(session.shelf_task_bindings)
+    try:
+        reserve_shelf_task(session.scenario, next_statuses, next_bindings, task)
+    except ShelfInventoryError as error:
+        raise HTTPException(status_code=422, detail=[str(error)]) from error
     session.scenario.tasks.append(task)
+    session.shelf_statuses = next_statuses
+    session.shelf_task_bindings = next_bindings
     _release_locks_for_active_higher_priority_task(session, task, session.current_time)
     session.runtime_task_count += 1
     _invalidate_plan(session)
@@ -393,7 +414,17 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.locked_task_robot_ids.clear()
     session.preferred_task_robot_ids.clear()
     session.last_result = None
+    _initialize_shelf_inventory(session)
     _touch_session(session, updated=updated)
+
+
+def _initialize_shelf_inventory(session: DispatchSession) -> None:
+    statuses = initial_shelf_statuses(session.scenario)
+    bindings: dict[str, ShelfTaskBinding] = {}
+    for task in [*session.scenario.tasks, *session.scenario.dynamic.tasks]:
+        reserve_shelf_task(session.scenario, statuses, bindings, task)
+    session.shelf_statuses = statuses
+    session.shelf_task_bindings = bindings
 
 
 def _cleanup_sessions(now: float | None = None) -> None:
@@ -455,6 +486,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
             runtimeTaskCount=session.runtime_task_count,
             runtimeEventCount=len(session.runtime_blocked_cells) + len(session.runtime_failed_robot_ids),
             robotStates=robot_states,
+            shelfStates=build_shelf_runtime_states(session.scenario, session.shelf_statuses),
             taskStates=task_states,
             metricsHistory=session.metrics_history,
             completedTaskCount=len(session.completed_task_ids),
@@ -504,6 +536,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
         runtimeTaskCount=session.runtime_task_count,
         runtimeEventCount=len(session.runtime_blocked_cells) + len(session.runtime_failed_robot_ids),
         robotStates=robot_states,
+        shelfStates=build_shelf_runtime_states(session.scenario, session.shelf_statuses),
         taskStates=task_states,
         metricsHistory=session.metrics_history,
         completedTaskCount=len(session.completed_task_ids),
@@ -680,7 +713,17 @@ def _advance_session(session: DispatchSession, target_time: int) -> None:
         session.robot_positions[robot.id] = position
 
     _update_locked_task_assignments(session, result, target_time)
+    outbound_pickup_times = _outbound_pickup_times_until(session, result, target_time)
     _update_task_waypoint_progress(session, result, target_time)
+
+    for task in _all_tasks(session):
+        binding = session.shelf_task_bindings.get(task.id)
+        if binding is None or binding.kind != "outbound":
+            continue
+        if session.task_waypoint_progress.get(task.id, 0) >= 1:
+            if complete_outbound_pickup(session.shelf_statuses, session.shelf_task_bindings, task.id):
+                pickup_time = outbound_pickup_times.get(task.id, target_time)
+                _record_session_event(session, pickup_time, f"货架 {binding.shelf_id} 已取货")
 
     completions = _session_task_completion_times(session, result)
     completed_task = False
@@ -695,6 +738,10 @@ def _advance_session(session: DispatchSession, target_time: int) -> None:
             if newly_completed:
                 completed_task = True
                 _record_session_event(session, completion_time, f"任务 {task_id} 已完成")
+                binding = session.shelf_task_bindings.get(task_id)
+                if binding is not None and binding.kind == "inbound":
+                    if complete_inbound_task(session.shelf_statuses, session.shelf_task_bindings, task_id):
+                        _record_session_event(session, completion_time, f"货架 {binding.shelf_id} 已放货")
 
     session.current_time = target_time
     if completed_task:
@@ -1273,6 +1320,55 @@ def _find_next_visit_until(path: list[Cell], waypoint: Cell, start_index: int, e
         if path[index] == waypoint:
             return index
     return None
+
+
+def _outbound_pickup_times_until(
+    session: DispatchSession,
+    result: DispatchResult,
+    target_time: int,
+) -> dict[str, int]:
+    pickup_times: dict[str, int] = {}
+    for assignment in result.assignments:
+        path = result.paths.get(assignment.robotId, [])
+        if not path:
+            continue
+        end_index = min(target_time, len(path) - 1)
+        cursor_index = min(session.current_time, end_index)
+        for task in assignment.tasks:
+            completion_time = session.task_completion_times.get(task.id)
+            if completion_time is not None:
+                cursor_index = max(cursor_index, completion_time + 1)
+                continue
+            completed_before = session.task_waypoint_progress.get(task.id, 0)
+            binding = session.shelf_task_bindings.get(task.id)
+            release_time = task.releaseTime if task.releaseTime is not None else 0
+            if (
+                completed_before == 0
+                and binding is not None
+                and binding.kind == "outbound"
+                and task.pickup is not None
+            ):
+                pickup_time = _find_next_visit_until(
+                    path,
+                    task.pickup,
+                    max(cursor_index, release_time),
+                    end_index,
+                )
+                if pickup_time is not None:
+                    pickup_times[task.id] = pickup_time
+            completed_count, cursor_index, completion_index = _completed_remaining_waypoints(
+                path,
+                task,
+                completed_before,
+                cursor_index,
+                target_time,
+            )
+            if not _is_task_fully_completed(task, completed_count):
+                break
+            service_started_at = session.task_service_started_times.get(task.id, completion_index)
+            if service_started_at is not None:
+                cursor_index = max(cursor_index, service_started_at + task_service_time(task) + 1)
+    return pickup_times
 
 
 def _release_locks_for_robot(session: DispatchSession, robot_id: str, event_time: int) -> None:
