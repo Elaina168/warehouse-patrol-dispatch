@@ -885,7 +885,7 @@ function App() {
         <aside className="rightbar">
           <Panel title="事件日志" className={RIGHTBAR_EVENT_LOG_CLASS}>
             <div className="event-log">
-              {result ? visibleRuntimeEvents(result.eventLog, routeHintsEnabled, time).map((event, index) => {
+              {result ? visibleRuntimeEvents(result.eventLog, time).map((event, index) => {
                 const canJump = session ? canJumpToEvent(event.time, session.currentTime) : false;
                 return (
                   <div className={`event ${event.time <= time ? "active" : ""}`} key={`${event.time}-${index}`}>
@@ -1213,7 +1213,7 @@ export function MapBoard({
         displayedConflict ? "conflict-cell" : "",
         mapPickTarget && !obstacles.has(key) ? "map-pickable-cell" : "",
         robotId ? "robot-cell" : "",
-        robotState?.status === "failed" ? "failed-robot-cell" : "",
+        runtimeState?.status === "failed" ? "failed-robot-cell" : "",
         isSelectedRobotCell(robotId, selectedRobotId) ? "selected-robot-cell" : ""
       ]
         .filter(Boolean)
@@ -1821,8 +1821,7 @@ export function canJumpToEvent(eventTime: number, sessionCurrentTime: number): b
   return eventTime <= sessionCurrentTime;
 }
 
-export function visibleRuntimeEvents<T extends { time: number }>(events: T[], started: boolean, currentTime: number): T[] {
-  if (!started) return [];
+export function visibleRuntimeEvents<T extends { time: number }>(events: T[], currentTime: number): T[] {
   return events.filter((event) => event.time <= currentTime);
 }
 

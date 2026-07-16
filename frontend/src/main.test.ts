@@ -138,6 +138,42 @@ describe("warehouse shelf map", () => {
 
     expect(markup).toContain('class="cell blocked shelf-cell shelf-stocked conflict-cell"');
   });
+
+  it("marks a failed runtime robot cell with the failure style", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const result = buildMapTestResult(scenario);
+    const robot = scenario.robots[0];
+    const markup = renderToStaticMarkup(createElement(MapBoard, {
+      scenario,
+      result,
+      robotStates: [{
+        robotId: robot.id,
+        name: robot.name,
+        position: robot.start,
+        status: "failed",
+        battery: robot.battery,
+        load: robot.load,
+        moveTicks: robot.moveTicks ?? 1,
+        currentTaskId: null
+      }],
+      shelfStates: [],
+      sessionCurrentTime: 0,
+      time: 0,
+      routeHintsEnabled: false,
+      selectedRobotId: "",
+      onSelectRobot: () => undefined,
+      mapPickTarget: null,
+      onPickCell: () => undefined,
+      unresolvedConflictAlert: null,
+      contextMenu: null,
+      canManageBlocks: false,
+      onOpenContextMenu: () => undefined,
+      onCloseContextMenu: () => undefined,
+      onRunContextAction: () => undefined
+    }));
+
+    expect(markup).toContain("cell robot-cell failed-robot-cell");
+  });
 });
 
 function buildMapTestResult(scenario: Scenario): DispatchResult {
@@ -602,15 +638,15 @@ describe("event navigation", () => {
     expect(canJumpToEvent(6, 5)).toBe(false);
   });
 
-  it("hides future events until playback reaches their tick", () => {
+  it("shows events that already happened even before playback starts", () => {
     const events = [
       { time: 0, text: "启动" },
       { time: 2, text: "实际锁定" }
     ];
 
-    expect(visibleRuntimeEvents(events, false, 0)).toEqual([]);
-    expect(visibleRuntimeEvents(events, true, 1)).toEqual([{ time: 0, text: "启动" }]);
-    expect(visibleRuntimeEvents(events, true, 2)).toEqual(events);
+    expect(visibleRuntimeEvents(events, 0)).toEqual([{ time: 0, text: "启动" }]);
+    expect(visibleRuntimeEvents(events, 1)).toEqual([{ time: 0, text: "启动" }]);
+    expect(visibleRuntimeEvents(events, 2)).toEqual(events);
   });
 });
 

@@ -374,6 +374,7 @@ input {
 }
 
 .workspace {
+  container-type: inline-size;
   overflow: visible;
 }
 
@@ -384,6 +385,16 @@ input {
   align-items: end;
   padding: 14px;
   border-bottom: 1px solid var(--line);
+}
+
+@container (max-width: 840px) {
+  .map-toolbar {
+    grid-template-columns: minmax(150px, 1fr) minmax(200px, 1fr) minmax(160px, 0.8fr) auto;
+  }
+
+  .map-toolbar > * {
+    min-width: 0;
+  }
 }
 
 .scenario-title {
