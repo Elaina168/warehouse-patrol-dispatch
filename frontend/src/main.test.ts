@@ -617,6 +617,7 @@ describe("manual task coordinates", () => {
     const scenario: Scenario = {
       id: "generated-task-map",
       name: "generated-task-map",
+      shelves: [],
       description: "",
       width: 6,
       height: 5,
@@ -645,6 +646,7 @@ describe("manual task coordinates", () => {
     const scenario: Scenario = {
       id: "generated-emergency-priority",
       name: "generated-emergency-priority",
+      shelves: [],
       description: "",
       width: 6,
       height: 5,
@@ -670,6 +672,7 @@ describe("manual task coordinates", () => {
     const scenario: Scenario = {
       id: "generated-task-variety",
       name: "generated-task-variety",
+      shelves: [],
       description: "",
       width: 8,
       height: 6,
@@ -755,6 +758,7 @@ describe("replan status", () => {
       runtimeTaskCount: 0,
       runtimeEventCount: 0,
       robotStates: [],
+      shelfStates: [],
       taskStates: [
         {
           taskId: "T1",

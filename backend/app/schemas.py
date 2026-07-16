@@ -17,6 +17,7 @@ RecoveryAction = Literal[
     "relaxLocksOrReplan",
     "restoreRobot",
 ]
+ShelfStatus = Literal["empty", "inboundReserved", "occupied", "outboundReserved"]
 
 
 class ApiModel(BaseModel):
@@ -68,6 +69,20 @@ class Zones(ApiModel):
     charging: list[Cell] = Field(default_factory=list)
 
 
+class Shelf(ApiModel):
+    id: str
+    cell: Cell
+    serviceCell: Cell
+    initialOccupied: bool = False
+
+
+class ShelfRuntimeState(ApiModel):
+    shelfId: str
+    cell: Cell
+    serviceCell: Cell
+    status: ShelfStatus
+
+
 class Scenario(ApiModel):
     id: str
     name: str
@@ -76,6 +91,7 @@ class Scenario(ApiModel):
     height: PositiveInt
     obstacles: list[Cell]
     zones: Zones
+    shelves: list[Shelf] = Field(default_factory=list)
     robots: list[Robot]
     tasks: list[Task]
     dynamic: DynamicEvent
@@ -423,6 +439,7 @@ class SessionResult(ApiModel):
     runtimeTaskCount: int
     runtimeEventCount: int
     robotStates: list[RobotRuntimeState]
+    shelfStates: list[ShelfRuntimeState] = Field(default_factory=list)
     taskStates: list[TaskRuntimeState]
     metricsHistory: list[MetricSnapshot]
     completedTaskCount: int

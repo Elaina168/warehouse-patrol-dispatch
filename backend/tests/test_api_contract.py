@@ -130,6 +130,8 @@ def test_frontend_types_match_backend_api_model_fields() -> None:
         ("ChargingVisit", schemas.ChargingVisit),
         ("DynamicEvent", schemas.DynamicEvent),
         ("Zones", schemas.Zones),
+        ("Shelf", schemas.Shelf),
+        ("ShelfRuntimeState", schemas.ShelfRuntimeState),
         ("Scenario", schemas.Scenario),
         ("Assignment", schemas.Assignment),
         ("Conflict", schemas.Conflict),
@@ -158,6 +160,9 @@ def test_frontend_types_match_backend_api_model_fields() -> None:
 
     for type_name, model in model_pairs:
         assert _frontend_fields(type_name) == _backend_fields(model), type_name
+
+    assert "shelves" in _backend_fields(schemas.Scenario)
+    assert "shelfStates" in _backend_fields(schemas.SessionResult)
 
 
 def test_frontend_task_union_covers_backend_task_fields() -> None:
@@ -228,6 +233,7 @@ def test_backend_recovery_action_schema_matches_dispatch_literals() -> None:
 
 
 def test_frontend_runtime_literal_unions_match_backend_schema() -> None:
+    assert _frontend_string_literal_union("ShelfStatus") == set(get_args(schemas.ShelfStatus))
     assert _frontend_string_literal_union("TaskType") == _backend_field_string_literals(schemas.Task, "type")
     assert _frontend_string_literal_union("ConflictType") == _backend_field_string_literals(schemas.Conflict, "type")
     assert _frontend_string_literal_union("RobotRuntimeStatus") == _backend_field_string_literals(

@@ -6,6 +6,7 @@ export type ConflictStatus = "active" | "resolved";
 export type RobotRuntimeStatus = "idle" | "waiting" | "toPickup" | "delivering" | "inspecting" | "toCharge" | "charging" | "failed";
 export type TaskRuntimeStatus = "pending" | "running" | "completed" | "unassigned";
 export type TaskFailureCategory = "temporary" | "permanent";
+export type ShelfStatus = "empty" | "inboundReserved" | "occupied" | "outboundReserved";
 
 export type PatrolTask = {
   id: string;
@@ -78,6 +79,20 @@ export type Zones = {
   charging?: Cell[];
 };
 
+export type Shelf = {
+  id: string;
+  cell: Cell;
+  serviceCell: Cell;
+  initialOccupied: boolean;
+};
+
+export type ShelfRuntimeState = {
+  shelfId: string;
+  cell: Cell;
+  serviceCell: Cell;
+  status: ShelfStatus;
+};
+
 export type Scenario = {
   id: string;
   name: string;
@@ -86,6 +101,7 @@ export type Scenario = {
   height: number;
   obstacles: Cell[];
   zones: Zones;
+  shelves: Shelf[];
   robots: Robot[];
   tasks: Task[];
   dynamic: DynamicEvent;
@@ -266,6 +282,7 @@ export type SessionResult = {
   runtimeTaskCount: number;
   runtimeEventCount: number;
   robotStates: RobotRuntimeState[];
+  shelfStates: ShelfRuntimeState[];
   taskStates: TaskRuntimeState[];
   metricsHistory: MetricSnapshot[];
   completedTaskCount: number;
