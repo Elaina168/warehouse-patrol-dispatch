@@ -245,13 +245,15 @@ def test_session_shelf_inventory_uses_exact_pickup_time_after_prior_service(
     path = added["result"]["paths"][assignment["robotId"]]
     inbound_dropoff_tick = path.index([2, 1], path.index([0, 0]))
     inbound_completion_tick = inbound_dropoff_tick + 3
+    assert inbound_completion_tick == 10
     replanned = client.post(
         f"/api/sessions/{session_id}/tick",
         json={"currentTime": inbound_completion_tick},
     ).json()
     outbound_path = _assigned_task_path(replanned, "OUT")
     pickup_tick = outbound_path.index([4, 1], inbound_completion_tick)
-    target_time = pickup_tick + 10
+    assert pickup_tick == 12
+    target_time = 17
     monkeypatch.setattr(
         sessions_module,
         "_outbound_pickup_times_until",
