@@ -218,6 +218,61 @@ def test_session_shelf_inventory_outbound_pickup_empties_at_actual_visit_time() 
     )
 
 
+def test_session_shelf_inventory_uses_exact_pickup_time_after_prior_service(
+    monkeypatch,
+) -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": shelf_session_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    session_id = created.json()["sessionId"]
+    inbound_task = inbound_runtime_task()
+    inbound_task["priority"] = 4
+    client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={"task": inbound_task},
+    )
+    added = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={"task": outbound_runtime_task()},
+    ).json()
+    assignment = added["result"]["assignments"][0]
+    assert [task["id"] for task in assignment["tasks"]] == ["IN"]
+    path = added["result"]["paths"][assignment["robotId"]]
+    inbound_dropoff_tick = path.index([2, 1], path.index([0, 0]))
+    inbound_completion_tick = inbound_dropoff_tick + 3
+    replanned = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": inbound_completion_tick},
+    ).json()
+    outbound_path = _assigned_task_path(replanned, "OUT")
+    pickup_tick = outbound_path.index([4, 1], inbound_completion_tick)
+    target_time = pickup_tick + 10
+    monkeypatch.setattr(
+        sessions_module,
+        "_outbound_pickup_times_until",
+        lambda *_args: {},
+        raising=False,
+    )
+
+    completed = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": target_time},
+    ).json()
+    pickup_events = [
+        event
+        for event in completed["result"]["eventLog"]
+        if event["text"] == "货架 S02 已取货"
+    ]
+
+    assert shelf_states(completed)["S02"] == "empty"
+    assert pickup_events == [{"time": pickup_tick, "text": "货架 S02 已取货"}]
+
+
 def test_session_shelf_inventory_inbound_waits_full_service_time() -> None:
     client = TestClient(app)
     created = client.post(

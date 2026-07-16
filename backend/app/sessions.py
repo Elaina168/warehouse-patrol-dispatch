@@ -713,16 +713,18 @@ def _advance_session(session: DispatchSession, target_time: int) -> None:
         session.robot_positions[robot.id] = position
 
     _update_locked_task_assignments(session, result, target_time)
-    outbound_pickup_times = _outbound_pickup_times_until(session, result, target_time)
-    _update_task_waypoint_progress(session, result, target_time)
+    outbound_pickup_times = _update_task_waypoint_progress(session, result, target_time)
 
     for task in _all_tasks(session):
         binding = session.shelf_task_bindings.get(task.id)
         if binding is None or binding.kind != "outbound":
             continue
-        if session.task_waypoint_progress.get(task.id, 0) >= 1:
+        pickup_time = outbound_pickup_times.get(task.id)
+        if (
+            pickup_time is not None
+            and session.task_waypoint_progress.get(task.id, 0) >= 1
+        ):
             if complete_outbound_pickup(session.shelf_statuses, session.shelf_task_bindings, task.id):
-                pickup_time = outbound_pickup_times.get(task.id, target_time)
                 _record_session_event(session, pickup_time, f"货架 {binding.shelf_id} 已取货")
 
     completions = _session_task_completion_times(session, result)
@@ -1230,7 +1232,12 @@ def _task_execution_window(path: list[Cell], task: Task, start_index: int) -> tu
     return max(start_index, release_time), next_cursor_index
 
 
-def _update_task_waypoint_progress(session: DispatchSession, result: DispatchResult, target_time: int) -> None:
+def _update_task_waypoint_progress(
+    session: DispatchSession,
+    result: DispatchResult,
+    target_time: int,
+) -> dict[str, int]:
+    outbound_pickup_times: dict[str, int] = {}
     for assignment in result.assignments:
         path = result.paths.get(assignment.robotId, [])
         cursor_index = min(session.current_time, max(0, len(path) - 1))
@@ -1240,6 +1247,22 @@ def _update_task_waypoint_progress(session: DispatchSession, result: DispatchRes
                 cursor_index = max(cursor_index, completion_time + 1)
                 continue
             completed_before = session.task_waypoint_progress.get(task.id, 0)
+            pickup_time: int | None = None
+            binding = session.shelf_task_bindings.get(task.id)
+            if (
+                completed_before == 0
+                and binding is not None
+                and binding.kind == "outbound"
+                and task.pickup is not None
+                and path
+            ):
+                release_time = task.releaseTime if task.releaseTime is not None else 0
+                pickup_time = _find_next_visit_until(
+                    path,
+                    task.pickup,
+                    max(cursor_index, release_time),
+                    min(target_time, len(path) - 1),
+                )
             completed_count, cursor_index, completion_index = _completed_remaining_waypoints(
                 path,
                 task,
@@ -1249,6 +1272,8 @@ def _update_task_waypoint_progress(session: DispatchSession, result: DispatchRes
             )
             if completed_count > completed_before:
                 session.task_waypoint_progress[task.id] = completed_count
+                if pickup_time is not None and completed_count >= 1:
+                    outbound_pickup_times[task.id] = pickup_time
             _update_payload_position(session, task, path, target_time, completed_count)
             if _is_task_fully_completed(task, completed_count):
                 service_started_at = session.task_service_started_times.get(task.id, completion_index)
@@ -1258,6 +1283,7 @@ def _update_task_waypoint_progress(session: DispatchSession, result: DispatchRes
                     cursor_index = max(cursor_index, completion_time + 1)
                     if completion_time <= target_time:
                         session.task_completion_times[task.id] = completion_time
+    return outbound_pickup_times
 
 
 def _completed_remaining_waypoints(
@@ -1320,55 +1346,6 @@ def _find_next_visit_until(path: list[Cell], waypoint: Cell, start_index: int, e
         if path[index] == waypoint:
             return index
     return None
-
-
-def _outbound_pickup_times_until(
-    session: DispatchSession,
-    result: DispatchResult,
-    target_time: int,
-) -> dict[str, int]:
-    pickup_times: dict[str, int] = {}
-    for assignment in result.assignments:
-        path = result.paths.get(assignment.robotId, [])
-        if not path:
-            continue
-        end_index = min(target_time, len(path) - 1)
-        cursor_index = min(session.current_time, end_index)
-        for task in assignment.tasks:
-            completion_time = session.task_completion_times.get(task.id)
-            if completion_time is not None:
-                cursor_index = max(cursor_index, completion_time + 1)
-                continue
-            completed_before = session.task_waypoint_progress.get(task.id, 0)
-            binding = session.shelf_task_bindings.get(task.id)
-            release_time = task.releaseTime if task.releaseTime is not None else 0
-            if (
-                completed_before == 0
-                and binding is not None
-                and binding.kind == "outbound"
-                and task.pickup is not None
-            ):
-                pickup_time = _find_next_visit_until(
-                    path,
-                    task.pickup,
-                    max(cursor_index, release_time),
-                    end_index,
-                )
-                if pickup_time is not None:
-                    pickup_times[task.id] = pickup_time
-            completed_count, cursor_index, completion_index = _completed_remaining_waypoints(
-                path,
-                task,
-                completed_before,
-                cursor_index,
-                target_time,
-            )
-            if not _is_task_fully_completed(task, completed_count):
-                break
-            service_started_at = session.task_service_started_times.get(task.id, completion_index)
-            if service_started_at is not None:
-                cursor_index = max(cursor_index, service_started_at + task_service_time(task) + 1)
-    return pickup_times
 
 
 def _release_locks_for_robot(session: DispatchSession, robot_id: str, event_time: int) -> None:
