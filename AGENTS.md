@@ -121,6 +121,11 @@ Completed and currently expected to remain in the project:
 - Frontend status strip exposes the configured rolling replan window. Scenario dynamic events are always enabled for main-session creation and are not presented as a user toggle.
 - Frontend scenario-data regression now protects `integrated-demo` as the only persisted frontend scenario and verifies its mixed task, charging, and online-dispatch coverage.
 - The sole `integrated-demo` baseline now uses a `26 × 16` realistic warehouse grid with twelve `3 × 2` shelf groups, two-cell horizontal and vertical clearances, top inbound cells, bottom outbound cells, right-side robot starts, and right-side charging cells.
+- The 72 shelf entity cells are impassable, and every shelf has one unique adjacent service cell where robots perform pickup or putaway operations.
+- Online sessions are the inventory authority and expose `shelfStates` with `empty`, `inboundReserved`, `occupied`, and `outboundReserved`; the frontend renders these states instead of inferring inventory.
+- Inbound tasks run from an inbound-zone cell to an empty shelf service cell, while outbound tasks run from an occupied shelf service cell to an outbound-zone cell. Scenario, manual, and generated delivery tasks use the same backend inventory validation and reservation rules through the unified runtime task endpoint.
+- Default delivery coordinates are `T1` inbound `[2,0] -> [2,5]` for shelf `[2,4]`, `T2` outbound `[13,6] -> [2,15]` for shelf `[13,7]`, and `T4` inbound `[8,0] -> [12,9]` for shelf `[12,8]`.
+- The fixed demo starts with 12 highlighted stocked shelves. `T2` turns its shelf off when pickup occurs; `T1` and `T4` turn their shelves on only after putaway service completes, leaving 13 stocked shelves at the end.
 - The fixed default demo regression now uses only the six scenario tasks and completes by T=700 with zero active conflicts, failures, deadline misses, or charging visits; runtime task, block, failure, and recovery behavior remains covered by focused session regressions.
 - Fixed demo e2e reads the shared `integrated-demo` JSON and verifies the default six-task flow, conflict-avoidance comparison, and a derived dynamic-task variant.
 - Integrated online-session regression now runs continuous ticks through `E1` release and manual high-priority task insertion, verifying task states, event logs, conflict metrics, and metrics history remain consistent.
@@ -161,7 +166,8 @@ Recommended execution order:
    - The current full check passes and the online dispatch workflow is implemented.
    - The fixed frontend demo scenario IDs and their intended capability coverage are now protected by frontend scenario-data regression tests.
    - The sole frontend `integrated-demo` scenario is protected by shared JSON, frontend data, and backend end-to-end regressions.
-   - The fixed baseline is a `26 × 16` realistic warehouse with twelve `3 × 2` shelf groups and two-cell clearances; its default six-task online flow completes by T=700 without runtime task injection, runtime blocks, or robot failures.
+   - The fixed baseline is a `26 × 16` realistic warehouse with twelve `3 × 2` shelf groups, 72 impassable shelf entity cells, 72 unique adjacent service cells, and two-cell clearances.
+   - Its default six-task online flow starts with 12 stocked shelves and finishes with 13 by T=700 without runtime task injection, runtime blocks, or robot failures.
    - Next work is to keep this fixed demo flow stable during backend/frontend changes and avoid destabilizing broad refactors.
 
 2. Core algorithm module completion - 接近完成
@@ -395,6 +401,7 @@ The backend returns:
 - `failureDetails`
 - `eventLog`
 - `tasks`
+- `shelfStates`
 - dynamic replanning metadata
 
 Schema definitions live in:
