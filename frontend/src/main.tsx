@@ -6,9 +6,10 @@ import {
   deleteSession,
   resetSession
 } from "./domain/sessionApi";
+import { buildShelfCellPresentations, buildWarehouseDeliveryCandidates } from "./domain/inventory";
 import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./domain/view";
 import { scenarios } from "./domain/scenarios";
-import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, RecoveryAction, Scenario, SessionResult, Task, TaskFailureDetail, TaskType } from "./domain/types";
+import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, RecoveryAction, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
 import "./styles.css";
 
 const API_BASE = "http://127.0.0.1:8011";
@@ -338,7 +339,13 @@ function App() {
 
   async function pushGeneratedTask() {
     if (!result) return;
-    const task = buildRandomGeneratedTask(result.tasks, runtimeActionTime, scenario, randomTaskSequenceRef.current + 1);
+    const task = buildRandomGeneratedTask(
+      result.tasks,
+      runtimeActionTime,
+      scenario,
+      randomTaskSequenceRef.current + 1,
+      session?.shelfStates ?? []
+    );
     if (!task) return;
     randomTaskSequenceRef.current += 1;
     await enqueueTask(task);
@@ -630,6 +637,7 @@ function App() {
                     scenario={scenario}
                     result={result}
                     robotStates={session?.robotStates ?? []}
+                    shelfStates={session?.shelfStates ?? []}
                     sessionCurrentTime={session?.currentTime ?? null}
                     time={time}
                     routeHintsEnabled={routeHintsEnabled}
@@ -1083,10 +1091,11 @@ function TaskQueueItem({
   );
 }
 
-function MapBoard({
+export function MapBoard({
   scenario,
   result,
   robotStates,
+  shelfStates,
   sessionCurrentTime,
   time,
   routeHintsEnabled,
@@ -1104,6 +1113,7 @@ function MapBoard({
   scenario: Scenario;
   result: DispatchResult;
   robotStates: SessionResult["robotStates"];
+  shelfStates: ShelfRuntimeState[];
   sessionCurrentTime: number | null;
   time: number;
   routeHintsEnabled: boolean;
@@ -1130,6 +1140,10 @@ function MapBoard({
   const zoneCellPresentations = useMemo(
     () => buildZoneCellPresentations(scenario.zones),
     [scenario.zones]
+  );
+  const shelfCellPresentations = useMemo(
+    () => buildShelfCellPresentations(scenario.shelves ?? [], shelfStates),
+    [scenario.shelves, shelfStates]
   );
   const useRuntimeRobotSnapshot = shouldUseRuntimeRobotSnapshot(time, sessionCurrentTime, robotStates);
   const occupied = useMemo(
@@ -1165,6 +1179,7 @@ function MapBoard({
       const robotId = robotAtCell(occupied, key);
       const displayedConflict = activeConflicts.get(key) ?? null;
       const zonePresentation = zoneCellPresentations.get(key);
+      const shelfPresentation = shelfCellPresentations.get(key);
       const robot = robotId ? scenario.robots.find((item) => item.id === robotId) : null;
       const robotColor = robotId ? robotColors.get(robotId) : undefined;
       const runtimeState = useRuntimeRobotSnapshot && robotId ? robotStates.find((item) => item.robotId === robotId) : null;
@@ -1178,6 +1193,7 @@ function MapBoard({
         blocked.has(key) ? "blocked" : "",
         taskCells.has(key) ? "task-cell" : "",
         ...(zonePresentation?.classNames ?? []),
+        ...(shelfPresentation?.classNames ?? []),
         displayedConflict ? "conflict-cell" : "",
         mapPickTarget && !obstacles.has(key) ? "map-pickable-cell" : "",
         robotId ? "robot-cell" : "",
@@ -1192,6 +1208,7 @@ function MapBoard({
           aria-label={mapPickTarget ? `选择${mapPickLabel(mapPickTarget)}坐标 ${x}, ${y}` : `选择封锁单元 ${x}, ${y}`}
           className={classNames}
           key={key}
+          title={shelfPresentation?.label}
           onClick={() => {
             onCloseContextMenu();
             if (mapPickTarget && !obstacles.has(key)) {
@@ -1899,10 +1916,12 @@ function apiStatusLabel(status: string): string {
   return "检测中";
 }
 
-function createManualTaskForm(scenario: Scenario): ManualTaskForm {
+export function createManualTaskForm(scenario: Scenario): ManualTaskForm {
   const target = scenario.zones.inspection[0] ?? scenario.robots[0]?.start ?? [0, 0];
   const pickup = scenario.zones.warehouse[0] ?? target;
-  const dropoff = scenario.zones.delivery[0] ?? target;
+  const dropoff = scenario.shelves.find((shelf) => !shelf.initialOccupied)?.serviceCell
+    ?? scenario.zones.delivery[0]
+    ?? target;
   return {
     type: "inspection",
     title: "人工追加任务",
@@ -2111,11 +2130,14 @@ export function buildRandomGeneratedTask(
   tasks: Task[],
   currentTime: number,
   scenario: Scenario,
-  sequence: number
+  sequence: number,
+  shelfStates: ShelfRuntimeState[]
 ): Task | null {
   const id = nextGeneratedTaskId(tasks);
   const seed = Math.abs(currentTime * 31 + sequence * 17);
-  const candidates = buildGeneratedTaskCandidates(scenario);
+  const candidates = scenario.shelves.length > 0
+    ? buildWarehouseGeneratedTaskCandidates(scenario, shelfStates, seed)
+    : buildGeneratedTaskCandidates(scenario);
   if (candidates.length === 0) return null;
   const existingSignatures = new Set(tasks.map(generatedTaskSignature));
   const availableCandidates = candidates.filter((candidate) => !existingSignatures.has(candidate.signature));
@@ -2163,6 +2185,26 @@ export function buildRandomGeneratedTask(
     serviceTime,
     targets: [candidate.target]
   };
+}
+
+function buildWarehouseGeneratedTaskCandidates(
+  scenario: Scenario,
+  shelfStates: ShelfRuntimeState[],
+  seed: number
+): GeneratedTaskCandidate[] {
+  const warehouseCandidates = buildWarehouseDeliveryCandidates(scenario, shelfStates);
+  const inboundCandidates = warehouseCandidates
+    .filter((candidate) => candidate.kind === "inbound")
+    .map(({ pickup, dropoff, signature }) => ({ type: "delivery" as const, pickup, dropoff, signature }));
+  const outboundCandidates = warehouseCandidates
+    .filter((candidate) => candidate.kind === "outbound")
+    .map(({ pickup, dropoff, signature }) => ({ type: "delivery" as const, pickup, dropoff, signature }));
+  if (inboundCandidates.length > 0 && outboundCandidates.length > 0) {
+    return seed % 2 === 0 ? inboundCandidates : outboundCandidates;
+  }
+  if (inboundCandidates.length > 0) return inboundCandidates;
+  if (outboundCandidates.length > 0) return outboundCandidates;
+  return buildGeneratedTaskCandidates(scenario).filter((candidate) => candidate.type !== "delivery");
 }
 
 type GeneratedTaskCandidate =

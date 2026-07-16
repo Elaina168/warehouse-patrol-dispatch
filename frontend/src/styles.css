@@ -739,6 +739,17 @@ input {
   border-color: #38434a;
 }
 
+.cell.shelf-cell {
+  background: #38434a;
+  border-color: #263138;
+}
+
+.cell.shelf-stocked {
+  background: #d8a11f;
+  border-color: #fff0a6;
+  box-shadow: inset 0 0 0 2px rgba(255, 244, 185, 0.9), 0 0 8px rgba(230, 171, 39, 0.85);
+}
+
 .cell.blocked {
   background: repeating-linear-gradient(45deg, #1f272c 0 6px, #526069 6px 12px);
   border-color: #1f272c;
