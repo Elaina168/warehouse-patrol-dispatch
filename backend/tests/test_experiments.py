@@ -122,8 +122,8 @@ def test_conflict_avoidance_experiment_uses_integrated_demo_scenario() -> None:
     assert with_avoidance["metrics"]["assignedTaskCount"] == 6
     assert without_avoidance["metrics"]["conflictCount"] > 0
     assert with_avoidance["metrics"]["conflictCount"] == 0
-    assert without_avoidance["conflicts"]
-    assert len(with_avoidance["conflicts"]) == with_avoidance["metrics"]["conflictCount"]
+    assert len(without_avoidance["conflicts"]) == without_avoidance["metrics"]["conflictCount"]
+    assert with_avoidance["conflicts"] == []
     assert without_avoidance["metrics"]["failureCount"] == 0
     assert with_avoidance["metrics"]["failureCount"] == 0
 

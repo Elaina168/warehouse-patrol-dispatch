@@ -1644,13 +1644,16 @@ def test_session_delivery_payload_keeps_failed_carrier_position_reserved() -> No
         "name": "delivery-carrier-failure",
         "description": "delivery payload carrier failure regression",
         "width": 6,
-        "height": 1,
-        "obstacles": [],
+        "height": 2,
+        "obstacles": [[1, 1]],
         "zones": {
             "warehouse": [[0, 0]],
             "inspection": [],
             "delivery": [[4, 0]],
         },
+        "shelves": [
+            {"id": "S01", "cell": [1, 1], "serviceCell": [1, 0], "initialOccupied": True},
+        ],
         "robots": [
             {"id": "R1", "name": "R1", "start": [0, 0], "battery": 90, "load": 1},
             {"id": "R2", "name": "R2", "start": [5, 0], "battery": 90, "load": 1},
@@ -1717,6 +1720,16 @@ def test_session_delivery_payload_keeps_failed_carrier_position_reserved() -> No
     assert failed_state["assignedRobotId"] == "R2"
     assert failed_state["status"] == "unassigned"
     assert [2, 0] not in replacement_path[failed_payload["currentTime"] + 1 :]
+    assert shelf_states(failed_payload)["S01"] == "empty"
+
+    restore_response = client.post(
+        f"/api/sessions/{session_id}/failed-robots/restore",
+        json={"robotId": "R1", "currentTime": 2},
+    )
+    assert restore_response.status_code == 200
+    restored_payload = restore_response.json()
+    _assert_online_payload_consistent(restored_payload)
+    assert shelf_states(restored_payload)["S01"] == "empty"
 
 
 def test_session_tick_reuses_plan_between_runtime_changes() -> None:
