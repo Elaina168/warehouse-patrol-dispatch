@@ -72,6 +72,7 @@ describe("warehouse shelf map", () => {
     expect(robotMarkerRule).toMatch(/width:\s*min\(28px,\s*100%\);/);
     expect(robotMarkerRule).toMatch(/max-height:\s*100%;/);
     expect(robotMarkerRule).toMatch(/aspect-ratio:\s*1;/);
+    expect(robotMarkerRule).toMatch(/border-radius:\s*50%;/);
     expect(robotMarkerRule).not.toMatch(/height:\s*28px;/);
   });
 
