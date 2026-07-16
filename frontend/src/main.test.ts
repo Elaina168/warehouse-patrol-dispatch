@@ -63,32 +63,7 @@ describe("robot charging runtime status contract", () => {
 describe("warehouse shelf map", () => {
   it("renders shelf stock classes and labels from the session shelf states", () => {
     const scenario = buildWarehouseGeneratorScenario();
-    const result = {
-      scenarioId: scenario.id,
-      avoidConflicts: true,
-      includeDynamic: true,
-      dynamicTriggerTime: null,
-      extraBlocked: [],
-      unavailableRobotIds: [],
-      assignments: [],
-      paths: {},
-      conflicts: [],
-      metrics: {
-        makespan: 0,
-        totalDistance: 0,
-        conflictCount: 0,
-        loadBalance: 0,
-        assignedTaskCount: 0,
-        deadlineMissCount: 0,
-        averageLateness: 0,
-        failureCount: 0,
-        replanTimeMs: 0
-      },
-      failureReasons: {},
-      failureDetails: {},
-      eventLog: [],
-      tasks: []
-    } satisfies DispatchResult;
+    const result = buildMapTestResult(scenario);
 
     const markup = renderToStaticMarkup(createElement(MapBoard, {
       scenario,
@@ -115,7 +90,68 @@ describe("warehouse shelf map", () => {
     expect(markup).toContain('class="cell shelf-cell shelf-stocked"');
     expect(markup).toContain('title="货架 S02 · 已有货物"');
   });
+
+  it("lets blocked and conflict styles fully override stocked shelf highlights", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const result: DispatchResult = {
+      ...buildMapTestResult(scenario),
+      extraBlocked: [[3, 3]],
+      conflicts: [{ time: 0, type: "vertex", robots: ["R1", "R2"], cell: [3, 3] }]
+    };
+    const markup = renderToStaticMarkup(createElement(MapBoard, {
+      scenario,
+      result,
+      robotStates: [],
+      shelfStates: [
+        { shelfId: "S02", cell: [3, 3], serviceCell: [3, 2], status: "occupied" }
+      ],
+      sessionCurrentTime: 0,
+      time: 0,
+      routeHintsEnabled: false,
+      selectedRobotId: "",
+      onSelectRobot: () => undefined,
+      mapPickTarget: null,
+      onPickCell: () => undefined,
+      unresolvedConflictAlert: null,
+      contextMenu: null,
+      canManageBlocks: false,
+      onOpenContextMenu: () => undefined,
+      onCloseContextMenu: () => undefined,
+      onRunContextAction: () => undefined
+    }));
+
+    expect(markup).toContain('class="cell blocked shelf-cell shelf-stocked conflict-cell"');
+  });
 });
+
+function buildMapTestResult(scenario: Scenario): DispatchResult {
+  return {
+    scenarioId: scenario.id,
+    avoidConflicts: true,
+    includeDynamic: true,
+    dynamicTriggerTime: null,
+    extraBlocked: [],
+    unavailableRobotIds: [],
+    assignments: [],
+    paths: {},
+    conflicts: [],
+    metrics: {
+      makespan: 0,
+      totalDistance: 0,
+      conflictCount: 0,
+      loadBalance: 0,
+      assignedTaskCount: 0,
+      deadlineMissCount: 0,
+      averageLateness: 0,
+      failureCount: 0,
+      replanTimeMs: 0
+    },
+    failureReasons: {},
+    failureDetails: {},
+    eventLog: [],
+    tasks: []
+  };
+}
 
 describe("charging scenario import", () => {
   it("accepts legacy scenarios without charging fields", () => {
@@ -814,6 +850,36 @@ describe("manual task coordinates", () => {
       expect(["inspection", "emergency"]).toContain(
         buildRandomGeneratedTask([], 8, scenario, sequence, reservedStates)?.type
       );
+    }
+  });
+
+  it("generates only inbound deliveries while empty is the only authoritative shelf state", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const states: ShelfRuntimeState[] = [
+      { shelfId: "S01", cell: [2, 3], serviceCell: [2, 2], status: "empty" }
+    ];
+
+    for (let sequence = 1; sequence <= 8; sequence += 1) {
+      expect(buildRandomGeneratedTask([], 8, scenario, sequence, states)).toMatchObject({
+        type: "delivery",
+        pickup: [2, 0],
+        dropoff: [2, 2]
+      });
+    }
+  });
+
+  it("generates only outbound deliveries while occupied is the only authoritative shelf state", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const states: ShelfRuntimeState[] = [
+      { shelfId: "S02", cell: [3, 3], serviceCell: [3, 2], status: "occupied" }
+    ];
+
+    for (let sequence = 1; sequence <= 8; sequence += 1) {
+      expect(buildRandomGeneratedTask([], 8, scenario, sequence, states)).toMatchObject({
+        type: "delivery",
+        pickup: [3, 2],
+        dropoff: [2, 15]
+      });
     }
   });
 });

@@ -19,9 +19,9 @@ export function buildShelfCellPresentations(
 ): Map<string, ShelfCellPresentation> {
   const stateById = new Map(states.map((state) => [state.shelfId, state]));
   return new Map(shelves.map((shelf) => {
-    const status = stateById.get(shelf.id)?.status ?? (shelf.initialOccupied ? "occupied" : "empty");
+    const status = stateById.get(shelf.id)?.status;
     const stocked = status === "occupied" || status === "outboundReserved";
-    const statusLabel = {
+    const statusLabel = status === undefined ? "状态未知" : {
       empty: "空",
       inboundReserved: "入库已预订",
       occupied: "已有货物",
@@ -41,23 +41,21 @@ export function buildWarehouseDeliveryCandidates(
   scenario: Scenario,
   states: ShelfRuntimeState[]
 ): WarehouseDeliveryCandidate[] {
-  const stateById = new Map(states.map((state) => [state.shelfId, state.status]));
-  return (scenario.shelves ?? []).flatMap<WarehouseDeliveryCandidate>((shelf) => {
-    const status = stateById.get(shelf.id) ?? (shelf.initialOccupied ? "occupied" : "empty");
-    if (status === "empty") {
+  return states.flatMap<WarehouseDeliveryCandidate>((state) => {
+    if (state.status === "empty") {
       return scenario.zones.warehouse.map((pickup) => ({
         kind: "inbound" as const,
         pickup,
-        dropoff: shelf.serviceCell,
-        signature: `delivery:${cellKey(pickup)}>${cellKey(shelf.serviceCell)}`
+        dropoff: state.serviceCell,
+        signature: `delivery:${cellKey(pickup)}>${cellKey(state.serviceCell)}`
       }));
     }
-    if (status === "occupied") {
+    if (state.status === "occupied") {
       return scenario.zones.delivery.map((dropoff) => ({
         kind: "outbound" as const,
-        pickup: shelf.serviceCell,
+        pickup: state.serviceCell,
         dropoff,
-        signature: `delivery:${cellKey(shelf.serviceCell)}>${cellKey(dropoff)}`
+        signature: `delivery:${cellKey(state.serviceCell)}>${cellKey(dropoff)}`
       }));
     }
     return [];

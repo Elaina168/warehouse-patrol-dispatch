@@ -20,6 +20,43 @@ describe("shelf inventory view", () => {
     expect(presentations.get("4,2")?.classNames).toEqual(["shelf-cell", "shelf-stocked"]);
     expect(presentations.get("4,2")?.label).toBe("货架 S02 · 出库已预订");
   });
+
+  it("keeps shelves neutral when runtime states are missing", () => {
+    const presentations = buildShelfCellPresentations(
+      [
+        { id: "S01", cell: [2, 2], serviceCell: [2, 1], initialOccupied: false },
+        { id: "S02", cell: [4, 2], serviceCell: [4, 1], initialOccupied: true }
+      ],
+      []
+    );
+
+    expect(presentations.get("2,2")).toEqual({
+      classNames: ["shelf-cell"],
+      label: "货架 S01 · 状态未知"
+    });
+    expect(presentations.get("4,2")).toEqual({
+      classNames: ["shelf-cell"],
+      label: "货架 S02 · 状态未知"
+    });
+  });
+
+  it("highlights only shelves that have authoritative runtime states", () => {
+    const presentations = buildShelfCellPresentations(
+      [
+        { id: "S01", cell: [2, 2], serviceCell: [2, 1], initialOccupied: false },
+        { id: "S02", cell: [4, 2], serviceCell: [4, 1], initialOccupied: true }
+      ],
+      [
+        { shelfId: "S01", cell: [2, 2], serviceCell: [6, 1], status: "occupied" }
+      ]
+    );
+
+    expect(presentations.get("2,2")?.classNames).toEqual(["shelf-cell", "shelf-stocked"]);
+    expect(presentations.get("4,2")).toEqual({
+      classNames: ["shelf-cell"],
+      label: "货架 S02 · 状态未知"
+    });
+  });
 });
 
 describe("warehouse delivery candidates", () => {
@@ -44,6 +81,25 @@ describe("warehouse delivery candidates", () => {
         pickup: [3, 2],
         dropoff: [2, 15],
         signature: "delivery:3,2>2,15"
+      }
+    ]);
+  });
+
+  it("returns no candidates without authoritative runtime states", () => {
+    expect(buildWarehouseDeliveryCandidates(buildShelfScenario(), [])).toEqual([]);
+  });
+
+  it("uses only the runtime state cell data when scenario shelves are missing states", () => {
+    const candidates = buildWarehouseDeliveryCandidates(buildShelfScenario(), [
+      { shelfId: "S01", cell: [6, 3], serviceCell: [6, 2], status: "empty" }
+    ]);
+
+    expect(candidates).toEqual([
+      {
+        kind: "inbound",
+        pickup: [2, 0],
+        dropoff: [6, 2],
+        signature: "delivery:2,0>6,2"
       }
     ]);
   });

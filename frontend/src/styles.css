@@ -750,11 +750,6 @@ input {
   box-shadow: inset 0 0 0 2px rgba(255, 244, 185, 0.9), 0 0 8px rgba(230, 171, 39, 0.85);
 }
 
-.cell.blocked {
-  background: repeating-linear-gradient(45deg, #1f272c 0 6px, #526069 6px 12px);
-  border-color: #1f272c;
-}
-
 .cell.task-cell {
   border-color: #5e8b2f;
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.72);
@@ -764,9 +759,17 @@ input {
   background: #6f9d3f;
 }
 
+.cell.blocked {
+  background: repeating-linear-gradient(45deg, #1f272c 0 6px, #526069 6px 12px);
+  border-color: #1f272c;
+  box-shadow: none;
+}
+
 .cell.conflict-cell {
   outline: 3px solid var(--conflict);
   background: #dc5b43;
+  border-color: var(--conflict);
+  box-shadow: none;
 }
 
 .cell.map-pickable-cell {
