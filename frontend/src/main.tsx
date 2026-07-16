@@ -2239,12 +2239,13 @@ export function parseScenario(value: unknown): Scenario {
   if (!isScenario(value)) {
     throw new Error("JSON 必须是 Scenario 对象，并包含 id、name、description、width、height、obstacles、zones、robots、tasks、dynamic");
   }
-  assertScenarioCellsInside(value);
-  const diagnostics = diagnoseScenario(value);
+  const scenario = { ...value, shelves: value.shelves ?? [] };
+  assertScenarioCellsInside(scenario);
+  const diagnostics = diagnoseScenario(scenario);
   if (diagnostics.length > 0) {
     throw new Error(diagnostics.join("；"));
   }
-  return value;
+  return scenario;
 }
 
 function isScenario(value: unknown): value is Scenario {
@@ -2256,6 +2257,10 @@ function isScenario(value: unknown): value is Scenario {
     && isNonNegativeInteger(value.height)
     && Array.isArray(value.obstacles)
     && value.obstacles.every(isCell)
+    && (value.shelves === undefined || (
+      Array.isArray(value.shelves)
+      && value.shelves.every(isShelf)
+    ))
     && isRecord(value.zones)
     && Array.isArray(value.zones.warehouse)
     && value.zones.warehouse.every(isCell)
@@ -2270,6 +2275,14 @@ function isScenario(value: unknown): value is Scenario {
     && value.tasks.every(isTask)
     && isDynamicEvent(value.dynamic)
     && (value.chargeTime === undefined || isPositiveInteger(value.chargeTime));
+}
+
+function isShelf(value: unknown): value is Scenario["shelves"][number] {
+  return isRecord(value)
+    && isString(value.id)
+    && isCell(value.cell)
+    && isCell(value.serviceCell)
+    && typeof value.initialOccupied === "boolean";
 }
 
 function isRobot(value: unknown): value is Scenario["robots"][number] {
@@ -2328,6 +2341,7 @@ function isTask(value: unknown): value is Task {
 function assertScenarioCellsInside(scenario: Scenario): void {
   const cells = [
     ...scenario.obstacles,
+    ...(scenario.shelves ?? []).flatMap((shelf) => [shelf.cell, shelf.serviceCell]),
     ...scenario.zones.warehouse,
     ...scenario.zones.inspection,
     ...scenario.zones.delivery,

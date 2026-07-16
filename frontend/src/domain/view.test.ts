@@ -4,6 +4,7 @@ import scenariosData from "./scenarios.json";
 import { fixedDemoScenarioIds, scenarios } from "./scenarios";
 import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./view";
 import type { Cell, Scenario, Task } from "./types";
+import { parseScenario } from "../main";
 
 function taskWaypoints(task: Task): Cell[] {
   if (task.type === "inspection") return task.targets;
@@ -22,6 +23,25 @@ function expectedShelfCells(): Cell[] {
   const xGroups = [[2, 3, 4], [7, 8, 9], [12, 13, 14], [17, 18, 19]];
   const yGroups = [[3, 4], [7, 8], [11, 12]];
   return yGroups.flatMap((ys) => ys.flatMap((y) => xGroups.flatMap((xs) => xs.map((x) => [x, y] as Cell))));
+}
+
+function expectedShelves(): Scenario["shelves"] {
+  const xs = [2, 3, 4, 7, 8, 9, 12, 13, 14, 17, 18, 19];
+  const rows = [
+    { y: 3, serviceY: 2 },
+    { y: 4, serviceY: 5 },
+    { y: 7, serviceY: 6 },
+    { y: 8, serviceY: 9 },
+    { y: 11, serviceY: 10 },
+    { y: 12, serviceY: 13 }
+  ];
+  const occupied = new Set(["3,3", "8,3", "13,3", "18,3", "3,7", "8,7", "13,7", "18,7", "3,11", "8,11", "13,11", "18,11"]);
+  return rows.flatMap(({ y, serviceY }, rowIndex) => xs.map((x, columnIndex) => ({
+    id: `S${String(rowIndex * xs.length + columnIndex + 1).padStart(2, "0")}`,
+    cell: [x, y] as Cell,
+    serviceCell: [x, serviceY] as Cell,
+    initialOccupied: occupied.has(`${x},${y}`)
+  })));
 }
 
 function cellSet(cells: Cell[]): Set<string> {
@@ -94,6 +114,24 @@ describe("domain view helpers", () => {
 });
 
 describe("scenario data", () => {
+  it("normalizes legacy imports without shelves", () => {
+    const legacy = structuredClone(scenarios[0]) as Omit<Scenario, "shelves"> & Partial<Pick<Scenario, "shelves">>;
+    delete legacy.shelves;
+    expect(parseScenario(legacy).shelves).toEqual([]);
+  });
+
+  it("rejects invalid explicit shelf fields", () => {
+    const invalidShape = structuredClone(scenarios[0]) as unknown as { shelves: unknown };
+    invalidShape.shelves = [{ id: "S01", cell: [2, 3], serviceCell: [2, 2], initialOccupied: "yes" }];
+    expect(() => parseScenario(invalidShape)).toThrow("JSON 必须是 Scenario 对象");
+  });
+
+  it("rejects shelf coordinates outside the map", () => {
+    const outOfBounds = structuredClone(scenarios[0]);
+    outOfBounds.shelves[0].serviceCell = [outOfBounds.width, 2];
+    expect(() => parseScenario(outOfBounds)).toThrow("坐标超出地图范围：(26, 2)");
+  });
+
   it("exposes one integrated demo scenario for the main simulation", () => {
     expect(fixedDemoScenarioIds).toEqual(["integrated-demo"]);
     expect(scenarios.map((scenario) => scenario.id)).toEqual(fixedDemoScenarioIds);
@@ -122,6 +160,10 @@ describe("scenario data", () => {
     expect([integrated.width, integrated.height]).toEqual([26, 16]);
     expect(cellSet(integrated.obstacles)).toEqual(cellSet(expectedShelfCells()));
     expect(integrated.obstacles).toHaveLength(72);
+    expect(integrated.shelves).toEqual(expectedShelves());
+    expect(integrated.shelves).toHaveLength(72);
+    expect(integrated.shelves.filter((shelf) => shelf.initialOccupied)).toHaveLength(12);
+    expect(new Set(integrated.shelves.map((shelf) => cellKey(shelf.serviceCell))).size).toBe(72);
 
     expect(integrated.zones.warehouse).toEqual([[2, 0], [5, 0], [8, 0], [11, 0], [14, 0], [17, 0]]);
     expect(integrated.zones.delivery).toEqual([[2, 15], [5, 15], [8, 15], [11, 15], [14, 15], [17, 15]]);
@@ -151,9 +193,9 @@ describe("scenario data", () => {
     const tasks = new Map(integrated.tasks.map((task) => [task.id, task]));
     expect([...tasks.keys()]).toEqual(["T1", "T2", "T3", "T4", "T5", "E1"]);
 
-    expect(tasks.get("T1")).toMatchObject({ pickup: [2, 0], dropoff: [17, 15], deadline: 500 });
-    expect(tasks.get("T2")).toMatchObject({ pickup: [17, 0], dropoff: [2, 15], deadline: 500 });
-    expect(tasks.get("T4")).toMatchObject({ pickup: [8, 0], dropoff: [11, 15], releaseTime: 4, deadline: 500 });
+    expect(tasks.get("T1")).toMatchObject({ pickup: [2, 0], dropoff: [2, 5], deadline: 500 });
+    expect(tasks.get("T2")).toMatchObject({ pickup: [13, 6], dropoff: [2, 15], deadline: 500 });
+    expect(tasks.get("T4")).toMatchObject({ pickup: [8, 0], dropoff: [12, 9], releaseTime: 4, deadline: 500 });
     expect(tasks.get("E1")).toMatchObject({ target: [11, 10], releaseTime: 12, deadline: 300 });
     expect(tasks.get("T3")).toMatchObject({ targets: HORIZONTAL_INSPECTION_TARGETS, deadline: 400 });
     expect(tasks.get("T5")).toMatchObject({

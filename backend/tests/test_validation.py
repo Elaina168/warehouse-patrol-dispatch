@@ -7,6 +7,42 @@ from backend.app.schemas import Robot, Scenario
 from backend.tests.helpers import scenario_payload
 
 
+def shelf_scenario_payload() -> dict:
+    return {
+        "id": "shelf-validation",
+        "name": "货架校验场景",
+        "description": "用于验证货架几何和库存规则。",
+        "width": 7,
+        "height": 5,
+        "obstacles": [[2, 2], [4, 2]],
+        "zones": {
+            "warehouse": [[0, 0]],
+            "inspection": [],
+            "delivery": [[6, 4]],
+            "charging": [],
+        },
+        "shelves": [
+            {"id": "S01", "cell": [2, 2], "serviceCell": [2, 1], "initialOccupied": False},
+            {"id": "S02", "cell": [4, 2], "serviceCell": [4, 1], "initialOccupied": True},
+        ],
+        "robots": [
+            {"id": "R1", "name": "货架机器人", "start": [0, 4], "battery": 100, "load": 1}
+        ],
+        "tasks": [],
+        "dynamic": {"triggerTime": 10, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+
+
+def create_shelf_session(scenario: dict, *, include_dynamic: bool = True):
+    return TestClient(app).post(
+        "/api/sessions",
+        json={
+            "scenario": scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": include_dynamic},
+        },
+    )
+
+
 def test_robot_move_ticks_defaults_for_legacy_scenarios_and_rejects_invalid_values() -> None:
     client = TestClient(app)
 
@@ -359,3 +395,103 @@ def test_session_create_rejects_unreachable_task_target() -> None:
 
     assert response.status_code == 422
     assert "任务不可达：T1 孤立目标巡检" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "reason"),
+    [
+        (lambda scenario: scenario["shelves"][1].update({"id": "S01"}), "货架 ID 重复：S01"),
+        (lambda scenario: scenario["shelves"][1].update({"cell": [2, 2]}), "货架坐标重复：2,2"),
+        (lambda scenario: scenario["shelves"][0].update({"cell": [3, 2], "serviceCell": [3, 1]}), "货架格不在固定障碍中：S01 3,2"),
+        (lambda scenario: scenario["shelves"][0].update({"cell": [7, 2]}), "货架 S01 货架格 坐标超出地图范围：(7, 2)"),
+        (lambda scenario: scenario["shelves"][0].update({"serviceCell": [7, 1]}), "货架 S01 作业格 坐标超出地图范围：(7, 1)"),
+        (lambda scenario: scenario["shelves"][0].update({"serviceCell": [3, 1]}), "货架作业格不相邻：S01"),
+        (lambda scenario: scenario["shelves"][1].update({"serviceCell": [2, 1]}), "货架作业格重复：2,1"),
+    ],
+)
+def test_session_create_rejects_invalid_shelf_geometry(mutate, reason: str) -> None:
+    scenario = shelf_scenario_payload()
+    mutate(scenario)
+
+    response = create_shelf_session(scenario)
+
+    assert response.status_code == 422
+    assert reason in response.json()["detail"]
+
+
+def test_session_create_rejects_shelf_service_cell_on_fixed_obstacle() -> None:
+    scenario = shelf_scenario_payload()
+    scenario["obstacles"].append([2, 3])
+    scenario["shelves"][0]["serviceCell"] = [2, 3]
+
+    response = create_shelf_session(scenario)
+
+    assert response.status_code == 422
+    assert "货架作业格位于固定障碍：S01 2,3" in response.json()["detail"]
+
+
+def test_session_create_rejects_shelf_service_cell_on_active_dynamic_block() -> None:
+    scenario = shelf_scenario_payload()
+    scenario["dynamic"]["triggerTime"] = 0
+    scenario["dynamic"]["blockedCells"] = [[2, 1]]
+
+    response = create_shelf_session(scenario)
+
+    assert response.status_code == 422
+    assert "货架作业格位于当前生效的动态封锁：S01 2,1" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("tasks", "reason"),
+    [
+        (
+            [{"id": "IN-1", "type": "delivery", "title": "入库到有货货架", "priority": 2, "pickup": [0, 0], "dropoff": [4, 1], "demand": 1}],
+            "入库货架已有货物：S02",
+        ),
+        (
+            [
+                {"id": "IN-1", "type": "delivery", "title": "首次入库", "priority": 2, "pickup": [0, 0], "dropoff": [2, 1], "demand": 1},
+                {"id": "IN-2", "type": "delivery", "title": "重复入库", "priority": 2, "pickup": [0, 0], "dropoff": [2, 1], "demand": 1},
+            ],
+            "入库货架已被预订：S01",
+        ),
+        (
+            [{"id": "OUT-1", "type": "delivery", "title": "空货架出库", "priority": 2, "pickup": [2, 1], "dropoff": [6, 4], "demand": 1}],
+            "出库货架为空：S01",
+        ),
+        (
+            [
+                {"id": "OUT-1", "type": "delivery", "title": "首次出库", "priority": 2, "pickup": [4, 1], "dropoff": [6, 4], "demand": 1},
+                {"id": "OUT-2", "type": "delivery", "title": "重复出库", "priority": 2, "pickup": [4, 1], "dropoff": [6, 4], "demand": 1},
+            ],
+            "出库货架已被预订：S02",
+        ),
+        (
+            [{"id": "MOVE-1", "type": "delivery", "title": "非法取送组合", "priority": 2, "pickup": [1, 0], "dropoff": [5, 4], "demand": 1}],
+            "取送任务不是合法的进货到货架或货架到出货组合：MOVE-1",
+        ),
+    ],
+)
+def test_session_create_rejects_invalid_default_shelf_inventory(tasks: list[dict], reason: str) -> None:
+    scenario = shelf_scenario_payload()
+    scenario["tasks"] = tasks
+
+    response = create_shelf_session(scenario)
+
+    assert response.status_code == 422
+    assert reason in response.json()["detail"]
+
+
+def test_session_create_reserves_base_and_dynamic_shelf_tasks_in_order() -> None:
+    scenario = shelf_scenario_payload()
+    scenario["tasks"] = [
+        {"id": "IN-1", "type": "delivery", "title": "默认入库", "priority": 2, "pickup": [0, 0], "dropoff": [2, 1], "demand": 1}
+    ]
+    scenario["dynamic"]["tasks"] = [
+        {"id": "IN-2", "type": "delivery", "title": "动态重复入库", "priority": 2, "pickup": [0, 0], "dropoff": [2, 1], "demand": 1}
+    ]
+
+    response = create_shelf_session(scenario)
+
+    assert response.status_code == 422
+    assert "入库货架已被预订：S01" in response.json()["detail"]
