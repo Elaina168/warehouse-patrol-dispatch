@@ -102,7 +102,8 @@
         "battery": 512,
         "batteryCapacity": 512,
         "load": 2,
-        "moveTicks": 1
+        "moveTicks": 1,
+        "capabilities": ["inspection", "delivery", "emergency"]
       },
       {
         "id": "R2",
@@ -111,7 +112,8 @@
         "battery": 510,
         "batteryCapacity": 512,
         "load": 2,
-        "moveTicks": 2
+        "moveTicks": 2,
+        "capabilities": ["inspection", "delivery", "emergency"]
       },
       {
         "id": "R3",
@@ -120,7 +122,8 @@
         "battery": 508,
         "batteryCapacity": 512,
         "load": 1,
-        "moveTicks": 3
+        "moveTicks": 3,
+        "capabilities": ["inspection", "delivery", "emergency"]
       },
       {
         "id": "R4",
@@ -129,7 +132,8 @@
         "battery": 506,
         "batteryCapacity": 512,
         "load": 2,
-        "moveTicks": 4
+        "moveTicks": 4,
+        "capabilities": ["inspection", "delivery", "emergency"]
       }
     ],
     "tasks": [

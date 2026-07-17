@@ -236,6 +236,43 @@ describe("charging scenario import", () => {
   });
 });
 
+describe("robot task capability scenario import", () => {
+  it("accepts robots without capabilities", () => {
+    const scenario = structuredClone(scenarios[0]);
+    delete scenario.robots[0].capabilities;
+
+    expect(parseScenario(scenario).robots[0].capabilities).toBeUndefined();
+  });
+
+  it("accepts robots with a unique nonempty task-type subset", () => {
+    const scenario = structuredClone(scenarios[0]);
+    scenario.robots[0].capabilities = ["inspection", "emergency"];
+
+    expect(parseScenario(scenario).robots[0].capabilities).toEqual(["inspection", "emergency"]);
+  });
+
+  it("rejects robots with an empty capability list", () => {
+    const scenario = structuredClone(scenarios[0]) as unknown as { robots: Array<{ capabilities?: unknown }> };
+    scenario.robots[0].capabilities = [];
+
+    expect(() => parseScenario(scenario)).toThrow("JSON 必须是 Scenario 对象");
+  });
+
+  it("rejects robots with duplicate capabilities", () => {
+    const scenario = structuredClone(scenarios[0]) as unknown as { robots: Array<{ capabilities?: unknown }> };
+    scenario.robots[0].capabilities = ["inspection", "inspection"];
+
+    expect(() => parseScenario(scenario)).toThrow("JSON 必须是 Scenario 对象");
+  });
+
+  it("rejects robots with unknown capabilities", () => {
+    const scenario = structuredClone(scenarios[0]) as unknown as { robots: Array<{ capabilities?: unknown }> };
+    scenario.robots[0].capabilities = ["unknown"];
+
+    expect(() => parseScenario(scenario)).toThrow("JSON 必须是 Scenario 对象");
+  });
+});
+
 describe("session reset state", () => {
   it("clears the transient conflict alert and its resolved state", () => {
     let alert: ReturnType<typeof selectLatestConflictAlert> = {

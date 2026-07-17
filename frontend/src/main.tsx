@@ -2364,7 +2364,19 @@ function isRobot(value: unknown): value is Scenario["robots"][number] {
     && isFiniteNumber(value.battery)
     && (value.batteryCapacity === undefined || (isPositiveInteger(value.batteryCapacity) && value.battery <= value.batteryCapacity))
     && isFiniteNumber(value.load)
-    && (value.moveTicks === undefined || isMoveTicks(value.moveTicks));
+    && (value.moveTicks === undefined || isMoveTicks(value.moveTicks))
+    && (value.capabilities === undefined || isCapabilityList(value.capabilities));
+}
+
+function isTaskType(value: unknown): value is TaskType {
+  return value === "inspection" || value === "delivery" || value === "emergency";
+}
+
+function isCapabilityList(value: unknown): value is TaskType[] {
+  return Array.isArray(value)
+    && value.length > 0
+    && value.every(isTaskType)
+    && new Set(value).size === value.length;
 }
 
 function isMoveTicks(value: unknown): value is number {

@@ -141,7 +141,10 @@ describe("scenario data", () => {
     const integrated = byId.get("integrated-demo");
     expect(integrated).toBeDefined();
 
-    expect(integrated?.robots.length).toBeGreaterThanOrEqual(4);
+    expect(integrated?.robots).toHaveLength(4);
+    for (const robot of integrated?.robots ?? []) {
+      expect(robot.capabilities).toEqual(["inspection", "delivery", "emergency"]);
+    }
     expect(integrated?.tasks.some((task) => task.type === "inspection")).toBe(true);
     expect(integrated?.tasks.filter((task) => task.type === "delivery").length).toBeGreaterThanOrEqual(2);
     const emergencyTask = integrated?.tasks.find((task) => task.id === "E1");
