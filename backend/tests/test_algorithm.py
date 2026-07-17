@@ -2115,3 +2115,154 @@ def test_dynamic_block_reroutes_low_battery_robot_to_alternate_charger() -> None
         {"robotId": "R1", "station": [0, 1], "departureTime": 0, "arrivalTime": 3, "completionTime": 5}
     ]
     assert payload["conflicts"] == []
+
+
+def test_dispatch_assigns_each_task_type_only_to_capable_robot() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "task-capability-assignment",
+        "name": "task-capability-assignment",
+        "description": "每种任务都应由具备对应能力的机器人执行。",
+        "width": 7,
+        "height": 3,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [[6, 1]],
+            "inspection": [[6, 0]],
+            "delivery": [[5, 1]],
+            "charging": [],
+        },
+        "robots": [
+            {
+                "id": "R-INSPECTION",
+                "name": "巡检机器人",
+                "start": [6, 2],
+                "battery": 100,
+                "load": 2,
+                "capabilities": ["inspection"],
+            },
+            {
+                "id": "R-DELIVERY",
+                "name": "配送机器人",
+                "start": [6, 0],
+                "battery": 100,
+                "load": 2,
+                "capabilities": ["delivery"],
+            },
+            {
+                "id": "R-EMERGENCY",
+                "name": "应急机器人",
+                "start": [6, 1],
+                "battery": 100,
+                "load": 2,
+                "capabilities": ["emergency"],
+            },
+        ],
+        "tasks": [
+            {
+                "id": "I1",
+                "type": "inspection",
+                "title": "巡检任务",
+                "priority": 1,
+                "targets": [[6, 0]],
+            },
+            {
+                "id": "D1",
+                "type": "delivery",
+                "title": "配送任务",
+                "priority": 2,
+                "pickup": [6, 1],
+                "dropoff": [5, 1],
+                "demand": 2,
+            },
+            {
+                "id": "E1",
+                "type": "emergency",
+                "title": "应急任务",
+                "priority": 3,
+                "target": [6, 2],
+            },
+        ],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+
+    response = client.post(
+        "/api/dispatch",
+        json={"scenario": scenario, "options": {"avoidConflicts": False, "includeDynamic": False}},
+    )
+
+    assert response.status_code == 200
+    assigned_robot_by_task = {
+        task["id"]: assignment["robotId"]
+        for assignment in response.json()["assignments"]
+        for task in assignment["tasks"]
+    }
+    assert assigned_robot_by_task["I1"] == "R-INSPECTION"
+    assert assigned_robot_by_task["D1"] == "R-DELIVERY"
+    assert assigned_robot_by_task["E1"] == "R-EMERGENCY"
+
+
+def test_dispatch_delivery_requires_capability_and_sufficient_load() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "delivery-capability-and-load",
+        "name": "delivery-capability-and-load",
+        "description": "配送任务同时要求配送能力和足够载重。",
+        "width": 6,
+        "height": 1,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [[4, 0]],
+            "inspection": [],
+            "delivery": [[5, 0]],
+            "charging": [],
+        },
+        "robots": [
+            {
+                "id": "R-NO-DELIVERY",
+                "name": "高载重巡检机器人",
+                "start": [4, 0],
+                "battery": 100,
+                "load": 3,
+                "capabilities": ["inspection"],
+            },
+            {
+                "id": "R-LOW-LOAD",
+                "name": "低载重配送机器人",
+                "start": [3, 0],
+                "battery": 100,
+                "load": 1,
+                "capabilities": ["delivery"],
+            },
+            {
+                "id": "R-VALID",
+                "name": "合格配送机器人",
+                "start": [0, 0],
+                "battery": 100,
+                "load": 2,
+                "capabilities": ["delivery"],
+            },
+        ],
+        "tasks": [
+            {
+                "id": "D1",
+                "type": "delivery",
+                "title": "重载配送",
+                "priority": 2,
+                "pickup": [4, 0],
+                "dropoff": [5, 0],
+                "demand": 2,
+            }
+        ],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+
+    response = client.post(
+        "/api/dispatch",
+        json={"scenario": scenario, "options": {"avoidConflicts": False, "includeDynamic": False}},
+    )
+
+    assert response.status_code == 200
+    assignment = next(item for item in response.json()["assignments"] if item["tasks"])
+    assert assignment["robotId"] == "R-VALID"
+    assert assignment["tasks"][0]["id"] == "D1"

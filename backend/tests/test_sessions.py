@@ -614,6 +614,105 @@ def test_session_api_accepts_manual_task() -> None:
     assert any(task["id"] == "M1" for task in payload["result"]["tasks"])
 
 
+def test_session_rejects_runtime_task_without_capable_robot() -> None:
+    client = TestClient(app)
+    scenario = scenario_payload()
+    scenario["robots"] = [
+        {
+            "id": "R1",
+            "name": "仅巡检机器人",
+            "start": [0, 0],
+            "battery": 90,
+            "load": 2,
+            "capabilities": ["inspection"],
+        }
+    ]
+    scenario["tasks"] = []
+    scenario["dynamic"] = {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []}
+    created = client.post(
+        "/api/sessions",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}},
+    )
+    assert created.status_code == 200
+
+    added = client.post(
+        f"/api/sessions/{created.json()['sessionId']}/tasks",
+        json={
+            "task": {
+                "id": "E-RUNTIME",
+                "type": "emergency",
+                "title": "无能力机器人应急任务",
+                "priority": 5,
+                "target": [1, 0],
+            }
+        },
+    )
+
+    assert added.status_code == 422
+    assert "任务不可达：E-RUNTIME 无能力机器人应急任务" in added.json()["detail"]
+
+
+def test_session_accepts_runtime_task_when_capable_robot_is_failed_and_route_is_blocked() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "recoverable-runtime-capability",
+        "name": "recoverable-runtime-capability",
+        "description": "故障和动态封锁不应被当作任务定义错误。",
+        "width": 3,
+        "height": 1,
+        "obstacles": [],
+        "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+        "robots": [
+            {
+                "id": "R-EMERGENCY",
+                "name": "应急机器人",
+                "start": [0, 0],
+                "battery": 100,
+                "load": 1,
+                "capabilities": ["emergency"],
+            }
+        ],
+        "tasks": [],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+    created = client.post(
+        "/api/sessions",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}},
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    failed = client.post(
+        f"/api/sessions/{session_id}/failed-robots",
+        json={"robotId": "R-EMERGENCY", "currentTime": 0},
+    )
+    assert failed.status_code == 200
+    blocked = client.post(
+        f"/api/sessions/{session_id}/blocked-cells",
+        json={"cell": [1, 0], "currentTime": 0},
+    )
+    assert blocked.status_code == 200
+
+    added = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={
+            "task": {
+                "id": "E-RECOVERABLE",
+                "type": "emergency",
+                "title": "可恢复应急任务",
+                "priority": 5,
+                "target": [2, 0],
+            }
+        },
+    )
+
+    assert added.status_code == 200
+    task_state = next(state for state in added.json()["taskStates"] if state["taskId"] == "E-RECOVERABLE")
+    assert task_state["status"] == "unassigned"
+    assert task_state["failureCategory"] == "temporary"
+    assert task_state["recoveryAction"] == "clearBlockedCellsAndRestoreRobot"
+
+
 def test_session_create_keeps_tasks_waiting_until_first_tick() -> None:
     client = TestClient(app)
     create_response = client.post(

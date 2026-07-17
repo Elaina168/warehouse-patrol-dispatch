@@ -397,6 +397,52 @@ def test_session_create_rejects_unreachable_task_target() -> None:
     assert "任务不可达：T1 孤立目标巡检" in response.json()["detail"]
 
 
+def test_session_create_rejects_task_without_capable_robot() -> None:
+    client = TestClient(app)
+    scenario = scenario_payload()
+    scenario["robots"] = [
+        {
+            "id": "R1",
+            "name": "仅配送机器人",
+            "start": [0, 0],
+            "battery": 90,
+            "load": 2,
+            "capabilities": ["delivery"],
+        }
+    ]
+    scenario["tasks"] = [
+        {
+            "id": "I1",
+            "type": "inspection",
+            "title": "无能力机器人巡检",
+            "priority": 2,
+            "targets": [[1, 0]],
+        }
+    ]
+    scenario["dynamic"]["tasks"] = []
+
+    response = client.post(
+        "/api/sessions",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}},
+    )
+
+    assert response.status_code == 422
+    assert "任务不可达：I1 无能力机器人巡检" in response.json()["detail"]
+
+
+def test_session_create_preserves_legacy_robot_without_capabilities() -> None:
+    client = TestClient(app)
+    scenario = scenario_payload()
+    assert all("capabilities" not in robot for robot in scenario["robots"])
+
+    response = client.post(
+        "/api/sessions",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}},
+    )
+
+    assert response.status_code == 200
+
+
 @pytest.mark.parametrize(
     ("mutate", "reason"),
     [

@@ -13,6 +13,7 @@ from backend.app.dispatch import (
     cell_key,
     has_dynamic_event,
     path_at,
+    robot_can_handle_task,
     run_dispatch,
     task_completion_times,
     task_service_time,
@@ -1663,7 +1664,7 @@ def _validate_runtime_task(session: DispatchSession, task: Task) -> list[str]:
 def _has_reachable_robot_for_task_definition(session: DispatchSession, task: Task, waypoints: list[Cell]) -> bool:
     # 运行时封锁和故障是可恢复状态，新任务应进入队列并由 failureDetails 暴露恢复动作。
     for robot in session.scenario.robots:
-        if task.type == "delivery" and robot.load < (task.demand or 1):
+        if not robot_can_handle_task(robot, task):
             continue
         cursor = session.robot_positions.get(robot.id, robot.start)
         reachable = True

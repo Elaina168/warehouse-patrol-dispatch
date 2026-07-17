@@ -505,7 +505,7 @@ def assign_tasks_beam_search(
                     and robot.id in delayed_unavailable
                 ):
                     continue
-                if task.type == "delivery" and robot.load < (task.demand or 1):
+                if not robot_can_handle_task(robot, task):
                     continue
 
                 charge_decision = task_charge_decision(
@@ -1206,8 +1206,16 @@ def calculate_metrics(
     )
 
 
-def robot_can_handle_task(robot: Robot, task: Task) -> bool:
+def robot_supports_task_type(robot: Robot, task: Task) -> bool:
+    return task.type in robot.capabilities
+
+
+def robot_has_required_load(robot: Robot, task: Task) -> bool:
     return task.type != "delivery" or robot.load >= (task.demand or 1)
+
+
+def robot_can_handle_task(robot: Robot, task: Task) -> bool:
+    return robot_supports_task_type(robot, task) and robot_has_required_load(robot, task)
 
 
 def reachable_unlocked_active_robot_ids(

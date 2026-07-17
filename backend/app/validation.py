@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from math import isfinite
 
-from backend.app.dispatch import astar, cell_key, is_inside, task_waypoints
+from backend.app.dispatch import astar, cell_key, is_inside, robot_can_handle_task, task_waypoints
 from backend.app.inventory import ShelfInventoryError, initial_shelf_statuses, reserve_shelf_task
 from backend.app.schemas import Cell, DispatchOptions, Robot, Scenario, Task
 
@@ -172,7 +172,7 @@ def _has_reachable_robot(
         return False
 
     for robot in robots:
-        if task.type == "delivery" and robot.load < (task.demand or 1):
+        if not robot_can_handle_task(robot, task):
             continue
         if _path_distance_for_task(scenario, robot.start, waypoints, extra_blocked) is not None:
             return True
