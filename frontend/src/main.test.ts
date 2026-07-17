@@ -11,6 +11,7 @@ import {
   assignmentReplanWindowLabel,
   assignmentReplanWindowStatusLabel,
   buildRecoveryTargets,
+  recoveryActionLabel,
   buildTaskSnapshots,
   buildTaskQueueMetricRows,
   buildActiveRouteArrows,
@@ -613,6 +614,12 @@ describe("live metrics", () => {
 });
 
 describe("recovery actions", () => {
+  it("labels the task type capability recovery action", () => {
+    expect(recoveryActionLabel("addCapableRobotOrChangeTaskType")).toBe(
+      "恢复：增加兼容机器人或修改任务类型"
+    );
+  });
+
   it("builds actionable recovery targets from blocked cells and failed robots", () => {
     expect(buildRecoveryTargets({
       reason: "blocked and failed",

@@ -10,6 +10,7 @@ AssignmentReplanWindowInt = Annotated[int, Field(ge=0, le=120)]
 TaskType = Literal["inspection", "delivery", "emergency"]
 ALL_TASK_TYPES: tuple[TaskType, ...] = ("inspection", "delivery", "emergency")
 RecoveryAction = Literal[
+    "addCapableRobotOrChangeTaskType",
     "addCapableRobotOrReduceDemand",
     "clearBlockedCells",
     "clearBlockedCellsAndRestoreRobot",

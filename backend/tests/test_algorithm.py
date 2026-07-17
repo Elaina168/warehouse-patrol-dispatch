@@ -1238,6 +1238,167 @@ def test_dispatch_marks_unavailable_capable_robot_as_temporary_recovery() -> Non
     assert result.failureDetails["LOAD"].blockingRobotIds == ["R2"]
 
 
+def test_dispatch_marks_missing_task_type_capability_as_permanent_failure() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "permanent-missing-task-type-capability",
+            "name": "permanent-missing-task-type-capability",
+            "description": "no robot supports the emergency task type",
+            "width": 3,
+            "height": 1,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+            "robots": [
+                {
+                    "id": "R-INSPECTION",
+                    "name": "R-INSPECTION",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "EMERGENCY",
+                    "type": "emergency",
+                    "title": "EMERGENCY",
+                    "priority": 5,
+                    "target": [2, 0],
+                },
+            ],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=False),
+    )
+
+    detail = result.failureDetails["EMERGENCY"]
+    assert "没有机器人兼容任务类型 emergency" in result.failureReasons["EMERGENCY"]
+    assert detail.category == "permanent"
+    assert detail.recoveryAction == "addCapableRobotOrChangeTaskType"
+    assert detail.blockingCells == []
+    assert detail.blockingRobotIds == []
+
+
+def test_dispatch_only_reports_failed_type_compatible_robot_as_restore_target() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "temporary-compatible-failed-robot",
+            "name": "temporary-compatible-failed-robot",
+            "description": "only the failed emergency robot can execute the task",
+            "width": 3,
+            "height": 1,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+            "robots": [
+                {
+                    "id": "R-CAPABLE",
+                    "name": "R-CAPABLE",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 1,
+                    "capabilities": ["emergency"],
+                },
+                {
+                    "id": "R-INCOMPATIBLE",
+                    "name": "R-INCOMPATIBLE",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "EMERGENCY",
+                    "type": "emergency",
+                    "title": "EMERGENCY",
+                    "priority": 5,
+                    "target": [2, 0],
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": ["R-CAPABLE", "R-INCOMPATIBLE"],
+                "tasks": [],
+            },
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=True),
+    )
+
+    detail = result.failureDetails["EMERGENCY"]
+    assert detail.category == "temporary"
+    assert detail.recoveryAction == "restoreRobot"
+    assert detail.blockingCells == []
+    assert detail.blockingRobotIds == ["R-CAPABLE"]
+
+
+def test_dispatch_relaxes_lock_when_locked_robot_has_wrong_task_type() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "temporary-incompatible-task-type-lock",
+            "name": "temporary-incompatible-task-type-lock",
+            "description": "a reachable compatible robot can replace the incompatible locked robot",
+            "width": 3,
+            "height": 1,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+            "robots": [
+                {
+                    "id": "R-INCOMPATIBLE",
+                    "name": "R-INCOMPATIBLE",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+                {
+                    "id": "R-CAPABLE",
+                    "name": "R-CAPABLE",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 1,
+                    "capabilities": ["emergency"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "EMERGENCY",
+                    "type": "emergency",
+                    "title": "EMERGENCY",
+                    "priority": 5,
+                    "target": [2, 0],
+                },
+            ],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        locked_task_robot_ids={"EMERGENCY": "R-INCOMPATIBLE"},
+    )
+
+    detail = result.failureDetails["EMERGENCY"]
+    assert result.failureReasons["EMERGENCY"] == (
+        "任务锁定机器人 R-INCOMPATIBLE 不兼容任务类型 emergency，释放锁定后可改派"
+    )
+    assert detail.category == "temporary"
+    assert detail.recoveryAction == "relaxLocksOrReplan"
+    assert detail.blockingCells == []
+    assert detail.blockingRobotIds == []
+
+
 def test_dispatch_marks_incapable_locked_robot_as_temporary_recovery() -> None:
     scenario = Scenario.model_validate(
         {

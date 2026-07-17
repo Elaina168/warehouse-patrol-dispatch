@@ -228,6 +228,10 @@ def test_frontend_recovery_action_union_matches_backend_schema() -> None:
     assert _frontend_string_literal_union("RecoveryAction") == set(get_args(schemas.RecoveryAction))
 
 
+def test_recovery_action_union_exposes_task_type_capability_fix() -> None:
+    assert "addCapableRobotOrChangeTaskType" in get_args(schemas.RecoveryAction)
+
+
 def test_backend_recovery_action_schema_matches_dispatch_literals() -> None:
     assert set(get_args(schemas.RecoveryAction)) == _dispatch_recovery_action_literals()
 

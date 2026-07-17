@@ -1246,60 +1246,73 @@ def task_failure_reason(
 ) -> str:
     locked_task_robot_ids = locked_task_robot_ids or {}
     locked_robot_id = locked_task_robot_ids.get(task.id)
-    if locked_robot_id is not None and locked_robot_id in unavailable_robot_ids:
-        if reachable_unlocked_active_robot_ids(scenario, task, active_robots, locked_robot_id, extra_blocked):
-            return f"任务锁定机器人 {locked_robot_id} 已不可用，释放锁定后可改派"
-        locked_robot = next((robot for robot in scenario.robots if robot.id == locked_robot_id), None)
-        if locked_robot is not None and task.type == "delivery":
-            demand = task.demand or 1
-            if locked_robot.load < demand:
-                return f"没有可用机器人满足载重 {demand}"
-        if locked_robot is not None and not math.isfinite(task_distance(scenario, locked_robot.start, task, extra_blocked)):
-            reachable_without_blocked = math.isfinite(task_distance(scenario, locked_robot.start, task, []))
-            if extra_blocked and reachable_without_blocked:
-                return f"所有候选机器人到剩余目标不可达，当前动态封锁 {len(extra_blocked)} 个单元"
-            return "所有候选机器人到剩余目标不可达"
-        return f"任务锁定机器人 {locked_robot_id} 已不可用"
-
     waypoints = task_waypoints(task)
     if not waypoints:
         return "任务缺少有效目标点"
-    if not active_robots:
-        unavailable = set(unavailable_robot_ids)
-        unavailable_robots = [robot for robot in scenario.robots if robot.id in unavailable]
-        if unavailable_robots:
-            recovery_candidates = unavailable_robots
-            if task.type == "delivery":
-                demand = task.demand or 1
-                recovery_candidates = [robot for robot in recovery_candidates if robot.load >= demand]
-                if not recovery_candidates:
-                    return f"没有可用机器人满足载重 {demand}"
-            if not any(math.isfinite(task_distance(scenario, robot.start, task, extra_blocked)) for robot in recovery_candidates):
-                blocked_count = len(extra_blocked)
-                reachable_without_blocked = any(
-                    math.isfinite(task_distance(scenario, robot.start, task, []))
-                    for robot in recovery_candidates
-                )
-                if blocked_count and reachable_without_blocked:
-                    return f"所有候选机器人到剩余目标不可达，当前动态封锁 {blocked_count} 个单元"
-                return "所有候选机器人到剩余目标不可达"
-        return "没有可用机器人"
 
-    candidate_robots = active_robots
+    scoped_robots = scenario.robots
+    type_compatible = [robot for robot in scoped_robots if robot_supports_task_type(robot, task)]
+    if not type_compatible:
+        return f"没有机器人兼容任务类型 {task.type}"
+
+    fully_capable = [robot for robot in type_compatible if robot_has_required_load(robot, task)]
+    if not fully_capable:
+        demand = task.demand or 1
+        return f"没有可用机器人满足载重 {demand}"
+
+    active_robot_ids = {robot.id for robot in active_robots}
+    unavailable = set(unavailable_robot_ids)
+    capable_active_robots = [robot for robot in fully_capable if robot.id in active_robot_ids]
+    capable_unavailable_robots = [robot for robot in fully_capable if robot.id in unavailable]
+
+    candidate_robots = capable_active_robots
     if locked_robot_id is not None:
-        candidate_robots = [robot for robot in active_robots if robot.id == locked_robot_id]
+        locked_robot = next((robot for robot in scenario.robots if robot.id == locked_robot_id), None)
+        reachable_alternatives = reachable_unlocked_active_robot_ids(
+            scenario,
+            task,
+            capable_active_robots,
+            locked_robot_id,
+            extra_blocked,
+        )
+        if locked_robot is not None and not robot_supports_task_type(locked_robot, task):
+            if reachable_alternatives:
+                return f"任务锁定机器人 {locked_robot_id} 不兼容任务类型 {task.type}，释放锁定后可改派"
+            return f"任务锁定机器人 {locked_robot_id} 不兼容任务类型 {task.type}"
+        if locked_robot is not None and not robot_has_required_load(locked_robot, task):
+            demand = task.demand or 1
+            if reachable_alternatives:
+                return f"任务锁定机器人 {locked_robot_id} 不满足载重 {demand}，释放锁定后可改派"
+            return f"没有可用机器人满足载重 {demand}"
+        if locked_robot_id in unavailable:
+            if reachable_alternatives:
+                return f"任务锁定机器人 {locked_robot_id} 已不可用，释放锁定后可改派"
+            if locked_robot is not None and not math.isfinite(
+                task_distance(scenario, locked_robot.start, task, extra_blocked)
+            ):
+                reachable_without_blocked = math.isfinite(task_distance(scenario, locked_robot.start, task, []))
+                if extra_blocked and reachable_without_blocked:
+                    return f"所有候选机器人到剩余目标不可达，当前动态封锁 {len(extra_blocked)} 个单元"
+                return "所有候选机器人到剩余目标不可达"
+            return f"任务锁定机器人 {locked_robot_id} 已不可用"
+        candidate_robots = [robot for robot in capable_active_robots if robot.id == locked_robot_id]
         if not candidate_robots:
             return f"任务锁定机器人 {locked_robot_id} 不在可用机器人列表"
 
-    if task.type == "delivery":
-        demand = task.demand or 1
-        capable_robots = [robot for robot in candidate_robots if robot.load >= demand]
-        if not capable_robots:
-            if locked_robot_id is not None:
-                if reachable_unlocked_active_robot_ids(scenario, task, active_robots, locked_robot_id, extra_blocked):
-                    return f"任务锁定机器人 {locked_robot_id} 不满足载重 {demand}，释放锁定后可改派"
-            return f"没有可用机器人满足载重 {demand}"
-        candidate_robots = capable_robots
+    if not candidate_robots:
+        if capable_unavailable_robots and not any(
+            math.isfinite(task_distance(scenario, robot.start, task, extra_blocked))
+            for robot in capable_unavailable_robots
+        ):
+            blocked_count = len(extra_blocked)
+            reachable_without_blocked = any(
+                math.isfinite(task_distance(scenario, robot.start, task, []))
+                for robot in capable_unavailable_robots
+            )
+            if blocked_count and reachable_without_blocked:
+                return f"所有候选机器人到剩余目标不可达，当前动态封锁 {blocked_count} 个单元"
+            return "所有候选机器人到剩余目标不可达"
+        return "没有可用机器人"
 
     battery_feasible_robot_ids = [
         robot.id
@@ -1443,27 +1456,34 @@ def task_recovery_classification(
     if not waypoints:
         return "permanent", "fixTaskDefinition", [], []
 
+    scoped_robots = scenario.robots
+    type_compatible = [robot for robot in scoped_robots if robot_supports_task_type(robot, task)]
+    if not type_compatible:
+        return "permanent", "addCapableRobotOrChangeTaskType", [], []
+
+    fully_capable = [robot for robot in type_compatible if robot_has_required_load(robot, task)]
+    if not fully_capable:
+        return "permanent", "addCapableRobotOrReduceDemand", [], []
+
     unavailable = set(unavailable_robot_ids)
-    scoped_active_robots = active_robots
-    scoped_unavailable_robots = [robot for robot in scenario.robots if robot.id in unavailable]
+    active_robot_ids = {robot.id for robot in active_robots}
+    scoped_active_robots = [robot for robot in fully_capable if robot.id in active_robot_ids]
+    scoped_unavailable_robots = [robot for robot in fully_capable if robot.id in unavailable]
     if locked_robot_id is not None:
+        locked_robot = next((robot for robot in scenario.robots if robot.id == locked_robot_id), None)
+        reachable_alternatives = reachable_unlocked_active_robot_ids(
+            scenario,
+            task,
+            scoped_active_robots,
+            locked_robot_id,
+            extra_blocked,
+        )
+        if locked_robot not in fully_capable:
+            return "temporary", "relaxLocksOrReplan", [], []
+        if locked_robot_id in unavailable and reachable_alternatives:
+            return "temporary", "relaxLocksOrReplan", [], []
         scoped_active_robots = [robot for robot in scoped_active_robots if robot.id == locked_robot_id]
         scoped_unavailable_robots = [robot for robot in scoped_unavailable_robots if robot.id == locked_robot_id]
-
-    if task.type == "delivery":
-        demand = task.demand or 1
-        scoped_active_robots = [robot for robot in scoped_active_robots if robot.load >= demand]
-        scoped_unavailable_robots = [robot for robot in scoped_unavailable_robots if robot.load >= demand]
-        if not scoped_active_robots and not scoped_unavailable_robots:
-            if locked_robot_id is not None and reachable_unlocked_active_robot_ids(
-                scenario,
-                task,
-                [robot for robot in scenario.robots if robot.id not in unavailable],
-                locked_robot_id,
-                extra_blocked,
-            ):
-                return "temporary", "relaxLocksOrReplan", [], []
-            return "permanent", "addCapableRobotOrReduceDemand", [], []
 
     if scoped_active_robots and not any(
         task_charge_decision(scenario, robot, robot.start, robot.battery, task, extra_blocked) is not None

@@ -1700,8 +1700,9 @@ function taskStatusLabel(status: TaskRuntimeStatus): string {
   return "未分配";
 }
 
-function recoveryActionLabel(action: RecoveryAction): string {
+export function recoveryActionLabel(action: RecoveryAction): string {
   const labels: Record<RecoveryAction, string> = {
+    addCapableRobotOrChangeTaskType: "恢复：增加兼容机器人或修改任务类型",
     addCapableRobotOrReduceDemand: "恢复：增加载重机器人或降低需求",
     clearBlockedCells: "恢复：解除封锁",
     clearBlockedCellsAndRestoreRobot: "恢复：解除封锁并恢复机器人",

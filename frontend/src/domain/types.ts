@@ -168,6 +168,7 @@ export type ChargingVisit = {
 };
 
 export type RecoveryAction =
+  | "addCapableRobotOrChangeTaskType"
   | "addCapableRobotOrReduceDemand"
   | "clearBlockedCells"
   | "clearBlockedCellsAndRestoreRobot"

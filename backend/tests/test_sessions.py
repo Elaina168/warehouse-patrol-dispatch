@@ -713,6 +713,74 @@ def test_session_accepts_runtime_task_when_capable_robot_is_failed_and_route_is_
     assert task_state["recoveryAction"] == "clearBlockedCellsAndRestoreRobot"
 
 
+def test_session_restore_target_excludes_failed_robot_with_incompatible_task_type() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "runtime-compatible-robot-recovery",
+        "name": "runtime-compatible-robot-recovery",
+        "description": "only compatible failed robots should be recovery targets",
+        "width": 3,
+        "height": 1,
+        "obstacles": [],
+        "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+        "robots": [
+            {
+                "id": "R-CAPABLE",
+                "name": "应急机器人",
+                "start": [0, 0],
+                "battery": 100,
+                "load": 1,
+                "capabilities": ["emergency"],
+            },
+            {
+                "id": "R-INCOMPATIBLE",
+                "name": "巡检机器人",
+                "start": [0, 0],
+                "battery": 100,
+                "load": 1,
+                "capabilities": ["inspection"],
+            },
+        ],
+        "tasks": [],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+    created = client.post(
+        "/api/sessions",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}},
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    for robot_id in ["R-CAPABLE", "R-INCOMPATIBLE"]:
+        failed = client.post(
+            f"/api/sessions/{session_id}/failed-robots",
+            json={"robotId": robot_id, "currentTime": 0},
+        )
+        assert failed.status_code == 200
+
+    added = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={
+            "task": {
+                "id": "E-RECOVERABLE",
+                "type": "emergency",
+                "title": "可恢复应急任务",
+                "priority": 5,
+                "target": [2, 0],
+            }
+        },
+    )
+
+    assert added.status_code == 200
+    payload = added.json()
+    task_state = next(state for state in payload["taskStates"] if state["taskId"] == "E-RECOVERABLE")
+    detail = payload["result"]["failureDetails"]["E-RECOVERABLE"]
+    assert task_state["failureCategory"] == "temporary"
+    assert task_state["recoveryAction"] == "restoreRobot"
+    assert detail["blockingCells"] == []
+    assert detail["blockingRobotIds"] == ["R-CAPABLE"]
+
+
 def test_session_create_keeps_tasks_waiting_until_first_tick() -> None:
     client = TestClient(app)
     create_response = client.post(
