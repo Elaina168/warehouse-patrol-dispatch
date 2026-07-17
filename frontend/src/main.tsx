@@ -2178,7 +2178,9 @@ export function buildRandomGeneratedTask(
     : buildGeneratedTaskCandidates(scenario);
   let candidates = baseCandidates.filter((candidate) => supportedTypes.has(candidate.type));
   if (candidates.length === 0 && scenario.shelves.length > 0) {
-    candidates = buildGeneratedTaskCandidates(scenario).filter((candidate) => supportedTypes.has(candidate.type));
+    candidates = buildGeneratedTaskCandidates(scenario).filter(
+      (candidate) => candidate.type !== "delivery" && supportedTypes.has(candidate.type)
+    );
   }
   if (candidates.length === 0) return null;
   const existingSignatures = new Set(tasks.map(generatedTaskSignature));

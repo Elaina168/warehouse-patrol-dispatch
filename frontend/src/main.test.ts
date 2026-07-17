@@ -199,7 +199,7 @@ describe("robot task capabilities", () => {
     expect(robotCapabilityLabels(robot)).toEqual(["取送", "突发"]);
   });
 
-  it("never generates delivery for a delivery-incapable warehouse fleet", () => {
+  it("falls back to a supported non-delivery task for a delivery-incapable warehouse fleet", () => {
     const scenario = {
       ...buildWarehouseGeneratorScenario(),
       robots: [{
@@ -214,8 +214,31 @@ describe("robot task capabilities", () => {
 
     expect(supportedTaskTypes(scenario.robots)).toEqual(new Set(["inspection", "emergency"]));
     for (let sequence = 1; sequence <= 6; sequence += 1) {
-      expect(buildRandomGeneratedTask([], 8, scenario, sequence, buildWarehouseShelfStates())?.type).not.toBe("delivery");
+      const task = buildRandomGeneratedTask([], 8, scenario, sequence, buildWarehouseShelfStates());
+
+      expect(task).not.toBeNull();
+      if (task) expect(supportedTaskTypes(scenario.robots)).toContain(task.type);
     }
+  });
+
+  it("returns null for a delivery-only fleet when no warehouse delivery is legal", () => {
+    const scenario = {
+      ...buildWarehouseGeneratorScenario(),
+      robots: [{
+        id: "R1",
+        name: "配送机器人",
+        start: [0, 0] as [number, number],
+        battery: 90,
+        load: 2,
+        capabilities: ["delivery"] as TaskType[]
+      }]
+    };
+    const reservedStates = buildWarehouseShelfStates().map((state, index): ShelfRuntimeState => ({
+      ...state,
+      status: index % 2 === 0 ? "inboundReserved" : "outboundReserved"
+    }));
+
+    expect(buildRandomGeneratedTask([], 8, scenario, 1, reservedStates)).toBeNull();
   });
 
   it("generates only inspection for an inspection-only fleet", () => {
