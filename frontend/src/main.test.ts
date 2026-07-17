@@ -34,6 +34,8 @@ import {
   normalizeManualTaskDeadline,
   normalizeTaskPriority,
   buildRandomGeneratedTask,
+  robotCapabilityLabels,
+  supportedTaskTypes,
   nextMapPickTarget,
   applyMapPickToManualTask,
   selectLatestConflictAlert,
@@ -55,7 +57,7 @@ import {
   taskTimingFields
 } from "./main";
 import { scenarios } from "./domain/scenarios";
-import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, ShelfRuntimeState, Task } from "./domain/types";
+import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, ShelfRuntimeState, Task, TaskType } from "./domain/types";
 
 describe("robot charging runtime status contract", () => {
   it("declares toCharge and charging runtime statuses", () => {
@@ -174,6 +176,64 @@ describe("warehouse shelf map", () => {
     }));
 
     expect(markup).toContain("cell robot-cell failed-robot-cell");
+  });
+});
+
+describe("robot task capabilities", () => {
+  it("treats omitted capabilities as all task types for the robot display", () => {
+    const robot = { id: "R1", name: "默认能力", start: [0, 0] as [number, number], battery: 90, load: 2 };
+
+    expect(robotCapabilityLabels(robot)).toEqual(["巡检", "取送", "突发"]);
+  });
+
+  it("shows only explicit robot capability labels", () => {
+    const robot = {
+      id: "R1",
+      name: "配送突发能力",
+      start: [0, 0] as [number, number],
+      battery: 90,
+      load: 2,
+      capabilities: ["delivery", "emergency"] as TaskType[]
+    };
+
+    expect(robotCapabilityLabels(robot)).toEqual(["取送", "突发"]);
+  });
+
+  it("never generates delivery for a delivery-incapable warehouse fleet", () => {
+    const scenario = {
+      ...buildWarehouseGeneratorScenario(),
+      robots: [{
+        id: "R1",
+        name: "非配送机器人",
+        start: [0, 0] as [number, number],
+        battery: 90,
+        load: 2,
+        capabilities: ["inspection", "emergency"] as TaskType[]
+      }]
+    };
+
+    expect(supportedTaskTypes(scenario.robots)).toEqual(new Set(["inspection", "emergency"]));
+    for (let sequence = 1; sequence <= 6; sequence += 1) {
+      expect(buildRandomGeneratedTask([], 8, scenario, sequence, buildWarehouseShelfStates())?.type).not.toBe("delivery");
+    }
+  });
+
+  it("generates only inspection for an inspection-only fleet", () => {
+    const scenario = {
+      ...buildWarehouseGeneratorScenario(),
+      robots: [{
+        id: "R1",
+        name: "巡检机器人",
+        start: [0, 0] as [number, number],
+        battery: 90,
+        load: 2,
+        capabilities: ["inspection"] as TaskType[]
+      }]
+    };
+
+    for (let sequence = 1; sequence <= 6; sequence += 1) {
+      expect(buildRandomGeneratedTask([], 8, scenario, sequence, buildWarehouseShelfStates())?.type).toBe("inspection");
+    }
   });
 });
 

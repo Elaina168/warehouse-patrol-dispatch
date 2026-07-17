@@ -9,7 +9,7 @@ import {
 import { buildShelfCellPresentations, buildWarehouseDeliveryCandidates } from "./domain/inventory";
 import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./domain/view";
 import { scenarios } from "./domain/scenarios";
-import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, RecoveryAction, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
+import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, RecoveryAction, Robot, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
 import "./styles.css";
 
 const API_BASE = "http://127.0.0.1:8011";
@@ -24,6 +24,12 @@ const MAX_RANDOM_TASK_INTERVAL = 60;
 export const ROBOT_COLORS = ["#1c6dd0", "#117a8b", "#5e8b2f", "#c23b22"] as const;
 export const RIGHTBAR_EVENT_LOG_CLASS = "rightbar-event-log";
 export const RIGHTBAR_TASK_QUEUE_CLASS = "rightbar-task-queue";
+const allTaskTypes: TaskType[] = ["inspection", "delivery", "emergency"];
+const taskTypeLabels: Record<TaskType, string> = {
+  inspection: "巡检",
+  delivery: "取送",
+  emergency: "突发"
+};
 
 declare global {
   interface Window {
@@ -1266,7 +1272,8 @@ export function MapBoard({
                   <strong>{robotState.id} · {robotState.name}</strong>
                   <span>位置 ({robotState.position[0]}, {robotState.position[1]}) · {robotState.status}</span>
                    <span>任务 {currentTask ?? "无"}</span>
-                     <span>电量 {robotState.battery}/{runtimeState?.batteryCapacity ?? robot?.batteryCapacity ?? 100} · 载重 {robotState.load}</span>
+                   <span>电量 {robotState.battery}/{runtimeState?.batteryCapacity ?? robot?.batteryCapacity ?? 100} · 载重 {robotState.load}</span>
+                   {robot ? <span>能力 {robotCapabilityLabels(robot).join(" / ")}</span> : null}
                    <span>{robotMoveDurationLabel(runtimeState?.moveTicks ?? robot?.moveTicks ?? 1)}</span>
                    <span>进度 {Math.round(robotState.progress * 100)}%</span>
                 </span>
@@ -2165,9 +2172,14 @@ export function buildRandomGeneratedTask(
 ): Task | null {
   const id = nextGeneratedTaskId(tasks);
   const seed = Math.abs(currentTime * 31 + sequence * 17);
-  const candidates = scenario.shelves.length > 0
+  const supportedTypes = supportedTaskTypes(scenario.robots);
+  const baseCandidates = scenario.shelves.length > 0
     ? buildWarehouseGeneratedTaskCandidates(scenario, shelfStates, seed)
     : buildGeneratedTaskCandidates(scenario);
+  let candidates = baseCandidates.filter((candidate) => supportedTypes.has(candidate.type));
+  if (candidates.length === 0 && scenario.shelves.length > 0) {
+    candidates = buildGeneratedTaskCandidates(scenario).filter((candidate) => supportedTypes.has(candidate.type));
+  }
   if (candidates.length === 0) return null;
   const existingSignatures = new Set(tasks.map(generatedTaskSignature));
   const availableCandidates = candidates.filter((candidate) => !existingSignatures.has(candidate.signature));
@@ -2215,6 +2227,22 @@ export function buildRandomGeneratedTask(
     serviceTime,
     targets: [candidate.target]
   };
+}
+
+function robotTaskTypes(robot: Robot): TaskType[] {
+  return robot.capabilities ?? allTaskTypes;
+}
+
+export function robotCapabilityLabels(robot: Robot): string[] {
+  return robotTaskTypes(robot).map((taskType) => taskTypeLabels[taskType]);
+}
+
+export function supportedTaskTypes(robots: Robot[]): Set<TaskType> {
+  const taskTypes = new Set<TaskType>();
+  for (const robot of robots) {
+    for (const taskType of robotTaskTypes(robot)) taskTypes.add(taskType);
+  }
+  return taskTypes;
 }
 
 function buildWarehouseGeneratedTaskCandidates(
