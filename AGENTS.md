@@ -115,6 +115,11 @@ Completed and currently expected to remain in the project:
 - Experiment comparison API now exposes `POST /api/experiments/seeded-pressure`, returning compact fixed-seed performance summaries for standard 4/6/8-robot randomized pressure scenarios and an extended seven-case stability set including the fixed seed-43 boundary. Its `assignmentRatePercent` is assigned tasks divided by total tasks; it is not an execution-completion metric.
 - Experiment comparison API now exposes `POST /api/experiments/online-pressure`, returning fixed-seed online-flow evidence with runtime task insertion, blocked-cell and robot recovery events, task coverage, released-task completion, metrics history, and event logs.
 - Online pressure responses distinguish `coverageRatePercent` from `actualCompletionRatePercent`: coverage measures tasks not left `unassigned`, while actual completion measures completed tasks among tasks released by the experiment end tick.
+- Robots expose static `capabilities` using the exact task-type values `inspection`, `delivery`, and `emergency`; omitted fields default to all three values for legacy scenarios, while explicit lists must be non-empty, unique, and valid.
+- Task-type capability is a hard eligibility constraint across validation, assignment, locks, preemption, failure handoff, and recovery. Delivery tasks additionally retain the existing `robot.load >= task.demand` constraint.
+- Manual and generated tasks continue through the unified `POST /api/sessions/{session_id}/tasks` endpoint. The frontend random generator filters candidates by the fleet capability union, while the backend remains the validation authority.
+- Capability failure recovery is regression-tested so incompatible robots do not enter `blockingRobotIds`, restoring an incompatible robot does not clear the failure, and restoring the unique compatible robot triggers replanning.
+- Scale experiment regression now provides labeled `homogeneous-fleet` and `specialized-fleet` evidence through the existing scale endpoint, while an online `specialized-with-failure` regression covers unique-specialist failure and recovery without adding an experiment API.
 - All six experiment endpoints are backend-only evidence interfaces. The main frontend has no experiment panel, experiment API clients, experiment result types, generated report helpers, or experiment-specific styles.
 - Frontend live deadline metric logic handles nullable serialized task deadlines and excludes still-pending tasks, keeping live deadline misses aligned with backend `deadlineMissCount`.
 - Frontend API error handling preserves backend error `detail` text across session creation, updates, ticks, reset, and delete failures, so operational panels surface concrete API failure causes instead of only HTTP status codes.
@@ -122,6 +127,7 @@ Completed and currently expected to remain in the project:
 - Rolling windows now support an optional explainable adaptive mode while fixed mode remains the default. Adaptive decisions use recent planning latency, released-task pressure, future-task availability, and active robot count; dispatch results expose the effective window and reason, and the frontend status strip displays them without adding an experiment panel.
 - Frontend scenario-data regression now protects `integrated-demo` as the only persisted frontend scenario and verifies its mixed task, charging, and online-dispatch coverage.
 - The sole `integrated-demo` baseline now uses a `26 × 16` realistic warehouse grid with twelve `3 × 2` shelf groups, two-cell horizontal and vertical clearances, top inbound cells, bottom outbound cells, right-side robot starts, and right-side charging cells.
+- All four `integrated-demo` robots explicitly support `inspection`, `delivery`, and `emergency`; the default demo remains an all-capability flow and robot tooltips expose the three Chinese capability labels.
 - The 72 shelf entity cells are impassable, and every shelf has one unique adjacent service cell where robots perform pickup or putaway operations.
 - Online sessions are the inventory authority and expose `shelfStates` with `empty`, `inboundReserved`, `occupied`, and `outboundReserved`; the frontend renders these states instead of inferring inventory.
 - Inbound tasks run from an inbound-zone cell to an empty shelf service cell, while outbound tasks run from an occupied shelf service cell to an outbound-zone cell. Scenario, manual, and generated delivery tasks use the same backend inventory validation and reservation rules through the unified runtime task endpoint.
@@ -172,14 +178,14 @@ Recommended execution order:
    - Next work is to keep this fixed demo flow stable during backend/frontend changes and avoid destabilizing broad refactors.
 
 2. Core algorithm module completion - 接近完成
-   - Assignment, A* path planning, conflict avoidance, lock stability, preemption scoring, rolling-window behavior, partial-progress replanning, delivery cargo continuity, dynamic timing, and failure recovery classification are implemented with targeted regressions.
+   - Assignment, task-type capability eligibility, A* path planning, conflict avoidance, lock stability, preemption scoring, rolling-window behavior, partial-progress replanning, delivery cargo continuity, dynamic timing, and failure recovery classification are implemented with targeted regressions.
    - Dynamic replanning behavior is regression-tested through an `integrated-demo` dynamic-task variant, confirming dynamic task inclusion and zero failures.
    - Rolling-window behavior is regression-tested against `integrated-demo`, confirming far-future task deferral versus inclusion across window settings.
    - Deterministic scale-pressure coverage now verifies increasing 3/5/8-robot scenario families with mixed tasks and dynamic emergency tasks while preserving full assignment, zero conflicts, zero failures, and bounded planning time.
    - Fixed-seed pressure coverage now verifies randomized 4/6/8-robot scenario families with mixed tasks, randomized obstacles, dynamic emergency tasks, full assignment, zero conflicts, zero failures, and bounded planning time.
    - The previous 8-robot seed-43 late-goal conflict boundary is now a passing regression through reservation-aware post-task parking.
    - An explainable adaptive rolling-window policy is implemented with fixed-mode compatibility, task-pressure and planning-latency contraction, low-load future-work expansion, effective-window explanations, and experiment comparison support. Fixed mode remains the cross-environment deterministic regression baseline because wall-clock latency feedback can vary by machine load.
-   - Remaining work is algorithmic quality beyond the current heuristic planner, especially richer MAPF behavior if needed, adaptive-threshold calibration, and performance tuning on larger instances.
+   - Remaining work is algorithmic quality beyond the current heuristic planner, especially richer MAPF behavior if needed, adaptive-threshold calibration, and performance tuning on larger instances. Full-horizon zero-conflict guarantees and a pre-execution safety gate remain unimplemented and are unrelated to robot task capabilities.
    - Battery and charging are now hard runtime constraints: a robot consumes one unit per moved grid cell, routes to a reachable charger when needed, waits for `chargeTime`, and remains unavailable to preemption while charging.
 
 3. Online scheduling module completion - 接近完成
@@ -227,6 +233,7 @@ Recommended execution order:
    - Dynamic-replanning comparison now has backend regression coverage on a real fixed demo scenario instead of only synthetic scenarios.
    - Rolling-window comparison now has backend regression coverage on a real fixed demo scenario and can include an adaptive case alongside fixed-window cases.
    - Scale comparison now has backend regression coverage across the real fixed demo scenario set, not only synthetic scale inputs.
+   - Scale comparison also covers labeled homogeneous and specialized capability fleets, and a focused online regression covers the unique-compatible-robot failure and recovery sequence without adding another experiment endpoint.
    - Fixed-seed pressure comparison has backend coverage for standard and extended stability sets, including the repaired seed-43 pressure boundary, with assignment-rate, deadline-miss, planning-budget, distance, and makespan evidence.
    - Remaining work is manually reviewed final wording after the official competition material requirements are known.
    - Output should feed the report and defense: charts, tables, conclusions, and a short explanation of why the algorithm improves the baseline.

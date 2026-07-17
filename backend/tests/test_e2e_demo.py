@@ -17,12 +17,128 @@ def integrated_dynamic_event_scenario() -> dict:
     return scenario
 
 
+def specialized_failure_scenario() -> dict:
+    return {
+        "id": "specialized-with-failure",
+        "name": "specialized-with-failure",
+        "description": "唯一兼容机器人故障与恢复。",
+        "width": 5,
+        "height": 2,
+        "obstacles": [],
+        "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+        "robots": [
+            {
+                "id": "R-EMERGENCY",
+                "name": "突发机器人",
+                "start": [0, 0],
+                "battery": 100,
+                "load": 1,
+                "capabilities": ["emergency"],
+            },
+            {
+                "id": "R-INSPECTION",
+                "name": "巡检机器人",
+                "start": [0, 1],
+                "battery": 100,
+                "load": 1,
+                "capabilities": ["inspection"],
+            },
+        ],
+        "tasks": [],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+
+
+def assert_assignments_respect_capabilities(assignments: list[dict], scenario: dict) -> None:
+    robot_by_id = {robot["id"]: robot for robot in scenario["robots"]}
+    for assignment in assignments:
+        robot = robot_by_id[assignment["robotId"]]
+        for task in assignment["tasks"]:
+            assert task["type"] in robot["capabilities"]
+            if task["type"] == "delivery":
+                assert robot["load"] >= task["demand"]
+
+
+def test_specialized_robot_failure_recovers_through_online_session() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": specialized_failure_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    for robot_id in ("R-EMERGENCY", "R-INSPECTION"):
+        failed = client.post(
+            f"/api/sessions/{session_id}/failed-robots",
+            json={"robotId": robot_id, "currentTime": 0},
+        )
+        assert failed.status_code == 200
+
+    added = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={
+            "task": {
+                "id": "E-RECOVERY",
+                "type": "emergency",
+                "title": "唯一兼容机器人恢复任务",
+                "priority": 5,
+                "target": [4, 0],
+            }
+        },
+    )
+    assert added.status_code == 200
+    failed_state = next(state for state in added.json()["taskStates"] if state["taskId"] == "E-RECOVERY")
+    assert failed_state["status"] == "unassigned"
+    assert failed_state["failureCategory"] == "temporary"
+    assert failed_state["recoveryAction"] == "restoreRobot"
+    assert added.json()["result"]["failureDetails"]["E-RECOVERY"]["blockingRobotIds"] == ["R-EMERGENCY"]
+
+    restored = client.post(
+        f"/api/sessions/{session_id}/failed-robots/restore",
+        json={"robotId": "R-INSPECTION", "currentTime": 0},
+    )
+    assert restored.status_code == 200
+    unrelated_state = next(
+        state for state in restored.json()["taskStates"] if state["taskId"] == "E-RECOVERY"
+    )
+    assert unrelated_state["status"] == "unassigned"
+    assert unrelated_state["recoveryAction"] == "restoreRobot"
+
+    recovered = client.post(
+        f"/api/sessions/{session_id}/failed-robots/restore",
+        json={"robotId": "R-EMERGENCY", "currentTime": 0},
+    )
+    assert recovered.status_code == 200
+    recovered_payload = recovered.json()
+    recovered_state = next(
+        state for state in recovered_payload["taskStates"] if state["taskId"] == "E-RECOVERY"
+    )
+    assert recovered_state["status"] in {"assigned", "running", "completed"}
+    assert recovered_state["failureCategory"] is None
+    assert recovered_state["recoveryAction"] is None
+    assignment = next(
+        assignment
+        for assignment in recovered_payload["result"]["assignments"]
+        if any(task["id"] == "E-RECOVERY" for task in assignment["tasks"])
+    )
+    assert assignment["robotId"] == "R-EMERGENCY"
+
+
 def test_integrated_demo_runs_default_online_dispatch_flow() -> None:
     client = TestClient(app)
+    scenario = frontend_demo_scenario("integrated-demo")
+    assert all(
+        robot["capabilities"] == ["inspection", "delivery", "emergency"]
+        for robot in scenario["robots"]
+    )
     create_response = client.post(
         "/api/sessions",
         json={
-            "scenario": frontend_demo_scenario("integrated-demo"),
+            "scenario": scenario,
             "options": {"avoidConflicts": True, "includeDynamic": True},
         },
     )
@@ -41,6 +157,7 @@ def test_integrated_demo_runs_default_online_dispatch_flow() -> None:
     )
     assert planning_response.status_code == 200
     planning_payload = planning_response.json()
+    assert_assignments_respect_capabilities(planning_payload["result"]["assignments"], scenario)
     t2_assignment = next(
         assignment
         for assignment in planning_payload["result"]["assignments"]

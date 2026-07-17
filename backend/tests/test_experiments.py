@@ -386,6 +386,134 @@ def scaled_scenario(label: str, robot_count: int, task_count: int) -> dict:
     }
 
 
+def capability_scale_scenario(label: str) -> dict:
+    scenario = {
+        "id": label,
+        "name": label,
+        "description": "机器人任务类型能力规模对比。",
+        "width": 8,
+        "height": 3,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [[7, 1]],
+            "inspection": [[7, 0]],
+            "delivery": [[6, 1]],
+            "charging": [],
+        },
+        "robots": [
+            {
+                "id": "R-INSPECTION",
+                "name": "巡检机器人",
+                "start": [0, 0],
+                "battery": 100,
+                "load": 1,
+                "capabilities": ["inspection", "delivery", "emergency"],
+            },
+            {
+                "id": "R-DELIVERY",
+                "name": "取送机器人",
+                "start": [0, 1],
+                "battery": 100,
+                "load": 2,
+                "capabilities": ["inspection", "delivery", "emergency"],
+            },
+            {
+                "id": "R-EMERGENCY",
+                "name": "突发机器人",
+                "start": [0, 2],
+                "battery": 100,
+                "load": 1,
+                "capabilities": ["inspection", "delivery", "emergency"],
+            },
+        ],
+        "tasks": [
+            {
+                "id": "I1",
+                "type": "inspection",
+                "title": "巡检任务",
+                "priority": 1,
+                "releaseTime": 0,
+                "deadline": 40,
+                "targets": [[7, 0]],
+            },
+            {
+                "id": "D1",
+                "type": "delivery",
+                "title": "重载取送任务",
+                "priority": 2,
+                "releaseTime": 0,
+                "deadline": 40,
+                "pickup": [7, 1],
+                "dropoff": [6, 1],
+                "demand": 2,
+            },
+            {
+                "id": "E1",
+                "type": "emergency",
+                "title": "突发任务",
+                "priority": 4,
+                "releaseTime": 0,
+                "deadline": 40,
+                "target": [7, 2],
+            },
+        ],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+    if label == "specialized-fleet":
+        for robot, capability in zip(
+            scenario["robots"],
+            ("inspection", "delivery", "emergency"),
+            strict=True,
+        ):
+            robot["capabilities"] = [capability]
+    return scenario
+
+
+def assert_assignments_respect_capabilities(case: dict, scenario: dict) -> None:
+    robot_by_id = {robot["id"]: robot for robot in scenario["robots"]}
+    for assignment in case["result"]["assignments"]:
+        robot = robot_by_id[assignment["robotId"]]
+        for task in assignment["tasks"]:
+            assert task["type"] in robot["capabilities"]
+            if task["type"] == "delivery":
+                assert robot["load"] >= task["demand"]
+
+
+def test_scale_experiment_compares_homogeneous_and_specialized_capability_fleets() -> None:
+    client = TestClient(app)
+    homogeneous = capability_scale_scenario("homogeneous-fleet")
+    specialized = capability_scale_scenario("specialized-fleet")
+
+    assert {robot["id"]: robot["capabilities"] for robot in specialized["robots"]} == {
+        "R-INSPECTION": ["inspection"],
+        "R-DELIVERY": ["delivery"],
+        "R-EMERGENCY": ["emergency"],
+    }
+
+    response = client.post(
+        "/api/experiments/scale",
+        json={
+            "cases": [
+                {"label": "homogeneous-fleet", "scenario": homogeneous},
+                {"label": "specialized-fleet", "scenario": specialized},
+            ],
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert response.status_code == 200
+    cases = {case["label"]: case for case in response.json()["cases"]}
+    assert set(cases) == {"homogeneous-fleet", "specialized-fleet"}
+    for label, scenario in (("homogeneous-fleet", homogeneous), ("specialized-fleet", specialized)):
+        case = cases[label]
+        assert case["result"]["metrics"]["assignedTaskCount"] == 3
+        assert case["result"]["metrics"]["conflictCount"] == 0
+        assert case["result"]["metrics"]["failureCount"] == 0
+        assert case["result"]["metrics"]["deadlineMissCount"] == 0
+        assert case["result"]["chargingVisits"] == []
+        assert_assignments_respect_capabilities(case, scenario)
+
+
 def test_scale_experiment_returns_one_case_per_supplied_scenario() -> None:
     client = TestClient(app)
 
