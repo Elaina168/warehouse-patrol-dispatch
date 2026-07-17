@@ -11,6 +11,7 @@ from backend.app.dispatch import (
     astar,
     build_conflict_states as _build_conflict_states,
     cell_key,
+    clean_invalid_task_locks,
     has_dynamic_event,
     path_at,
     robot_can_handle_task,
@@ -505,6 +506,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
         )
     if result is None:
         scenario, options, task_lookup = _build_effective_dispatch_input(session)
+        _release_invalid_task_locks_for_replan(session, scenario, options)
         replan_window_decision = _session_replan_window_decision(session)
         result = _restore_absolute_result(
             run_dispatch(
@@ -1260,6 +1262,30 @@ def _update_locked_task_assignments(session: DispatchSession, result: DispatchRe
                 continue
             session.locked_task_robot_ids[task.id] = assignment.robotId
             _record_session_event(session, target_time, f"T={target_time} 任务 {task.id} 锁定给机器人 {assignment.robotId}")
+
+
+def _release_invalid_task_locks_for_replan(
+    session: DispatchSession,
+    scenario: Scenario,
+    options: DispatchOptions,
+) -> None:
+    tasks = [*scenario.tasks, *scenario.dynamic.tasks] if options.includeDynamic else [*scenario.tasks]
+    extra_blocked = scenario.dynamic.blockedCells if options.includeDynamic else []
+    unavailable_robot_ids = scenario.dynamic.failedRobots if options.includeDynamic else []
+    _, released_reasons = clean_invalid_task_locks(
+        scenario,
+        tasks,
+        session.locked_task_robot_ids,
+        extra_blocked,
+        unavailable_robot_ids,
+    )
+    for task_id, reason in released_reasons.items():
+        session.locked_task_robot_ids.pop(task_id, None)
+        _record_session_event(
+            session,
+            session.current_time,
+            f"T={session.current_time} 任务 {task_id} 的{reason}，释放非法锁定并重规划",
+        )
 
 
 def _session_task_start_times(session: DispatchSession, result: DispatchResult) -> dict[str, int]:

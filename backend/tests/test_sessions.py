@@ -781,6 +781,74 @@ def test_session_restore_target_excludes_failed_robot_with_incompatible_task_typ
     assert detail["blockingRobotIds"] == ["R-CAPABLE"]
 
 
+def test_session_releases_incompatible_stale_lock_and_replans_immediately() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "session-incompatible-stale-lock",
+        "name": "session-incompatible-stale-lock",
+        "description": "规划前应释放存在可执行替代的非法锁定。",
+        "width": 3,
+        "height": 1,
+        "obstacles": [],
+        "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+        "robots": [
+            {
+                "id": "R-INCOMPATIBLE",
+                "name": "巡检机器人",
+                "start": [0, 0],
+                "battery": 100,
+                "load": 1,
+                "capabilities": ["inspection"],
+            },
+            {
+                "id": "R-CAPABLE",
+                "name": "应急机器人",
+                "start": [0, 0],
+                "battery": 100,
+                "load": 1,
+                "capabilities": ["emergency"],
+            },
+        ],
+        "tasks": [
+            {
+                "id": "EMERGENCY",
+                "type": "emergency",
+                "title": "应急任务",
+                "priority": 5,
+                "target": [2, 0],
+            },
+        ],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+    created = client.post(
+        "/api/sessions",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": False}},
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+    session = sessions_module._sessions[session_id]
+    session.locked_task_robot_ids["EMERGENCY"] = "R-INCOMPATIBLE"
+    session.last_result = None
+
+    replanned = client.get(f"/api/sessions/{session_id}")
+
+    assert replanned.status_code == 200
+    payload = replanned.json()
+    assignment = next(
+        assignment
+        for assignment in payload["result"]["assignments"]
+        if any(task["id"] == "EMERGENCY" for task in assignment["tasks"])
+    )
+    assert "EMERGENCY" not in session.locked_task_robot_ids
+    assert assignment["robotId"] == "R-CAPABLE"
+    assert "EMERGENCY" not in payload["result"]["failureDetails"]
+    assert any(
+        "任务 EMERGENCY 的锁定机器人 R-INCOMPATIBLE 不兼容任务类型 emergency，释放非法锁定并重规划"
+        in event["text"]
+        for event in payload["result"]["eventLog"]
+    )
+
+
 def test_session_create_keeps_tasks_waiting_until_first_tick() -> None:
     client = TestClient(app)
     create_response = client.post(

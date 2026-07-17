@@ -1218,6 +1218,87 @@ def robot_can_handle_task(robot: Robot, task: Task) -> bool:
     return robot_supports_task_type(robot, task) and robot_has_required_load(robot, task)
 
 
+def failure_constraints_for_task(
+    task: Task,
+    extra_blocked: list[Cell],
+    unavailable_robot_ids: list[str],
+    delayed_blocked: list[Cell] | None = None,
+    delayed_block_time: int | None = None,
+    delayed_unavailable_robot_ids: list[str] | None = None,
+    delayed_unavailable_time: int | None = None,
+) -> tuple[list[Cell], list[str]]:
+    task_blocked = extra_blocked
+    if delayed_block_time is not None and task_release_time(task) >= delayed_block_time:
+        task_blocked = merge_cells(extra_blocked, delayed_blocked or [])
+
+    task_unavailable = list(unavailable_robot_ids)
+    if delayed_unavailable_time is not None and task_release_time(task) >= delayed_unavailable_time:
+        for robot_id in delayed_unavailable_robot_ids or []:
+            if robot_id not in task_unavailable:
+                task_unavailable.append(robot_id)
+    return task_blocked, task_unavailable
+
+
+def clean_invalid_task_locks(
+    scenario: Scenario,
+    tasks: list[Task],
+    locked_task_robot_ids: dict[str, str] | None,
+    extra_blocked: list[Cell],
+    unavailable_robot_ids: list[str],
+    delayed_blocked: list[Cell] | None = None,
+    delayed_block_time: int | None = None,
+    delayed_unavailable_robot_ids: list[str] | None = None,
+    delayed_unavailable_time: int | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    cleaned_locks = dict(locked_task_robot_ids or {})
+    released_reasons: dict[str, str] = {}
+    tasks_by_id = {task.id: task for task in tasks}
+    robots_by_id = {robot.id: robot for robot in scenario.robots}
+
+    for task_id, locked_robot_id in list(cleaned_locks.items()):
+        task = tasks_by_id.get(task_id)
+        locked_robot = robots_by_id.get(locked_robot_id)
+        if task is None or locked_robot is None or robot_can_handle_task(locked_robot, task):
+            continue
+
+        task_blocked, task_unavailable = failure_constraints_for_task(
+            task,
+            extra_blocked,
+            unavailable_robot_ids,
+            delayed_blocked,
+            delayed_block_time,
+            delayed_unavailable_robot_ids,
+            delayed_unavailable_time,
+        )
+        unavailable = set(task_unavailable)
+        has_executable_alternative = any(
+            robot.id != locked_robot_id
+            and robot.id not in unavailable
+            and robot_can_handle_task(robot, task)
+            and task_charge_decision(
+                scenario,
+                robot,
+                robot.start,
+                robot.battery,
+                task,
+                task_blocked,
+            )
+            is not None
+            for robot in scenario.robots
+        )
+        if not has_executable_alternative:
+            continue
+
+        if not robot_supports_task_type(locked_robot, task):
+            reason = f"锁定机器人 {locked_robot_id} 不兼容任务类型 {task.type}"
+        else:
+            reason = f"锁定机器人 {locked_robot_id} 不满足载重 {task.demand or 1}"
+        cleaned_locks.pop(task_id, None)
+        released_reasons[task_id] = reason
+
+    return cleaned_locks, released_reasons
+
+
 def reachable_unlocked_active_robot_ids(
     scenario: Scenario,
     task: Task,
@@ -1428,26 +1509,39 @@ def build_failure_reasons(
     extra_blocked: list[Cell],
     unavailable_robot_ids: list[str],
     locked_task_robot_ids: dict[str, str] | None,
+    delayed_blocked: list[Cell] | None = None,
+    delayed_block_time: int | None = None,
+    delayed_unavailable_robot_ids: list[str] | None = None,
+    delayed_unavailable_time: int | None = None,
 ) -> dict[str, str]:
-    unavailable = set(unavailable_robot_ids)
-    active_robots = [robot for robot in scenario.robots if robot.id not in unavailable]
     assigned_task_ids = {
         task.id
         for assignment in assignments
         for task in assignment.tasks
     }
-    reasons = {
-        task.id: task_failure_reason(
+    reasons: dict[str, str] = {}
+    for task in tasks:
+        if task.id in assigned_task_ids:
+            continue
+        task_blocked, task_unavailable = failure_constraints_for_task(
+            task,
+            extra_blocked,
+            unavailable_robot_ids,
+            delayed_blocked,
+            delayed_block_time,
+            delayed_unavailable_robot_ids,
+            delayed_unavailable_time,
+        )
+        unavailable = set(task_unavailable)
+        active_robots = [robot for robot in scenario.robots if robot.id not in unavailable]
+        reasons[task.id] = task_failure_reason(
             scenario,
             task,
             active_robots,
-            extra_blocked,
-            unavailable_robot_ids,
+            task_blocked,
+            task_unavailable,
             locked_task_robot_ids,
         )
-        for task in tasks
-        if task.id not in assigned_task_ids
-    }
 
     completions = task_completion_times(assignments, paths)
     for assignment in assignments:
@@ -1607,6 +1701,10 @@ def build_failure_details(
     extra_blocked: list[Cell],
     unavailable_robot_ids: list[str],
     locked_task_robot_ids: dict[str, str] | None,
+    delayed_blocked: list[Cell] | None = None,
+    delayed_block_time: int | None = None,
+    delayed_unavailable_robot_ids: list[str] | None = None,
+    delayed_unavailable_time: int | None = None,
 ) -> dict[str, TaskFailureDetail]:
     reasons = build_failure_reasons(
         scenario,
@@ -1616,37 +1714,35 @@ def build_failure_details(
         extra_blocked,
         unavailable_robot_ids,
         locked_task_robot_ids,
+        delayed_blocked,
+        delayed_block_time,
+        delayed_unavailable_robot_ids,
+        delayed_unavailable_time,
     )
-    unavailable = set(unavailable_robot_ids)
-    active_robots = [robot for robot in scenario.robots if robot.id not in unavailable]
-    assigned_task_robot_ids = {
-        task.id: assignment.robotId
-        for assignment in assignments
-        for task in assignment.tasks
-    }
     details: dict[str, TaskFailureDetail] = {}
     for task in tasks:
         reason = reasons.get(task.id)
         if reason is None:
             continue
-        if task.id in assigned_task_robot_ids:
-            category, action, blocking_cells, blocking_robot_ids = task_recovery_classification(
-                scenario,
-                task,
-                active_robots,
-                extra_blocked,
-                unavailable_robot_ids,
-                locked_task_robot_ids,
-            )
-        else:
-            category, action, blocking_cells, blocking_robot_ids = task_recovery_classification(
-                scenario,
-                task,
-                active_robots,
-                extra_blocked,
-                unavailable_robot_ids,
-                locked_task_robot_ids,
-            )
+        task_blocked, task_unavailable = failure_constraints_for_task(
+            task,
+            extra_blocked,
+            unavailable_robot_ids,
+            delayed_blocked,
+            delayed_block_time,
+            delayed_unavailable_robot_ids,
+            delayed_unavailable_time,
+        )
+        unavailable = set(task_unavailable)
+        active_robots = [robot for robot in scenario.robots if robot.id not in unavailable]
+        category, action, blocking_cells, blocking_robot_ids = task_recovery_classification(
+            scenario,
+            task,
+            active_robots,
+            task_blocked,
+            task_unavailable,
+            locked_task_robot_ids,
+        )
         details[task.id] = TaskFailureDetail(
             reason=reason,
             category=category,
@@ -1716,6 +1812,17 @@ def run_dispatch(
         for task in scenario.dynamic.tasks
     ]
     tasks = [*scenario.tasks, *dynamic_tasks] if include_dynamic else [*scenario.tasks]
+    locked_task_robot_ids, _ = clean_invalid_task_locks(
+        scenario,
+        tasks,
+        locked_task_robot_ids,
+        extra_blocked,
+        unavailable_robot_ids,
+        delayed_blocked,
+        delayed_block_time,
+        delayed_unavailable_robot_ids,
+        delayed_unavailable_time,
+    )
     if replan_window_decision is None:
         released_task_count = sum(
             1
@@ -1795,6 +1902,10 @@ def run_dispatch(
         extra_blocked,
         unavailable_robot_ids,
         locked_task_robot_ids,
+        delayed_blocked,
+        delayed_block_time,
+        delayed_unavailable_robot_ids,
+        delayed_unavailable_time,
     )
     failure_reasons = {task_id: detail.reason for task_id, detail in failure_details.items()}
     replan_time_ms = round((time.perf_counter() - start_time) * 1000, 2)

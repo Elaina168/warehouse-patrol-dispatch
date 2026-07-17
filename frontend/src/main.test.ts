@@ -241,6 +241,65 @@ describe("robot task capabilities", () => {
     expect(buildRandomGeneratedTask([], 8, scenario, 1, reservedStates)).toBeNull();
   });
 
+  it("returns null for a delivery-only fleet without capacity for generated demand", () => {
+    const scenario = {
+      ...buildWarehouseGeneratorScenario(),
+      robots: [{
+        id: "R1",
+        name: "零载重配送机器人",
+        start: [0, 0] as [number, number],
+        battery: 90,
+        load: 0,
+        capabilities: ["delivery"] as TaskType[]
+      }]
+    };
+
+    expect(supportedTaskTypes(scenario.robots)).toEqual(new Set());
+    expect(buildRandomGeneratedTask([], 8, scenario, 1, buildWarehouseShelfStates())).toBeNull();
+  });
+
+  it("enables random delivery only when a mixed fleet has a delivery robot with sufficient load", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const zeroLoadFleet = [
+      {
+        id: "R-DELIVERY",
+        name: "零载重配送机器人",
+        start: [0, 0] as [number, number],
+        battery: 90,
+        load: 0,
+        capabilities: ["delivery"] as TaskType[]
+      },
+      {
+        id: "R-INSPECTION",
+        name: "巡检机器人",
+        start: [1, 0] as [number, number],
+        battery: 90,
+        load: 0,
+        capabilities: ["inspection"] as TaskType[]
+      }
+    ];
+    const capableFleet = zeroLoadFleet.map((robot) => (
+      robot.id === "R-DELIVERY" ? { ...robot, load: 1 } : robot
+    ));
+
+    expect(supportedTaskTypes(zeroLoadFleet)).toEqual(new Set(["inspection"]));
+    expect(buildRandomGeneratedTask(
+      [],
+      8,
+      { ...scenario, robots: zeroLoadFleet },
+      1,
+      buildWarehouseShelfStates()
+    )?.type).toBe("inspection");
+    expect(supportedTaskTypes(capableFleet)).toEqual(new Set(["delivery", "inspection"]));
+    expect(buildRandomGeneratedTask(
+      [],
+      8,
+      { ...scenario, robots: capableFleet },
+      1,
+      buildWarehouseShelfStates()
+    )?.type).toBe("delivery");
+  });
+
   it("generates only inspection for an inspection-only fleet", () => {
     const scenario = {
       ...buildWarehouseGeneratorScenario(),

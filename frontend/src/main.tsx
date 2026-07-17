@@ -2242,7 +2242,9 @@ export function robotCapabilityLabels(robot: Robot): string[] {
 export function supportedTaskTypes(robots: Robot[]): Set<TaskType> {
   const taskTypes = new Set<TaskType>();
   for (const robot of robots) {
-    for (const taskType of robotTaskTypes(robot)) taskTypes.add(taskType);
+    for (const taskType of robotTaskTypes(robot)) {
+      if (taskType !== "delivery" || robot.load >= 1) taskTypes.add(taskType);
+    }
   }
   return taskTypes;
 }

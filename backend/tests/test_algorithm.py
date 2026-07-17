@@ -327,6 +327,140 @@ def test_dispatch_future_dynamic_task_path_avoids_dynamic_block_after_trigger() 
     assert "DYN-BLOCK" not in payload["failureReasons"]
 
 
+def test_dispatch_future_dynamic_failure_reports_compatible_robot_restore_target() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "dispatch-future-compatible-robot-failure-detail",
+        "name": "dispatch-future-compatible-robot-failure-detail",
+        "description": "future failure detail should identify the compatible robot without affecting base work",
+        "width": 3,
+        "height": 1,
+        "obstacles": [],
+        "zones": {"warehouse": [[0, 0]], "inspection": [[1, 0]], "delivery": []},
+        "robots": [
+            {
+                "id": "R-CAPABLE",
+                "name": "R-CAPABLE",
+                "start": [0, 0],
+                "battery": 90,
+                "load": 1,
+                "capabilities": ["emergency"],
+            },
+            {
+                "id": "R-BASE",
+                "name": "R-BASE",
+                "start": [2, 0],
+                "battery": 90,
+                "load": 1,
+                "capabilities": ["inspection"],
+            },
+        ],
+        "tasks": [
+            {
+                "id": "BASE",
+                "type": "inspection",
+                "title": "BASE",
+                "priority": 2,
+                "targets": [[1, 0]],
+            },
+        ],
+        "dynamic": {
+            "triggerTime": 5,
+            "blockedCells": [],
+            "failedRobots": ["R-CAPABLE"],
+            "tasks": [
+                {
+                    "id": "DYN-FAIL",
+                    "type": "emergency",
+                    "title": "DYN-FAIL",
+                    "priority": 5,
+                    "target": [2, 0],
+                },
+            ],
+        },
+    }
+
+    response = client.post(
+        "/api/dispatch",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": True}},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assigned_task_ids = {
+        task["id"]
+        for assignment in payload["assignments"]
+        for task in assignment["tasks"]
+    }
+    dynamic_task = next(task for task in payload["tasks"] if task["id"] == "DYN-FAIL")
+    detail = payload["failureDetails"]["DYN-FAIL"]
+    assert "BASE" in assigned_task_ids
+    assert "BASE" not in payload["failureDetails"]
+    assert dynamic_task["releaseTime"] == 5
+    assert payload["dynamicTriggerTime"] == 5
+    assert payload["unavailableRobotIds"] == []
+    assert detail["category"] == "temporary"
+    assert detail["recoveryAction"] == "restoreRobot"
+    assert detail["blockingCells"] == []
+    assert detail["blockingRobotIds"] == ["R-CAPABLE"]
+
+
+def test_dispatch_future_dynamic_block_reports_clearable_single_corridor() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "dispatch-future-block-failure-detail",
+        "name": "dispatch-future-block-failure-detail",
+        "description": "future single-corridor block should remain a clearable failure",
+        "width": 3,
+        "height": 1,
+        "obstacles": [],
+        "zones": {"warehouse": [[0, 0]], "inspection": [[2, 0]], "delivery": []},
+        "robots": [
+            {
+                "id": "R1",
+                "name": "R1",
+                "start": [0, 0],
+                "battery": 90,
+                "load": 1,
+                "capabilities": ["inspection"],
+            },
+        ],
+        "tasks": [],
+        "dynamic": {
+            "triggerTime": 5,
+            "blockedCells": [[1, 0]],
+            "failedRobots": [],
+            "tasks": [
+                {
+                    "id": "DYN-BLOCKED",
+                    "type": "inspection",
+                    "title": "DYN-BLOCKED",
+                    "priority": 3,
+                    "releaseTime": 0,
+                    "targets": [[2, 0]],
+                },
+            ],
+        },
+    }
+
+    response = client.post(
+        "/api/dispatch",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": True}},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    dynamic_task = next(task for task in payload["tasks"] if task["id"] == "DYN-BLOCKED")
+    detail = payload["failureDetails"]["DYN-BLOCKED"]
+    assert dynamic_task["releaseTime"] == 5
+    assert payload["dynamicTriggerTime"] == 5
+    assert payload["extraBlocked"] == []
+    assert detail["category"] == "temporary"
+    assert detail["recoveryAction"] == "clearBlockedCells"
+    assert detail["blockingCells"] == [[1, 0]]
+    assert detail["blockingRobotIds"] == []
+
+
 def test_dispatch_assignment_balances_clustered_tasks() -> None:
     client = TestClient(app)
     scenario = {
@@ -1342,7 +1476,7 @@ def test_dispatch_only_reports_failed_type_compatible_robot_as_restore_target() 
     assert detail.blockingRobotIds == ["R-CAPABLE"]
 
 
-def test_dispatch_relaxes_lock_when_locked_robot_has_wrong_task_type() -> None:
+def test_dispatch_reassigns_task_when_locked_robot_has_wrong_task_type() -> None:
     scenario = Scenario.model_validate(
         {
             "id": "temporary-incompatible-task-type-lock",
@@ -1389,14 +1523,14 @@ def test_dispatch_relaxes_lock_when_locked_robot_has_wrong_task_type() -> None:
         locked_task_robot_ids={"EMERGENCY": "R-INCOMPATIBLE"},
     )
 
-    detail = result.failureDetails["EMERGENCY"]
-    assert result.failureReasons["EMERGENCY"] == (
-        "任务锁定机器人 R-INCOMPATIBLE 不兼容任务类型 emergency，释放锁定后可改派"
+    assignment = next(
+        assignment
+        for assignment in result.assignments
+        if any(task.id == "EMERGENCY" for task in assignment.tasks)
     )
-    assert detail.category == "temporary"
-    assert detail.recoveryAction == "relaxLocksOrReplan"
-    assert detail.blockingCells == []
-    assert detail.blockingRobotIds == []
+    assert assignment.robotId == "R-CAPABLE"
+    assert result.failureReasons == {}
+    assert result.failureDetails == {}
 
 
 def test_dispatch_reports_failed_alternative_before_relaxing_incompatible_task_type_lock() -> None:
@@ -1787,7 +1921,7 @@ def test_dispatch_offers_clear_block_or_restore_when_active_charge_route_is_bloc
     assert detail.blockingRobotIds == ["R-FAILED"]
 
 
-def test_dispatch_marks_incapable_locked_robot_as_temporary_recovery() -> None:
+def test_dispatch_reassigns_delivery_when_locked_robot_has_insufficient_load() -> None:
     scenario = Scenario.model_validate(
         {
             "id": "temporary-incapable-lock",
@@ -1831,13 +1965,14 @@ def test_dispatch_marks_incapable_locked_robot_as_temporary_recovery() -> None:
         locked_task_robot_ids={"LOAD": "R1"},
     )
 
-    assert result.metrics.assignedTaskCount == 0
-    assert result.metrics.failureCount == 1
-    assert result.failureReasons["LOAD"] == "任务锁定机器人 R1 不满足载重 2，释放锁定后可改派"
-    assert result.failureDetails["LOAD"].category == "temporary"
-    assert result.failureDetails["LOAD"].recoveryAction == "relaxLocksOrReplan"
-    assert result.failureDetails["LOAD"].blockingCells == []
-    assert result.failureDetails["LOAD"].blockingRobotIds == []
+    assignment = next(
+        assignment
+        for assignment in result.assignments
+        if any(task.id == "LOAD" for task in assignment.tasks)
+    )
+    assert assignment.robotId == "R2"
+    assert result.failureReasons == {}
+    assert result.failureDetails == {}
 
 
 def test_dispatch_marks_reachable_alternative_robot_as_lock_replan_recovery() -> None:
