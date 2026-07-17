@@ -1399,6 +1399,276 @@ def test_dispatch_relaxes_lock_when_locked_robot_has_wrong_task_type() -> None:
     assert detail.blockingRobotIds == []
 
 
+def test_dispatch_reports_failed_alternative_before_relaxing_incompatible_task_type_lock() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "failed-alternative-for-incompatible-lock",
+            "name": "failed-alternative-for-incompatible-lock",
+            "description": "the compatible alternative must be restored before the invalid lock can be relaxed",
+            "width": 3,
+            "height": 1,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+            "robots": [
+                {
+                    "id": "R-LOCKED",
+                    "name": "R-LOCKED",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+                {
+                    "id": "R-CAPABLE",
+                    "name": "R-CAPABLE",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 1,
+                    "capabilities": ["emergency"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "EMERGENCY",
+                    "type": "emergency",
+                    "title": "EMERGENCY",
+                    "priority": 5,
+                    "target": [2, 0],
+                },
+            ],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": ["R-CAPABLE"], "tasks": []},
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=True),
+        locked_task_robot_ids={"EMERGENCY": "R-LOCKED"},
+    )
+
+    detail = result.failureDetails["EMERGENCY"]
+    assert result.failureReasons["EMERGENCY"] == "没有可用机器人"
+    assert detail.category == "temporary"
+    assert detail.recoveryAction == "restoreRobot"
+    assert detail.blockingCells == []
+    assert detail.blockingRobotIds == ["R-CAPABLE"]
+
+
+def test_dispatch_reports_blocked_alternative_before_relaxing_insufficient_load_lock() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "blocked-alternative-for-insufficient-load-lock",
+            "name": "blocked-alternative-for-insufficient-load-lock",
+            "description": "the capable delivery alternative is blocked at runtime",
+            "width": 3,
+            "height": 1,
+            "obstacles": [],
+            "zones": {"warehouse": [[0, 0]], "inspection": [], "delivery": [[2, 0]], "charging": []},
+            "robots": [
+                {
+                    "id": "R-LOCKED",
+                    "name": "R-LOCKED",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 1,
+                    "capabilities": ["delivery"],
+                },
+                {
+                    "id": "R-CAPABLE",
+                    "name": "R-CAPABLE",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 2,
+                    "capabilities": ["delivery"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "DELIVERY",
+                    "type": "delivery",
+                    "title": "DELIVERY",
+                    "priority": 2,
+                    "pickup": [0, 0],
+                    "dropoff": [2, 0],
+                    "demand": 2,
+                },
+            ],
+            "dynamic": {"triggerTime": 0, "blockedCells": [[1, 0]], "failedRobots": [], "tasks": []},
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=True),
+        locked_task_robot_ids={"DELIVERY": "R-LOCKED"},
+    )
+
+    detail = result.failureDetails["DELIVERY"]
+    assert result.failureReasons["DELIVERY"] == "所有候选机器人到剩余目标不可达，当前动态封锁 1 个单元"
+    assert detail.category == "temporary"
+    assert detail.recoveryAction == "clearBlockedCells"
+    assert detail.blockingCells == [(1, 0)]
+    assert detail.blockingRobotIds == []
+
+
+def test_dispatch_reports_static_unreachable_alternative_before_relaxing_incompatible_lock() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "static-alternative-for-incompatible-lock",
+            "name": "static-alternative-for-incompatible-lock",
+            "description": "the compatible alternative is separated by a fixed wall",
+            "width": 3,
+            "height": 2,
+            "obstacles": [[1, 0], [1, 1]],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+            "robots": [
+                {
+                    "id": "R-LOCKED",
+                    "name": "R-LOCKED",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+                {
+                    "id": "R-CAPABLE",
+                    "name": "R-CAPABLE",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 1,
+                    "capabilities": ["emergency"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "EMERGENCY",
+                    "type": "emergency",
+                    "title": "EMERGENCY",
+                    "priority": 5,
+                    "target": [2, 0],
+                },
+            ],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        locked_task_robot_ids={"EMERGENCY": "R-LOCKED"},
+    )
+
+    detail = result.failureDetails["EMERGENCY"]
+    assert result.failureReasons["EMERGENCY"] == "所有候选机器人到剩余目标不可达"
+    assert detail.category == "permanent"
+    assert detail.recoveryAction == "fixMapOrTaskTarget"
+    assert detail.blockingCells == []
+    assert detail.blockingRobotIds == []
+
+
+def test_dispatch_does_not_relax_lock_for_battery_infeasible_active_alternative() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "battery-infeasible-active-alternative",
+            "name": "battery-infeasible-active-alternative",
+            "description": "the geometrically reachable alternative cannot satisfy the battery constraint",
+            "width": 3,
+            "height": 1,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+            "robots": [
+                {
+                    "id": "R-LOCKED",
+                    "name": "R-LOCKED",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+                {
+                    "id": "R-CAPABLE",
+                    "name": "R-CAPABLE",
+                    "start": [0, 0],
+                    "battery": 1,
+                    "batteryCapacity": 1,
+                    "load": 1,
+                    "capabilities": ["emergency"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "EMERGENCY",
+                    "type": "emergency",
+                    "title": "EMERGENCY",
+                    "priority": 5,
+                    "target": [2, 0],
+                },
+            ],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        locked_task_robot_ids={"EMERGENCY": "R-LOCKED"},
+    )
+
+    detail = result.failureDetails["EMERGENCY"]
+    assert result.failureReasons["EMERGENCY"] == "剩余电量不足且无可达充电桩"
+    assert detail.category == "permanent"
+    assert detail.recoveryAction == "fixMapOrTaskTarget"
+    assert detail.blockingCells == []
+    assert detail.blockingRobotIds == []
+
+
+def test_dispatch_does_not_restore_failed_robot_when_battery_remains_infeasible() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "battery-infeasible-failed-robot",
+            "name": "battery-infeasible-failed-robot",
+            "description": "restoring the failed robot does not replenish its battery",
+            "width": 3,
+            "height": 1,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+            "robots": [
+                {
+                    "id": "R-CAPABLE",
+                    "name": "R-CAPABLE",
+                    "start": [0, 0],
+                    "battery": 1,
+                    "batteryCapacity": 1,
+                    "load": 1,
+                    "capabilities": ["emergency"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "EMERGENCY",
+                    "type": "emergency",
+                    "title": "EMERGENCY",
+                    "priority": 5,
+                    "target": [2, 0],
+                },
+            ],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": ["R-CAPABLE"], "tasks": []},
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=True),
+    )
+
+    detail = result.failureDetails["EMERGENCY"]
+    assert result.failureReasons["EMERGENCY"] == "剩余电量不足且无可达充电桩"
+    assert detail.category == "permanent"
+    assert detail.recoveryAction == "fixMapOrTaskTarget"
+    assert detail.blockingCells == []
+    assert detail.blockingRobotIds == []
+
+
 def test_dispatch_marks_incapable_locked_robot_as_temporary_recovery() -> None:
     scenario = Scenario.model_validate(
         {

@@ -1232,7 +1232,7 @@ def reachable_unlocked_active_robot_ids(
         for robot in active_robots
         if robot.id != locked_robot_id
         and robot_can_handle_task(robot, task)
-        and math.isfinite(task_distance(scenario, robot.start, task, extra_blocked))
+        and task_charge_decision(scenario, robot, robot.start, robot.battery, task, extra_blocked) is not None
     ]
 
 
@@ -1275,35 +1275,68 @@ def task_failure_reason(
             locked_robot_id,
             extra_blocked,
         )
-        if locked_robot is not None and not robot_supports_task_type(locked_robot, task):
-            if reachable_alternatives:
+        locked_robot_is_fully_capable = locked_robot is not None and robot_can_handle_task(locked_robot, task)
+        if not locked_robot_is_fully_capable:
+            if locked_robot is not None and not robot_supports_task_type(locked_robot, task) and reachable_alternatives:
                 return f"任务锁定机器人 {locked_robot_id} 不兼容任务类型 {task.type}，释放锁定后可改派"
-            return f"任务锁定机器人 {locked_robot_id} 不兼容任务类型 {task.type}"
-        if locked_robot is not None and not robot_has_required_load(locked_robot, task):
-            demand = task.demand or 1
-            if reachable_alternatives:
+            if locked_robot is not None and not robot_has_required_load(locked_robot, task) and reachable_alternatives:
+                demand = task.demand or 1
                 return f"任务锁定机器人 {locked_robot_id} 不满足载重 {demand}，释放锁定后可改派"
-            return f"没有可用机器人满足载重 {demand}"
-        if locked_robot_id in unavailable:
+        elif locked_robot_id in unavailable:
             if reachable_alternatives:
                 return f"任务锁定机器人 {locked_robot_id} 已不可用，释放锁定后可改派"
-            if locked_robot is not None and not math.isfinite(
-                task_distance(scenario, locked_robot.start, task, extra_blocked)
-            ):
+            if locked_robot is not None and task_charge_decision(
+                scenario,
+                locked_robot,
+                locked_robot.start,
+                locked_robot.battery,
+                task,
+                extra_blocked,
+            ) is None:
+                if math.isfinite(task_distance(scenario, locked_robot.start, task, extra_blocked)):
+                    battery_reachable_without_blocked = task_charge_decision(
+                        scenario,
+                        locked_robot,
+                        locked_robot.start,
+                        locked_robot.battery,
+                        task,
+                        [],
+                    ) is not None
+                    if extra_blocked and battery_reachable_without_blocked:
+                        return f"通往充电桩的路线被动态封锁，当前动态封锁 {len(extra_blocked)} 个单元"
+                    if scenario.zones.charging:
+                        return "电池容量不足以完成任务并到达充电桩"
+                    return "剩余电量不足且无可达充电桩"
                 reachable_without_blocked = math.isfinite(task_distance(scenario, locked_robot.start, task, []))
                 if extra_blocked and reachable_without_blocked:
                     return f"所有候选机器人到剩余目标不可达，当前动态封锁 {len(extra_blocked)} 个单元"
                 return "所有候选机器人到剩余目标不可达"
             return f"任务锁定机器人 {locked_robot_id} 已不可用"
-        candidate_robots = [robot for robot in capable_active_robots if robot.id == locked_robot_id]
-        if not candidate_robots:
-            return f"任务锁定机器人 {locked_robot_id} 不在可用机器人列表"
+        else:
+            candidate_robots = [robot for robot in capable_active_robots if robot.id == locked_robot_id]
+            if not candidate_robots:
+                return f"任务锁定机器人 {locked_robot_id} 不在可用机器人列表"
 
     if not candidate_robots:
-        if capable_unavailable_robots and not any(
-            math.isfinite(task_distance(scenario, robot.start, task, extra_blocked))
-            for robot in capable_unavailable_robots
-        ):
+        if capable_unavailable_robots:
+            if any(
+                task_charge_decision(scenario, robot, robot.start, robot.battery, task, extra_blocked) is not None
+                for robot in capable_unavailable_robots
+            ):
+                return "没有可用机器人"
+            if any(
+                math.isfinite(task_distance(scenario, robot.start, task, extra_blocked))
+                for robot in capable_unavailable_robots
+            ):
+                battery_reachable_without_blocked = any(
+                    task_charge_decision(scenario, robot, robot.start, robot.battery, task, []) is not None
+                    for robot in capable_unavailable_robots
+                )
+                if extra_blocked and battery_reachable_without_blocked:
+                    return f"通往充电桩的路线被动态封锁，当前动态封锁 {len(extra_blocked)} 个单元"
+                if scenario.zones.charging:
+                    return "电池容量不足以完成任务并到达充电桩"
+                return "剩余电量不足且无可达充电桩"
             blocked_count = len(extra_blocked)
             reachable_without_blocked = any(
                 math.isfinite(task_distance(scenario, robot.start, task, []))
@@ -1478,12 +1511,12 @@ def task_recovery_classification(
             locked_robot_id,
             extra_blocked,
         )
-        if locked_robot not in fully_capable:
+        locked_robot_is_fully_capable = locked_robot is not None and robot_can_handle_task(locked_robot, task)
+        if reachable_alternatives and (not locked_robot_is_fully_capable or locked_robot_id in unavailable):
             return "temporary", "relaxLocksOrReplan", [], []
-        if locked_robot_id in unavailable and reachable_alternatives:
-            return "temporary", "relaxLocksOrReplan", [], []
-        scoped_active_robots = [robot for robot in scoped_active_robots if robot.id == locked_robot_id]
-        scoped_unavailable_robots = [robot for robot in scoped_unavailable_robots if robot.id == locked_robot_id]
+        if locked_robot_is_fully_capable:
+            scoped_active_robots = [robot for robot in scoped_active_robots if robot.id == locked_robot_id]
+            scoped_unavailable_robots = [robot for robot in scoped_unavailable_robots if robot.id == locked_robot_id]
 
     if scoped_active_robots and not any(
         task_charge_decision(scenario, robot, robot.start, robot.battery, task, extra_blocked) is not None
@@ -1512,9 +1545,10 @@ def task_recovery_classification(
         return "temporary", "relaxLocksOrReplan", [], []
 
     active_without_blocked = any(
-        math.isfinite(task_distance(scenario, robot.start, task, [])) for robot in scoped_active_robots
+        task_charge_decision(scenario, robot, robot.start, robot.battery, task, []) is not None
+        for robot in scoped_active_robots
     )
-    active_recovering_blocked_cells = recovering_blocked_cells(
+    active_recovering_blocked_cells = recovering_charge_blocked_cells(
         scenario,
         task,
         scoped_active_robots,
@@ -1523,12 +1557,12 @@ def task_recovery_classification(
     unavailable_with_blocked = [
         robot.id
         for robot in scoped_unavailable_robots
-        if math.isfinite(task_distance(scenario, robot.start, task, extra_blocked))
+        if task_charge_decision(scenario, robot, robot.start, robot.battery, task, extra_blocked) is not None
     ]
     unavailable_without_blocked = [
         robot.id
         for robot in scoped_unavailable_robots
-        if math.isfinite(task_distance(scenario, robot.start, task, []))
+        if task_charge_decision(scenario, robot, robot.start, robot.battery, task, []) is not None
     ]
 
     if active_without_blocked and unavailable_with_blocked and extra_blocked:
@@ -1538,7 +1572,7 @@ def task_recovery_classification(
     if unavailable_with_blocked:
         return "temporary", "restoreRobot", [], unavailable_with_blocked
     if unavailable_without_blocked and extra_blocked:
-        unavailable_recovering_blocked_cells = recovering_blocked_cells(
+        unavailable_recovering_blocked_cells = recovering_charge_blocked_cells(
             scenario,
             task,
             scoped_unavailable_robots,
@@ -1568,34 +1602,18 @@ def recovering_charge_blocked_cells(
     if cells:
         return cells
 
-    if any(task_charge_decision(scenario, robot, robot.start, robot.battery, task, []) is not None for robot in robots):
-        return extra_blocked
-    return []
-
-
-def recovering_blocked_cells(
-    scenario: Scenario,
-    task: Task,
-    robots: list[Robot],
-    extra_blocked: list[Cell],
-) -> list[Cell]:
-    if not extra_blocked:
+    if not any(
+        task_charge_decision(scenario, robot, robot.start, robot.battery, task, []) is not None
+        for robot in robots
+    ):
         return []
-
-    cells: list[Cell] = []
-    for blocked_cell in extra_blocked:
-        remaining_blocked = [cell for cell in extra_blocked if cell != blocked_cell]
-        if any(math.isfinite(task_distance(scenario, robot.start, task, remaining_blocked)) for robot in robots):
-            cells.append(blocked_cell)
-    if cells:
-        return cells
-
-    if not any(math.isfinite(task_distance(scenario, robot.start, task, [])) for robot in robots):
-        return extra_blocked
 
     joint_cells: list[Cell] = []
     for blocked_cell in extra_blocked:
-        if not any(math.isfinite(task_distance(scenario, robot.start, task, [blocked_cell])) for robot in robots):
+        if not any(
+            task_charge_decision(scenario, robot, robot.start, robot.battery, task, [blocked_cell]) is not None
+            for robot in robots
+        ):
             joint_cells.append(blocked_cell)
     return joint_cells or extra_blocked
 
