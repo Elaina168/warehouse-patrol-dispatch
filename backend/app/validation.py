@@ -18,9 +18,9 @@ def validate_scenario(scenario: Scenario, options: DispatchOptions) -> list[str]
     errors.extend(_dynamic_failed_robot_errors(scenario))
     errors.extend(_duplicate_errors("任务 ID", [task.id for task in _all_tasks(scenario)]))
     errors.extend(_duplicate_errors("障碍/封锁坐标", [cell_key(cell) for cell in blocked_cells]))
-    errors.extend(_shelf_errors(scenario, options))
+    errors.extend(_shelf_errors(scenario))
     errors.extend(_cell_bounds_errors(scenario))
-    errors.extend(_blocked_point_errors(scenario, options))
+    errors.extend(_blocked_point_errors(scenario))
     errors.extend(_reachability_errors(scenario, options))
     errors.extend(_shelf_inventory_errors(scenario))
 
@@ -46,17 +46,12 @@ def _dynamic_failed_robot_errors(scenario: Scenario) -> list[str]:
     ]
 
 
-def _shelf_errors(scenario: Scenario, options: DispatchOptions) -> list[str]:
+def _shelf_errors(scenario: Scenario) -> list[str]:
     errors: list[str] = []
     obstacle_keys = {cell_key(cell) for cell in scenario.obstacles}
     shelf_ids: set[str] = set()
     shelf_cells: set[str] = set()
     service_cells: set[str] = set()
-    active_dynamic_blocked = (
-        {cell_key(cell) for cell in scenario.dynamic.blockedCells}
-        if options.includeDynamic and scenario.dynamic.triggerTime == 0
-        else set()
-    )
     for shelf in scenario.shelves:
         shelf_key = cell_key(shelf.cell)
         service_key = cell_key(shelf.serviceCell)
@@ -72,8 +67,6 @@ def _shelf_errors(scenario: Scenario, options: DispatchOptions) -> list[str]:
             errors.append(f"货架作业格不相邻：{shelf.id}")
         if service_key in obstacle_keys:
             errors.append(f"货架作业格位于固定障碍：{shelf.id} {service_key}")
-        if service_key in active_dynamic_blocked:
-            errors.append(f"货架作业格位于当前生效的动态封锁：{shelf.id} {service_key}")
         shelf_ids.add(shelf.id)
         shelf_cells.add(shelf_key)
         service_cells.add(service_key)
@@ -102,21 +95,14 @@ def _cell_bounds_errors(scenario: Scenario) -> list[str]:
     return errors
 
 
-def _blocked_point_errors(scenario: Scenario, options: DispatchOptions) -> list[str]:
+def _blocked_point_errors(scenario: Scenario) -> list[str]:
     errors: list[str] = []
-    base_blocked = {cell_key(cell) for cell in scenario.obstacles}
-    if options.includeDynamic and scenario.dynamic.triggerTime == 0:
-        base_blocked |= {cell_key(cell) for cell in scenario.dynamic.blockedCells}
-    dynamic_blocked = {cell_key(cell) for cell in scenario.obstacles} | (
-        {cell_key(cell) for cell in scenario.dynamic.blockedCells}
-        if options.includeDynamic
-        else set()
-    )
+    fixed_blocked = {cell_key(cell) for cell in scenario.obstacles}
     for label, cell in _base_required_walkable_cells(scenario):
-        if cell_key(cell) in base_blocked:
+        if cell_key(cell) in fixed_blocked:
             errors.append(f"{label} 位于障碍或封锁单元：({cell[0]}, {cell[1]})")
     for label, cell in _dynamic_required_walkable_cells(scenario):
-        if cell_key(cell) in dynamic_blocked:
+        if cell_key(cell) in fixed_blocked:
             errors.append(f"{label} 位于障碍或封锁单元：({cell[0]}, {cell[1]})")
     return errors
 

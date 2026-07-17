@@ -401,6 +401,97 @@ def test_initial_dynamic_failure_and_block_remain_recoverable_for_capable_robot(
     assert result["failureDetails"]["D1"]["recoveryAction"] == "clearBlockedCellsAndRestoreRobot"
 
 
+def test_initial_dynamic_blocks_on_base_and_dynamic_task_targets_remain_recoverable() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "recoverable-blocked-task-targets",
+        "name": "recoverable-blocked-task-targets",
+        "description": "动态封锁直接落在任务目标时仍属于运行时恢复条件。",
+        "width": 3,
+        "height": 2,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [],
+            "inspection": [[1, 0], [2, 0]],
+            "delivery": [],
+            "charging": [],
+        },
+        "robots": [
+            {
+                "id": "R1",
+                "name": "巡检机器人",
+                "start": [0, 0],
+                "battery": 100,
+                "load": 1,
+                "capabilities": ["inspection"],
+            }
+        ],
+        "tasks": [
+            {
+                "id": "BASE-BLOCKED",
+                "type": "inspection",
+                "title": "基础目标动态封锁",
+                "priority": 2,
+                "targets": [[1, 0]],
+            }
+        ],
+        "dynamic": {
+            "triggerTime": 0,
+            "blockedCells": [[1, 0], [2, 0]],
+            "failedRobots": [],
+            "tasks": [
+                {
+                    "id": "DYNAMIC-BLOCKED",
+                    "type": "inspection",
+                    "title": "动态目标同事件封锁",
+                    "priority": 3,
+                    "targets": [[2, 0]],
+                }
+            ],
+        },
+    }
+
+    session_response = client.post(
+        "/api/sessions",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": True}},
+    )
+    dispatch_response = client.post(
+        "/api/dispatch",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": True}},
+    )
+
+    assert session_response.status_code == 200, session_response.json()
+    assert dispatch_response.status_code == 200, dispatch_response.json()
+    result = dispatch_response.json()
+    assert result["extraBlocked"] == [[1, 0], [2, 0]]
+    for task_id in ("BASE-BLOCKED", "DYNAMIC-BLOCKED"):
+        assert result["failureDetails"][task_id]["category"] == "temporary"
+        assert result["failureDetails"][task_id]["recoveryAction"] == "clearBlockedCells"
+
+
+def test_session_create_rejects_task_target_on_fixed_obstacle() -> None:
+    client = TestClient(app)
+    scenario = scenario_payload()
+    scenario["tasks"] = [
+        {
+            "id": "FIXED-BLOCKED",
+            "type": "inspection",
+            "title": "固定障碍目标",
+            "priority": 2,
+            "targets": [[2, 1]],
+        }
+    ]
+    scenario["dynamic"]["tasks"] = []
+
+    response = client.post(
+        "/api/sessions",
+        json={"scenario": scenario, "options": {"avoidConflicts": True, "includeDynamic": True}},
+    )
+
+    assert response.status_code == 422
+    assert "任务 FIXED-BLOCKED 目标 1 位于障碍或封锁单元：(2, 1)" in response.json()["detail"]
+
+
 def test_session_create_rejects_unreachable_task_target() -> None:
     client = TestClient(app)
     scenario = scenario_payload()
@@ -516,15 +607,35 @@ def test_session_create_rejects_shelf_service_cell_on_fixed_obstacle() -> None:
     assert "货架作业格位于固定障碍：S01 2,3" in response.json()["detail"]
 
 
-def test_session_create_rejects_shelf_service_cell_on_active_dynamic_block() -> None:
+def test_session_create_accepts_dynamically_blocked_shelf_service_cell_as_recoverable() -> None:
     scenario = shelf_scenario_payload()
     scenario["dynamic"]["triggerTime"] = 0
     scenario["dynamic"]["blockedCells"] = [[2, 1]]
+    scenario["tasks"] = [
+        {
+            "id": "IN-BLOCKED",
+            "type": "delivery",
+            "title": "动态封锁货架入库",
+            "priority": 2,
+            "pickup": [0, 0],
+            "dropoff": [2, 1],
+            "demand": 1,
+        }
+    ]
 
     response = create_shelf_session(scenario)
 
-    assert response.status_code == 422
-    assert "货架作业格位于当前生效的动态封锁：S01 2,1" in response.json()["detail"]
+    assert response.status_code == 200
+    tick_response = TestClient(app).post(
+        f"/api/sessions/{response.json()['sessionId']}/tick",
+        json={"currentTime": 1},
+    )
+    assert tick_response.status_code == 200
+    task_state = next(state for state in tick_response.json()["taskStates"] if state["taskId"] == "IN-BLOCKED")
+    assert task_state["status"] == "unassigned"
+    assert task_state["failureCategory"] == "temporary"
+    assert task_state["recoveryAction"] == "clearBlockedCells"
+    assert tick_response.json()["result"]["failureDetails"]["IN-BLOCKED"]["blockingCells"] == [[2, 1]]
 
 
 @pytest.mark.parametrize(
