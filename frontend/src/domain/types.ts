@@ -63,6 +63,7 @@ export type Robot = {
   batteryCapacity?: number;
   load: number;
   moveTicks?: number;
+  capabilities?: TaskType[];
 };
 
 export type DynamicEvent = {

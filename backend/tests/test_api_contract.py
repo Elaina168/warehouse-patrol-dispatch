@@ -235,6 +235,9 @@ def test_backend_recovery_action_schema_matches_dispatch_literals() -> None:
 def test_frontend_runtime_literal_unions_match_backend_schema() -> None:
     assert _frontend_string_literal_union("ShelfStatus") == set(get_args(schemas.ShelfStatus))
     assert _frontend_string_literal_union("TaskType") == _backend_field_string_literals(schemas.Task, "type")
+    assert _frontend_string_literal_union("TaskType") == _backend_string_literal_values(
+        get_args(schemas.Robot.model_fields["capabilities"].annotation)[0]
+    )
     assert _frontend_string_literal_union("ConflictType") == _backend_field_string_literals(schemas.Conflict, "type")
     assert _frontend_string_literal_union("RobotRuntimeStatus") == _backend_field_string_literals(
         schemas.RobotRuntimeState,
@@ -248,6 +251,11 @@ def test_frontend_runtime_literal_unions_match_backend_schema() -> None:
         schemas.TaskRuntimeState,
         "failureCategory",
     )
+
+
+def test_frontend_robot_capabilities_is_optional_when_backend_provides_a_default() -> None:
+    assert "capabilities" in _frontend_optional_fields("Robot")
+    assert "capabilities" in _backend_optional_fields(schemas.Robot)
 
 
 def test_openapi_session_routes_use_expected_request_models() -> None:

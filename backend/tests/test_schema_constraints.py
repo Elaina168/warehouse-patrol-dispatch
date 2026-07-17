@@ -1,7 +1,28 @@
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
+import pytest
 
 from backend.app.main import app
+from backend.app.schemas import Robot
 from backend.tests.helpers import scenario_payload
+
+
+def test_robot_capabilities_default_to_all_task_types() -> None:
+    robot = Robot(id="R1", name="R1", start=(0, 0), battery=100, load=1)
+    assert robot.capabilities == ["inspection", "delivery", "emergency"]
+
+
+def test_robot_capabilities_require_a_unique_nonempty_known_subset() -> None:
+    assert Robot(
+        id="R1", name="R1", start=(0, 0), battery=100, load=1,
+        capabilities=["inspection", "emergency"],
+    ).capabilities == ["inspection", "emergency"]
+    with pytest.raises(ValidationError):
+        Robot(id="R1", name="R1", start=(0, 0), battery=100, load=1, capabilities=[])
+    with pytest.raises(ValidationError):
+        Robot(id="R1", name="R1", start=(0, 0), battery=100, load=1, capabilities=["inspection", "inspection"])
+    with pytest.raises(ValidationError):
+        Robot(id="R1", name="R1", start=(0, 0), battery=100, load=1, capabilities=["unknown"])
 
 
 def test_request_models_reject_negative_time_and_non_positive_dimensions() -> None:

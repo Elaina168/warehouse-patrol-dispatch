@@ -7,6 +7,8 @@ NonNegativeInt = Annotated[int, Field(ge=0)]
 PositiveInt = Annotated[int, Field(gt=0)]
 PriorityInt = Annotated[int, Field(ge=0, le=5)]
 AssignmentReplanWindowInt = Annotated[int, Field(ge=0, le=120)]
+TaskType = Literal["inspection", "delivery", "emergency"]
+ALL_TASK_TYPES: tuple[TaskType, ...] = ("inspection", "delivery", "emergency")
 RecoveryAction = Literal[
     "addCapableRobotOrReduceDemand",
     "clearBlockedCells",
@@ -26,7 +28,7 @@ class ApiModel(BaseModel):
 
 class Task(ApiModel):
     id: str
-    type: Literal["inspection", "delivery", "emergency"]
+    type: TaskType
     title: str
     priority: PriorityInt
     releaseTime: NonNegativeInt | None = None
@@ -47,11 +49,14 @@ class Robot(ApiModel):
     batteryCapacity: PositiveInt = 100
     load: NonNegativeInt
     moveTicks: int = Field(default=1, ge=1, le=4)
+    capabilities: list[TaskType] = Field(default_factory=lambda: list(ALL_TASK_TYPES), min_length=1)
 
     @model_validator(mode="after")
     def validate_battery_capacity(self) -> "Robot":
         if self.battery > self.batteryCapacity:
             raise ValueError("battery must be <= batteryCapacity")
+        if len(set(self.capabilities)) != len(self.capabilities):
+            raise ValueError("robot capabilities must be unique")
         return self
 
 
