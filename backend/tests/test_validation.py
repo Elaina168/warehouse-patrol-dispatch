@@ -333,32 +333,72 @@ def test_session_create_allows_base_tasks_before_future_dynamic_failure() -> Non
     assert payload["result"]["unavailableRobotIds"] == []
 
 
-def test_session_create_rejects_base_task_when_dynamic_failure_is_initially_active() -> None:
+def test_initial_dynamic_failure_and_block_remain_recoverable_for_capable_robot() -> None:
     client = TestClient(app)
-    scenario = scenario_payload()
-    scenario["robots"] = [
-        {"id": "R1", "name": "测试机器人", "start": [0, 0], "battery": 90, "load": 2}
-    ]
-    scenario["tasks"] = [
-        {"id": "T1", "type": "inspection", "title": "初始故障巡检", "priority": 2, "targets": [[1, 0]]}
-    ]
-    scenario["dynamic"] = {
-        "triggerTime": 0,
-        "blockedCells": [],
-        "failedRobots": ["R1"],
-        "tasks": [],
+    scenario = {
+        "id": "recoverable-initial-dynamic-state",
+        "name": "recoverable-initial-dynamic-state",
+        "description": "初始故障与动态封锁属于可恢复运行时状态。",
+        "width": 3,
+        "height": 1,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [[2, 0]],
+            "inspection": [],
+            "delivery": [[0, 0]],
+            "charging": [],
+        },
+        "robots": [
+            {
+                "id": "R1",
+                "name": "配送机器人",
+                "start": [0, 0],
+                "battery": 90,
+                "load": 2,
+                "capabilities": ["delivery"],
+            }
+        ],
+        "tasks": [
+            {
+                "id": "D1",
+                "type": "delivery",
+                "title": "可恢复配送",
+                "priority": 2,
+                "pickup": [2, 0],
+                "dropoff": [0, 0],
+                "demand": 2,
+            }
+        ],
+        "dynamic": {
+            "triggerTime": 0,
+            "blockedCells": [[1, 0]],
+            "failedRobots": ["R1"],
+            "tasks": [],
+        },
     }
 
-    response = client.post(
+    session_response = client.post(
         "/api/sessions",
         json={
             "scenario": scenario,
             "options": {"avoidConflicts": True, "includeDynamic": True},
         },
     )
+    dispatch_response = client.post(
+        "/api/dispatch",
+        json={
+            "scenario": scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": True},
+        },
+    )
 
-    assert response.status_code == 422
-    assert "没有可用机器人执行任务" in response.json()["detail"]
+    assert session_response.status_code == 200
+    assert dispatch_response.status_code == 200
+    result = dispatch_response.json()
+    assert result["unavailableRobotIds"] == ["R1"]
+    assert result["extraBlocked"] == [[1, 0]]
+    assert result["failureDetails"]["D1"]["category"] == "temporary"
+    assert result["failureDetails"]["D1"]["recoveryAction"] == "clearBlockedCellsAndRestoreRobot"
 
 
 def test_session_create_rejects_unreachable_task_target() -> None:

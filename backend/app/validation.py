@@ -124,20 +124,15 @@ def _blocked_point_errors(scenario: Scenario, options: DispatchOptions) -> list[
 def _reachability_errors(scenario: Scenario, options: DispatchOptions) -> list[str]:
     errors: list[str] = []
 
-    base_extra_blocked = scenario.dynamic.blockedCells if options.includeDynamic and scenario.dynamic.triggerTime == 0 else []
-    base_unavailable_robot_ids = (
-        set(scenario.dynamic.failedRobots)
-        if options.includeDynamic and scenario.dynamic.triggerTime == 0
-        else set()
-    )
-    errors.extend(_task_reachability_errors(scenario, scenario.tasks, base_extra_blocked, base_unavailable_robot_ids))
+    # 定义级可达性只检查固定地图和机器人静态资格；动态条件交由运行时失败恢复。
+    errors.extend(_task_reachability_errors(scenario, scenario.tasks, [], set()))
     if options.includeDynamic:
         errors.extend(
             _task_reachability_errors(
                 scenario,
                 scenario.dynamic.tasks,
-                scenario.dynamic.blockedCells,
-                set(scenario.dynamic.failedRobots),
+                [],
+                set(),
             )
         )
 
