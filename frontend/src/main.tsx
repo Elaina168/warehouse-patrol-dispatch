@@ -104,6 +104,38 @@ type MapContextMenuState = {
 
 type CellKeyLookup = Pick<ReadonlySet<string>, "has">;
 
+export type SessionRequestCoordinator = {
+  currentGeneration: () => number;
+  invalidate: () => number;
+  isCurrent: (generation: number) => boolean;
+  enqueue: <T>(request: () => Promise<T>) => Promise<T>;
+};
+
+export function createSessionRequestCoordinator(): SessionRequestCoordinator {
+  let generation = 0;
+  let requestTail: Promise<void> = Promise.resolve();
+
+  return {
+    currentGeneration: () => generation,
+    invalidate: () => {
+      generation += 1;
+      return generation;
+    },
+    isCurrent: (requestGeneration) => requestGeneration === generation,
+    enqueue: <T,>(request: () => Promise<T>) => {
+      const response = requestTail.then(
+        () => request(),
+        () => request()
+      );
+      requestTail = response.then(
+        () => undefined,
+        () => undefined
+      );
+      return response;
+    }
+  };
+}
+
 function App() {
   const [importedScenario, setImportedScenario] = useState<Scenario | null>(null);
   const [avoidConflicts, setAvoidConflicts] = useState(true);
@@ -136,6 +168,8 @@ function App() {
   const [mapContextMenu, setMapContextMenu] = useState<MapContextMenuState | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const randomTaskSequenceRef = useRef(0);
+  const sessionRequestCoordinatorRef = useRef(createSessionRequestCoordinator());
+  const sessionRequestCoordinator = sessionRequestCoordinatorRef.current;
 
   const scenario = importedScenario ?? scenarios[0];
 
@@ -240,6 +274,7 @@ function App() {
 
   useEffect(() => {
     const controller = new AbortController();
+    const requestGeneration = sessionRequestCoordinator.invalidate();
     setDispatchStatus("loading");
     setDispatchError(null);
     setSession(null);
@@ -267,10 +302,11 @@ function App() {
         return response.json() as Promise<SessionResult>;
       })
       .then((payload) => {
+        if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
         applySessionPayload(payload);
       })
       .catch((error: Error) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || !sessionRequestCoordinator.isCurrent(requestGeneration)) return;
         setApiStatus("offline");
         setDispatchStatus("error");
         setDispatchError(error.message);
@@ -421,29 +457,35 @@ function App() {
     if (!session || tickInFlight) return;
     if (targetTime < session.currentTime) return;
 
+    const requestGeneration = sessionRequestCoordinator.currentGeneration();
     setTickInFlight(true);
     setDispatchError(null);
     try {
-      const response = await fetch(`${API_BASE}/api/sessions/${session.sessionId}/tick`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ currentTime: targetTime })
-      });
+      const response = await sessionRequestCoordinator.enqueue(() =>
+        fetch(`${API_BASE}/api/sessions/${session.sessionId}/tick`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ currentTime: targetTime })
+        })
+      );
       if (!response.ok) throw await apiErrorFromResponse(response, "session tick failed");
       const payload = (await response.json()) as SessionResult;
+      if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
       applySessionPayload(payload);
     } catch (error) {
+      if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
       setPlaying(false);
       setApiStatus("offline");
       setDispatchStatus("error");
       setDispatchError(error instanceof Error ? error.message : "unknown error");
     } finally {
-      setTickInFlight(false);
+      if (sessionRequestCoordinator.isCurrent(requestGeneration)) setTickInFlight(false);
     }
   }
 
   async function resetCurrentSession() {
     setRouteHintsEnabled(false);
+    const requestGeneration = sessionRequestCoordinator.invalidate();
     if (!session) {
       setSessionResetKey((value) => value + 1);
       return;
@@ -458,9 +500,11 @@ function App() {
     setDispatchStatus("loading");
     setDispatchError(null);
     try {
-      const payload = await resetSession(API_BASE, session.sessionId);
+      const payload = await sessionRequestCoordinator.enqueue(() => resetSession(API_BASE, session.sessionId));
+      if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
       applySessionPayload(payload);
     } catch (error) {
+      if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
       setApiStatus("offline");
       setDispatchStatus("error");
       setDispatchError(error instanceof Error ? error.message : "unknown error");
@@ -468,15 +512,18 @@ function App() {
   }
 
   async function updateSession(request: () => Promise<Response>) {
+    const requestGeneration = sessionRequestCoordinator.currentGeneration();
     setDispatchStatus("loading");
     setDispatchError(null);
     try {
-      const response = await request();
-        if (!response.ok) throw await responseError(response, "session update failed");
-        const payload = (await response.json()) as SessionResult;
-        applySessionPayload(payload);
-        setRouteHintsEnabled(routeHintsAfterSessionUpdate);
+      const response = await sessionRequestCoordinator.enqueue(request);
+      if (!response.ok) throw await responseError(response, "session update failed");
+      const payload = (await response.json()) as SessionResult;
+      if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
+      applySessionPayload(payload);
+      setRouteHintsEnabled(routeHintsAfterSessionUpdate);
     } catch (error) {
+      if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
       setApiStatus("offline");
       setDispatchStatus("error");
       setDispatchError(error instanceof Error ? error.message : "unknown error");

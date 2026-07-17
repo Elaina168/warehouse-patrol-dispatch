@@ -48,6 +48,7 @@ import {
   parseScenario,
   parseCoordinateInput,
   createManualTaskForm,
+  createSessionRequestCoordinator,
   MapBoard,
   resetSessionConflictState,
   RIGHTBAR_EVENT_LOG_CLASS,
@@ -58,6 +59,44 @@ import {
 } from "./main";
 import { scenarios } from "./domain/scenarios";
 import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, ShelfRuntimeState, Task, TaskType } from "./domain/types";
+
+describe("session request coordination", () => {
+  it("runs reset after older mutations and rejects their stale responses", async () => {
+    const coordinator = createSessionRequestCoordinator();
+    let releaseOlderMutation: (() => void) | undefined;
+    const olderMutationBlocked = new Promise<void>((resolve) => {
+      releaseOlderMutation = resolve;
+    });
+    const executionOrder: string[] = [];
+    const appliedPayloads: string[] = [];
+    const olderGeneration = coordinator.currentGeneration();
+
+    const olderMutation = coordinator.enqueue(async () => {
+      executionOrder.push("older-start");
+      await olderMutationBlocked;
+      executionOrder.push("older-finish");
+      return "older-payload";
+    }).then((payload) => {
+      if (coordinator.isCurrent(olderGeneration)) appliedPayloads.push(payload);
+    });
+
+    const resetGeneration = coordinator.invalidate();
+    const reset = coordinator.enqueue(async () => {
+      executionOrder.push("reset");
+      return "reset-payload";
+    }).then((payload) => {
+      if (coordinator.isCurrent(resetGeneration)) appliedPayloads.push(payload);
+    });
+
+    await Promise.resolve();
+    expect(executionOrder).toEqual(["older-start"]);
+    releaseOlderMutation?.();
+    await Promise.all([olderMutation, reset]);
+
+    expect(executionOrder).toEqual(["older-start", "older-finish", "reset"]);
+    expect(appliedPayloads).toEqual(["reset-payload"]);
+  });
+});
 
 describe("robot charging runtime status contract", () => {
   it("declares toCharge and charging runtime statuses", () => {
