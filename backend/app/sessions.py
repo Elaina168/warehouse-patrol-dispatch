@@ -35,6 +35,7 @@ from backend.app.schemas import (
     AddTaskRequest,
     Assignment,
     Cell,
+    ChargingVisit,
     Conflict,
     CreateSessionRequest,
     DeleteSessionResult,
@@ -107,13 +108,19 @@ class DispatchSession:
     last_replan_time_ms: float | None = None
     last_safety_intervention: Conflict | None = None
     safety_hold_times: dict[str, set[int]] = field(default_factory=dict)
+    active_charging_visits: dict[str, ChargingVisit] = field(default_factory=dict)
+    enforce_execution_safety: bool = True
     last_result: DispatchResult | None = None
 
 
 _sessions: dict[str, DispatchSession] = {}
 
 
-def create_session(request: CreateSessionRequest) -> SessionResult:
+def create_session(
+    request: CreateSessionRequest,
+    *,
+    enforce_execution_safety: bool = True,
+) -> SessionResult:
     _cleanup_sessions()
     _require_initial_task_capacity(request.scenario)
     diagnostics = validate_scenario(request.scenario, request.options)
@@ -136,6 +143,7 @@ def create_session(request: CreateSessionRequest) -> SessionResult:
         robot_path_history={robot.id: [robot.start] for robot in request.scenario.robots},
         robot_travelled_distance={robot.id: 0 for robot in request.scenario.robots},
         robot_battery_levels={robot.id: robot.battery for robot in request.scenario.robots},
+        enforce_execution_safety=enforce_execution_safety,
     )
     _initialize_shelf_inventory(session)
     _sessions[session_id] = session
@@ -219,6 +227,21 @@ def add_blocked_cell(session_id: str, request: AddBlockRequest) -> SessionResult
     if _advance_runtime_event(session, current_time):
         _touch_session_if_time_changed(session, previous_time)
         return _build_result(session)
+    if not is_active_dynamic_block_request:
+        occupying_robot_id = next(
+            (
+                robot.id
+                for robot in session.scenario.robots
+                if session.robot_positions.get(robot.id, robot.start) == cell
+            ),
+            None,
+        )
+        if occupying_robot_id is not None:
+            _touch_session_if_time_changed(session, previous_time)
+            raise HTTPException(
+                status_code=409,
+                detail=f"封锁单元被机器人占用：{occupying_robot_id} ({cell[0]}, {cell[1]})",
+            )
     is_dynamic_blocked_cell = _is_scenario_dynamic_active(session) and cell in session.scenario.dynamic.blockedCells
     is_new_blocked_cell = cell not in session.runtime_blocked_cells and not is_dynamic_blocked_cell
     if is_new_blocked_cell:
@@ -374,7 +397,8 @@ def _advance_runtime_event(session: DispatchSession, current_time: int) -> bool:
         return False
     session.last_safety_intervention = None
     _ensure_planning_started(session)
-    return _advance_session(session, current_time)
+    _advance_session(session, current_time)
+    return session.current_time < current_time
 
 
 def _require_task_capacity(session: DispatchSession, incoming_count: int) -> None:
@@ -436,6 +460,7 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.last_replan_time_ms = None
     session.last_safety_intervention = None
     session.safety_hold_times.clear()
+    session.active_charging_visits.clear()
     session.last_result = None
     _initialize_shelf_inventory(session)
     _touch_session(session, updated=updated)
@@ -533,6 +558,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
                 apply_dynamic_constraints_at_start=True,
                 task_limit_per_robot=1,
                 replan_window_decision=replan_window_decision,
+                active_charging_visits=_relative_active_charging_visits(session),
             ),
             task_lookup,
             session.current_time,
@@ -704,6 +730,23 @@ def _build_effective_dispatch_input(session: DispatchSession) -> tuple[Scenario,
     return scenario, options, task_lookup
 
 
+def _relative_active_charging_visits(session: DispatchSession) -> dict[str, ChargingVisit]:
+    visits: dict[str, ChargingVisit] = {}
+    for robot_id, visit in session.active_charging_visits.items():
+        if not (visit.arrivalTime <= session.current_time < visit.completionTime):
+            continue
+        if session.robot_positions.get(robot_id) != visit.station:
+            continue
+        visits[robot_id] = visit.model_copy(
+            update={
+                "departureTime": 0,
+                "arrivalTime": 0,
+                "completionTime": visit.completionTime - session.current_time,
+            }
+        )
+    return visits
+
+
 def _first_execution_conflict(
     result: DispatchResult,
     current_time: int,
@@ -732,6 +775,10 @@ def _apply_result_through_time(
     result: DispatchResult,
     target_time: int,
 ) -> None:
+    for visit in result.chargingVisits:
+        if visit.arrivalTime <= session.current_time < visit.completionTime:
+            session.active_charging_visits[visit.robotId] = visit
+
     for robot in session.scenario.robots:
         path = result.paths.get(robot.id, [session.robot_positions.get(robot.id, robot.start)])
         history = session.robot_path_history.setdefault(robot.id, [robot.start])
@@ -750,9 +797,11 @@ def _apply_result_through_time(
                 if visit.departureTime + 1 == tick_time:
                     _record_session_event(session, tick_time, f"{robot.id} 前往充电桩")
                 if visit.arrivalTime == tick_time:
+                    session.active_charging_visits[robot.id] = visit
                     _record_session_event(session, tick_time, f"{robot.id} 开始充电")
                 if visit.completionTime == tick_time:
                     session.robot_battery_levels[robot.id] = robot.batteryCapacity
+                    session.active_charging_visits.pop(robot.id, None)
                     _record_session_event(session, tick_time, f"{robot.id} 完成充电")
         session.robot_positions[robot.id] = history[target_time]
 
@@ -849,7 +898,7 @@ def _advance_session(session: DispatchSession, target_time: int) -> bool:
     active_completion_time = _next_active_task_completion_time(session, result, target_time)
     safety_conflict = (
         _first_execution_conflict(result, session.current_time, target_time)
-        if session.options.avoidConflicts
+        if session.enforce_execution_safety and session.options.avoidConflicts
         else None
     )
     next_trigger_time = _first_crossed_time(
@@ -1073,16 +1122,34 @@ def _restore_absolute_result(
     conflicts = [conflict.model_copy(update={"time": conflict.time + current_time}) for conflict in result.conflicts]
     conflict_states = _build_conflict_states(conflicts, absolute_paths, current_time)
     event_log = [event.model_copy(update={"time": event.time + current_time}) for event in result.eventLog]
-    charging_visits = [
-        visit.model_copy(
-            update={
-                "departureTime": visit.departureTime + current_time,
-                "arrivalTime": visit.arrivalTime + current_time,
-                "completionTime": visit.completionTime + current_time,
-            }
+    charging_visits: list[ChargingVisit] = []
+    restored_active_robot_ids: set[str] = set()
+    for visit in result.chargingVisits:
+        active_visit = session.active_charging_visits.get(visit.robotId)
+        remaining_completion_time = (
+            active_visit.completionTime - current_time
+            if active_visit is not None
+            else None
         )
-        for visit in result.chargingVisits
-    ]
+        if (
+            active_visit is not None
+            and visit.robotId not in restored_active_robot_ids
+            and visit.station == active_visit.station
+            and visit.arrivalTime == 0
+            and visit.completionTime == remaining_completion_time
+        ):
+            charging_visits.append(active_visit)
+            restored_active_robot_ids.add(visit.robotId)
+            continue
+        charging_visits.append(
+            visit.model_copy(
+                update={
+                    "departureTime": visit.departureTime + current_time,
+                    "arrivalTime": visit.arrivalTime + current_time,
+                    "completionTime": visit.completionTime + current_time,
+                }
+            )
+        )
     dynamic_trigger_time = (
         result.dynamicTriggerTime + current_time if result.dynamicTriggerTime is not None else None
     )
@@ -1657,6 +1724,7 @@ def _release_locks_for_active_higher_priority_task(
         apply_dynamic_constraints_at_start=True,
         task_limit_per_robot=1,
         replan_window_decision=replan_window_decision,
+        active_charging_visits=_relative_active_charging_visits(session),
     )
     proposed_result = run_dispatch(
         scenario,
@@ -1665,6 +1733,7 @@ def _release_locks_for_active_higher_priority_task(
         apply_dynamic_constraints_at_start=True,
         task_limit_per_robot=1,
         replan_window_decision=replan_window_decision,
+        active_charging_visits=_relative_active_charging_visits(session),
     )
 
     if _preemption_plan_score(proposed_result, task.id) >= _preemption_plan_score(current_result, task.id):
@@ -1796,6 +1865,7 @@ def _preview_dispatch_result(session: DispatchSession) -> DispatchResult:
             apply_dynamic_constraints_at_start=True,
             task_limit_per_robot=1,
             replan_window_decision=replan_window_decision,
+            active_charging_visits=_relative_active_charging_visits(session),
         ),
         task_lookup,
         session.current_time,

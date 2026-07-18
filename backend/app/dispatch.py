@@ -598,6 +598,7 @@ def plan_robot_path(
     delayed_blocked: list[Cell] | None = None,
     delayed_block_time: int | None = None,
     charging_visits: list[ChargingVisit] | None = None,
+    active_charging_visit: ChargingVisit | None = None,
 ) -> tuple[list[Cell], bool]:
     path = [start]
     cursor = start
@@ -605,6 +606,15 @@ def plan_robot_path(
     charging_visits = charging_visits if charging_visits is not None else []
     distance_cache: DistanceCache = {}
     delayed_blocked = delayed_blocked or []
+    if (
+        active_charging_visit is not None
+        and active_charging_visit.station == start
+        and active_charging_visit.completionTime > 0
+    ):
+        for _ in range(active_charging_visit.completionTime):
+            path.append(cursor)
+        charging_visits.append(active_charging_visit)
+        battery = robot.batteryCapacity
     for task_index, task in enumerate(tasks):
         release_time = task_release_time(task)
         while len(path) - 1 < release_time:
@@ -891,11 +901,13 @@ def build_paths_for_order(
     planning_order: list[Robot],
     delayed_blocked: list[Cell] | None = None,
     delayed_block_time: int | None = None,
+    active_charging_visits: dict[str, ChargingVisit] | None = None,
 ) -> PathPlanningCandidate:
     reservations = Reservations()
     paths: dict[str, list[Cell]] = {}
     failures: list[str] = []
     all_charging_visits: list[ChargingVisit] = []
+    active_charging_visits = active_charging_visits or {}
     tasks_by_robot = {assignment.robotId: assignment.tasks for assignment in assignments}
     horizon_padding = max(12, scenario.width * scenario.height * 4)
 
@@ -936,6 +948,7 @@ def build_paths_for_order(
                 delayed_blocked,
                 delayed_block_time,
                 charging_visits,
+                active_charging_visits.get(robot.id),
             )
         if avoid_conflicts and assigned and not failed:
             path = append_parking_step(
@@ -994,6 +1007,7 @@ def build_paths(
     delayed_blocked: list[Cell] | None = None,
     delayed_block_time: int | None = None,
     include_charging_visits: bool = False,
+    active_charging_visits: dict[str, ChargingVisit] | None = None,
 ) -> tuple[dict[str, list[Cell]], list[str]] | tuple[dict[str, list[Cell]], list[str], list[ChargingVisit]]:
     locked_task_robot_ids = locked_task_robot_ids or {}
     tasks_by_robot = {assignment.robotId: assignment.tasks for assignment in assignments}
@@ -1016,6 +1030,7 @@ def build_paths(
             order,
             delayed_blocked,
             delayed_block_time,
+            active_charging_visits,
         )
         score = path_planning_candidate_score(candidate, assignments)
         if best_score is None or score < best_score:
@@ -1791,6 +1806,7 @@ def run_dispatch(
     apply_dynamic_constraints_at_start: bool | None = None,
     task_limit_per_robot: int | None = None,
     replan_window_decision: ReplanWindowDecision | None = None,
+    active_charging_visits: dict[str, ChargingVisit] | None = None,
 ) -> DispatchResult:
     avoid_conflicts = options.avoidConflicts
     include_dynamic = options.includeDynamic
@@ -1869,6 +1885,7 @@ def run_dispatch(
         delayed_blocked,
         delayed_block_time,
         True,
+        active_charging_visits,
     )
     assigned_task_ids = {
         task.id

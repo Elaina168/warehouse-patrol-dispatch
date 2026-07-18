@@ -214,7 +214,10 @@ def run_online_pressure_experiment(request: OnlinePressureExperimentRequest) -> 
     session_id: str | None = None
 
     try:
-        session = create_session(CreateSessionRequest(scenario=scenario, options=request.options))
+        session = create_session(
+            CreateSessionRequest(scenario=scenario, options=request.options),
+            enforce_execution_safety=False,
+        )
         session_id = session.sessionId
         for current_time in range(1, 9):
             session = tick_session(session_id, SessionTickRequest(currentTime=current_time))

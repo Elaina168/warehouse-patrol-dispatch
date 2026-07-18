@@ -1,6 +1,9 @@
 from fastapi.testclient import TestClient
 
+import backend.app.experiments as experiments_module
+import backend.app.sessions as sessions_module
 from backend.app.main import app
+from backend.app.schemas import Scenario
 from backend.tests.helpers import frontend_demo_scenario
 
 
@@ -61,6 +64,83 @@ def integrated_dynamic_event_scenario() -> dict:
         "tasks": [event_task],
     }
     return scenario
+
+
+def forced_online_experiment_conflict_scenario() -> Scenario:
+    return Scenario.model_validate(
+        {
+            "id": "forced-online-experiment-conflict",
+            "name": "forced-online-experiment-conflict",
+            "description": "实验会话保留冲突执行语义",
+            "width": 4,
+            "height": 10,
+            "obstacles": [[x, y] for y in range(1, 9) for x in range(4)],
+            "zones": {
+                "warehouse": [],
+                "inspection": [[2, 9]],
+                "delivery": [],
+                "charging": [],
+            },
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+                {
+                    "id": "R2",
+                    "name": "R2",
+                    "start": [2, 0],
+                    "battery": 90,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                    "capabilities": ["emergency"],
+                },
+                {
+                    "id": "R3",
+                    "name": "R3",
+                    "start": [0, 9],
+                    "battery": 90,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                },
+                {
+                    "id": "R4",
+                    "name": "R4",
+                    "start": [1, 9],
+                    "battery": 90,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "T1",
+                    "type": "inspection",
+                    "title": "R1 保持左端",
+                    "priority": 2,
+                    "targets": [[2, 0]],
+                },
+                {
+                    "id": "T2",
+                    "type": "emergency",
+                    "title": "R2 前往左端",
+                    "priority": 4,
+                    "target": [0, 0],
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
 
 
 def test_conflict_avoidance_experiment_returns_baseline_and_avoidance_cases() -> None:
@@ -767,3 +847,45 @@ def test_online_pressure_experiment_returns_runtime_flow_summary() -> None:
     assert case["replanTimeMs"] > 0
     assert case["metricsHistoryCount"] >= 10
     assert case["eventLogCount"] >= 6
+
+
+def test_online_pressure_experiment_bypasses_execution_interception(monkeypatch) -> None:
+    client = TestClient(app)
+    scenario = forced_online_experiment_conflict_scenario()
+    observed_ticks: list[tuple[int, int, object]] = []
+    real_tick_session = sessions_module.tick_session
+
+    def record_experiment_tick(session_id, request):
+        result = real_tick_session(session_id, request)
+        observed_ticks.append((request.currentTime, result.currentTime, result.safetyIntervention))
+        return result
+
+    monkeypatch.setattr(experiments_module, "seeded_pressure_scenario", lambda *_: scenario.model_copy(deep=True))
+    monkeypatch.setattr(experiments_module, "tick_session", record_experiment_tick)
+
+    response = client.post(
+        "/api/experiments/online-pressure",
+        json={"options": {"avoidConflicts": True, "includeDynamic": True, "assignmentReplanWindow": 120}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["cases"][0]["tickCount"] == 20
+    assert observed_ticks
+    assert all(reached_time == requested_time for requested_time, reached_time, _ in observed_ticks)
+    assert all(intervention is None for _, _, intervention in observed_ticks)
+
+    ordinary = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario.model_dump(mode="json"),
+            "options": {"avoidConflicts": True, "includeDynamic": True, "assignmentReplanWindow": 120},
+        },
+    )
+    assert ordinary.status_code == 200
+    ordinary_tick = client.post(
+        f"/api/sessions/{ordinary.json()['sessionId']}/tick",
+        json={"currentTime": 8},
+    )
+    assert ordinary_tick.status_code == 200
+    assert ordinary_tick.json()["currentTime"] == 2
+    assert ordinary_tick.json()["safetyIntervention"] is not None

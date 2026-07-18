@@ -1,5 +1,6 @@
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 import backend.app.sessions as sessions_module
@@ -129,6 +130,79 @@ def _forced_safety_gate_scenario() -> dict[str, Any]:
                 "id": "T2",
                 "type": "emergency",
                 "title": "R2 到左端",
+                "priority": 4,
+                "target": [0, 0],
+            },
+        ],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+
+
+def _repeated_hold_charge_scenario() -> dict[str, Any]:
+    return {
+        "id": "repeated-held-charge",
+        "name": "repeated-held-charge",
+        "description": "多次安全等待不得重启充电进度",
+        "width": 5,
+        "height": 3,
+        "obstacles": [[x, 1] for x in range(5)],
+        "zones": {
+            "warehouse": [[0, 2]],
+            "inspection": [[2, 0]],
+            "delivery": [[4, 2]],
+            "charging": [[0, 2], [0, 0], [2, 0]],
+        },
+        "chargeTime": 5,
+        "robots": [
+            {
+                "id": "R1",
+                "name": "R1",
+                "start": [0, 2],
+                "battery": 0,
+                "batteryCapacity": 10,
+                "load": 1,
+                "capabilities": ["delivery"],
+            },
+            {
+                "id": "R2",
+                "name": "R2",
+                "start": [0, 0],
+                "battery": 90,
+                "batteryCapacity": 100,
+                "load": 1,
+                "capabilities": ["inspection"],
+            },
+            {
+                "id": "R3",
+                "name": "R3",
+                "start": [2, 0],
+                "battery": 90,
+                "batteryCapacity": 100,
+                "load": 1,
+                "capabilities": ["emergency"],
+            },
+        ],
+        "tasks": [
+            {
+                "id": "D1",
+                "type": "delivery",
+                "title": "R1 充电后配送",
+                "priority": 1,
+                "pickup": [0, 2],
+                "dropoff": [4, 2],
+                "demand": 1,
+            },
+            {
+                "id": "I1",
+                "type": "inspection",
+                "title": "R2 对向巡检",
+                "priority": 2,
+                "targets": [[2, 0]],
+            },
+            {
+                "id": "E1",
+                "type": "emergency",
+                "title": "R3 对向应急",
                 "priority": 4,
                 "target": [0, 0],
             },
@@ -428,6 +502,50 @@ def test_safety_hold_keeps_an_active_charge_completion() -> None:
     assert any(event.text == "R1 完成充电" for event in session.event_notes)
 
 
+def test_repeated_safety_holds_preserve_mid_charge_completion_time() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _repeated_hold_charge_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+    original_visit = next(
+        visit for visit in created.json()["result"]["chargingVisits"] if visit["robotId"] == "R1"
+    )
+    assert original_visit["completionTime"] == 5
+
+    hold_times: list[int] = []
+    payload = created.json()
+    while payload["currentTime"] < original_visit["completionTime"]:
+        response = client.post(
+            f"/api/sessions/{session_id}/tick",
+            json={"currentTime": 8},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        if payload["safetyIntervention"] is not None:
+            hold_times.append(payload["safetyIntervention"]["time"])
+
+    charging_state = next(state for state in payload["robotStates"] if state["robotId"] == "R1")
+    completion_events = [
+        event
+        for event in payload["result"]["eventLog"]
+        if event["text"] == "R1 完成充电"
+    ]
+    assert len([hold_time for hold_time in hold_times if hold_time < 5]) >= 2
+    assert payload["currentTime"] == 5
+    assert charging_state["battery"] == charging_state["batteryCapacity"] == 10
+    assert completion_events == [{"time": 5, "text": "R1 完成充电"}]
+
+    reset = client.post(f"/api/sessions/{session_id}/reset")
+    assert reset.status_code == 200
+    assert sessions_module._sessions[session_id].active_charging_visits == {}
+
+
 def test_safety_gate_does_not_apply_unreached_future_runtime_events() -> None:
     client = TestClient(app)
     cell = [1, 0]
@@ -479,6 +597,102 @@ def test_safety_gate_does_not_apply_unreached_future_runtime_events() -> None:
             assert session.locked_task_robot_ids["T1"] == "R1"
         if endpoint == "failed-robots/restore":
             assert "R1" in payload["result"]["unavailableRobotIds"]
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "body", "expected_runtime_event_count", "expected_event_text"),
+    [
+        (
+            "blocked-cells",
+            {"cell": [2, 0], "currentTime": 2},
+            1,
+            "T=2 手动封锁单元：(2, 0)",
+        ),
+        (
+            "blocked-cells/remove",
+            {"cell": [2, 0], "currentTime": 2},
+            0,
+            "T=2 手动解除封锁单元：(2, 0)",
+        ),
+        (
+            "failed-robots",
+            {"robotId": "R1", "currentTime": 2},
+            1,
+            "T=2 手动标记故障机器人：R1",
+        ),
+        (
+            "failed-robots/restore",
+            {"robotId": "R1", "currentTime": 2},
+            0,
+            "T=2 手动恢复机器人：R1",
+        ),
+    ],
+)
+def test_runtime_operation_applies_when_safety_hold_reaches_exact_tick(
+    endpoint: str,
+    body: dict[str, Any],
+    expected_runtime_event_count: int,
+    expected_event_text: str,
+) -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _forced_safety_gate_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+    session = sessions_module._sessions[session_id]
+    session.planning_started = True
+    if endpoint == "blocked-cells/remove":
+        session.runtime_blocked_cells = [(2, 0)]
+    if endpoint == "failed-robots/restore":
+        session.runtime_failed_robot_ids = ["R1"]
+
+    response = client.post(f"/api/sessions/{session_id}/{endpoint}", json=body)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["currentTime"] == 2
+    assert payload["safetyIntervention"] is not None
+    assert payload["runtimeEventCount"] == expected_runtime_event_count
+    assert any(event["text"] == expected_event_text for event in payload["result"]["eventLog"])
+    if endpoint == "blocked-cells":
+        assert [2, 0] in payload["result"]["extraBlocked"]
+    if endpoint == "blocked-cells/remove":
+        assert [2, 0] not in payload["result"]["extraBlocked"]
+    if endpoint == "failed-robots":
+        assert "R1" in payload["result"]["unavailableRobotIds"]
+    if endpoint == "failed-robots/restore":
+        assert "R1" not in payload["result"]["unavailableRobotIds"]
+
+
+def test_exact_tick_block_revalidates_actual_held_cell_occupancy() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _forced_safety_gate_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    response = client.post(
+        f"/api/sessions/{session_id}/blocked-cells",
+        json={"cell": [1, 0], "currentTime": 2},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "封锁单元被机器人占用：R2 (1, 0)"
+    session = sessions_module._sessions[session_id]
+    assert session.current_time == 2
+    assert session.robot_positions["R2"] == (1, 0)
+    assert session.last_safety_intervention is not None
+    assert (1, 0) not in session.runtime_blocked_cells
 
 
 def test_future_runtime_event_clears_stale_safety_intervention_before_advancing() -> None:
