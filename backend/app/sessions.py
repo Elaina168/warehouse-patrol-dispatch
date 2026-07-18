@@ -690,6 +690,29 @@ def _build_effective_dispatch_input(session: DispatchSession) -> tuple[Scenario,
     return scenario, options, task_lookup
 
 
+def _first_execution_conflict(
+    result: DispatchResult,
+    current_time: int,
+    target_time: int,
+) -> Conflict | None:
+    conflict_type_order = {"vertex": 0, "edge": 1}
+    candidates = [
+        conflict
+        for conflict in result.conflicts
+        if current_time < conflict.time <= target_time
+    ]
+    return min(
+        candidates,
+        key=lambda conflict: (
+            conflict.time,
+            conflict_type_order[conflict.type],
+            tuple(conflict.robots),
+            conflict.cell,
+        ),
+        default=None,
+    )
+
+
 def _advance_session(session: DispatchSession, target_time: int) -> None:
     if target_time <= session.current_time:
         return

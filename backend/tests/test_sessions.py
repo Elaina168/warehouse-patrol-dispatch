@@ -8,6 +8,72 @@ from backend.app.schemas import Assignment, Conflict, DispatchOptions, DispatchR
 from backend.tests.helpers import frontend_demo_scenario, scenario_payload, seeded_pressure_scenario
 
 
+def _safety_test_result(
+    scenario: Scenario,
+    paths: dict[str, list[tuple[int, int]]],
+    conflicts: list[Conflict],
+    assignments: list[Assignment] | None = None,
+) -> DispatchResult:
+    assignments = assignments or []
+    return DispatchResult(
+        scenarioId=scenario.id,
+        avoidConflicts=True,
+        includeDynamic=False,
+        dynamicTriggerTime=None,
+        extraBlocked=[],
+        unavailableRobotIds=[],
+        assignments=assignments,
+        paths=paths,
+        conflicts=conflicts,
+        metrics=Metrics(
+            makespan=max((len(path) - 1 for path in paths.values()), default=0),
+            totalDistance=sum(max(0, len(path) - 1) for path in paths.values()),
+            conflictCount=len(conflicts),
+            loadBalance=0,
+            assignedTaskCount=sum(len(item.tasks) for item in assignments),
+            deadlineMissCount=0,
+            averageLateness=0,
+            failureCount=0,
+            replanTimeMs=0,
+        ),
+        eventLog=[],
+        tasks=[task for assignment in assignments for task in assignment.tasks],
+    )
+
+
+def test_first_execution_conflict_selects_earliest_future_conflict_deterministically() -> None:
+    scenario = Scenario.model_validate(scenario_payload())
+    result = _safety_test_result(
+        scenario,
+        {robot.id: [robot.start] * 6 for robot in scenario.robots},
+        [
+            Conflict(time=1, type="vertex", robots=["OLD", "OLD2"], cell=(0, 0)),
+            Conflict(time=4, type="edge", robots=["R2", "R1"], cell=(2, 0)),
+            Conflict(time=3, type="edge", robots=["R2", "R1"], cell=(1, 0)),
+            Conflict(time=3, type="vertex", robots=["R3", "R1"], cell=(2, 0)),
+            Conflict(time=3, type="vertex", robots=["R2", "R1"], cell=(3, 0)),
+        ],
+    )
+
+    selected = sessions_module._first_execution_conflict(result, current_time=1, target_time=4)
+
+    assert selected == Conflict(time=3, type="vertex", robots=["R2", "R1"], cell=(3, 0))
+
+
+def test_first_execution_conflict_ignores_past_and_out_of_range_conflicts() -> None:
+    scenario = Scenario.model_validate(scenario_payload())
+    result = _safety_test_result(
+        scenario,
+        {robot.id: [robot.start] * 6 for robot in scenario.robots},
+        [
+            Conflict(time=2, type="vertex", robots=["R1", "R2"], cell=(1, 0)),
+            Conflict(time=6, type="edge", robots=["R1", "R2"], cell=(2, 0)),
+        ],
+    )
+
+    assert sessions_module._first_execution_conflict(result, current_time=2, target_time=5) is None
+
+
 def _assert_online_payload_consistent(payload: dict[str, Any]) -> None:
     current_time = payload["currentTime"]
     metric_times = [snapshot["time"] for snapshot in payload["metricsHistory"]]
