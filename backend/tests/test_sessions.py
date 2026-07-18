@@ -1140,24 +1140,7 @@ def test_conflict_states_follow_current_robot_overlap() -> None:
 
 def test_session_refreshes_cached_conflict_states_at_the_current_tick() -> None:
     client = TestClient(app)
-    scenario = {
-        "id": "cached-conflict-state",
-        "name": "cached-conflict-state",
-        "description": "cached conflict state should follow the current session tick",
-        "width": 3,
-        "height": 1,
-        "obstacles": [],
-        "zones": {"warehouse": [[0, 0]], "inspection": [[1, 0]], "delivery": []},
-        "robots": [
-            {"id": "R1", "name": "R1", "start": [0, 0], "battery": 90, "load": 1},
-            {"id": "R2", "name": "R2", "start": [2, 0], "battery": 90, "load": 1},
-        ],
-        "tasks": [
-            {"id": "T1", "type": "inspection", "title": "左侧巡检", "priority": 2, "targets": [[1, 0]]},
-            {"id": "T2", "type": "inspection", "title": "右侧巡检", "priority": 2, "targets": [[1, 0]]},
-        ],
-        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
-    }
+    scenario = _forced_safety_gate_scenario()
     create_response = client.post(
         "/api/sessions",
         json={"scenario": scenario, "options": {"avoidConflicts": False, "includeDynamic": False}},
@@ -1180,8 +1163,13 @@ def test_session_refreshes_cached_conflict_states_at_the_current_tick() -> None:
             "cell": [1, 0],
             "status": "active",
             "startedAt": 1,
-            "resolvedAt": None,
+            "resolvedAt": 2,
         }
+    ]
+    cached_result = sessions_module._sessions[session_id].last_result
+    assert cached_result is not None
+    assert [state.model_dump(mode="json") for state in cached_result.conflictStates] == payload["result"][
+        "conflictStates"
     ]
     assert payload["metricsHistory"][-1]["activeConflictCount"] == 1
 

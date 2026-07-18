@@ -544,11 +544,10 @@ def _build_result(session: DispatchSession) -> SessionResult:
 
         session.last_result = result
     result = result.model_copy(
-        update={
-            "conflictStates": _build_conflict_states(result.conflicts, result.paths, session.current_time),
-            "eventLog": _build_session_event_log(session, result),
-        }
+        update={"conflictStates": _build_conflict_states(result.conflicts, result.paths, session.current_time)}
     )
+    session.last_result = result
+    result = result.model_copy(update={"eventLog": _build_session_event_log(session, result)})
     robot_states = _build_robot_states(session, result)
     task_states = _build_task_states(session, result)
     _sync_completed_task_states(session, task_states)
