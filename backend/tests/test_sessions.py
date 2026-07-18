@@ -161,6 +161,123 @@ def test_session_safety_gate_holds_fleet_at_first_vertex_conflict() -> None:
     assert any("T=2 执行安全门拦截 vertex 冲突：R1 / R2" == item["text"] for item in payload["result"]["eventLog"])
 
 
+def test_safety_gate_does_not_apply_unreached_future_runtime_events() -> None:
+    client = TestClient(app)
+    cell = [1, 0]
+    cases = [
+        ("blocked-cells", {"cell": cell, "currentTime": 8}),
+        ("blocked-cells/remove", {"cell": cell, "currentTime": 8}),
+        ("failed-robots", {"robotId": "R1", "currentTime": 8}),
+        ("failed-robots/restore", {"robotId": "R1", "currentTime": 8}),
+    ]
+
+    for endpoint, body in cases:
+        created = client.post(
+            "/api/sessions",
+            json={
+                "scenario": _forced_safety_gate_scenario(),
+                "options": {"avoidConflicts": True, "includeDynamic": False},
+            },
+        )
+        assert created.status_code == 200
+        session_id = created.json()["sessionId"]
+        session = sessions_module._sessions[session_id]
+        session.planning_started = True
+        if endpoint == "blocked-cells/remove":
+            session.runtime_blocked_cells = [(1, 0)]
+        if endpoint == "failed-robots/restore":
+            session.runtime_failed_robot_ids = ["R1"]
+        if endpoint == "failed-robots":
+            session.locked_task_robot_ids = {"T1": "R1"}
+
+        response = client.post(f"/api/sessions/{session_id}/{endpoint}", json=body)
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["currentTime"] == 2, endpoint
+        assert payload["safetyIntervention"] == {
+            "time": 2,
+            "type": "vertex",
+            "robots": ["R1", "R2"],
+            "cell": [0, 0],
+        }
+        assert payload["runtimeEventCount"] == (1 if endpoint in {"blocked-cells/remove", "failed-robots/restore"} else 0)
+        assert all(event["time"] <= 2 for event in payload["result"]["eventLog"])
+        if endpoint == "blocked-cells":
+            assert [1, 0] not in payload["result"]["extraBlocked"]
+        if endpoint == "blocked-cells/remove":
+            assert [1, 0] in payload["result"]["extraBlocked"]
+        if endpoint == "failed-robots":
+            assert "R1" not in payload["result"]["unavailableRobotIds"]
+            assert session.locked_task_robot_ids["T1"] == "R1"
+        if endpoint == "failed-robots/restore":
+            assert "R1" in payload["result"]["unavailableRobotIds"]
+
+
+def test_future_runtime_event_clears_stale_safety_intervention_before_advancing() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _forced_safety_gate_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    held_response = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 8})
+    assert held_response.status_code == 200
+    assert held_response.json()["safetyIntervention"] is not None
+
+    session = sessions_module._sessions[session_id]
+    session.last_result = _safety_test_result(
+        session.scenario,
+        {
+            robot.id: [session.robot_positions[robot.id]] * 9
+            for robot in session.scenario.robots
+        },
+        [],
+    )
+    response = client.post(
+        f"/api/sessions/{session_id}/failed-robots",
+        json={"robotId": "R1", "currentTime": 8},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["currentTime"] == 8
+    assert payload["safetyIntervention"] is None
+    assert "R1" in payload["result"]["unavailableRobotIds"]
+
+
+def test_safety_hold_does_not_visit_waypoint_released_at_conflict_time() -> None:
+    client = TestClient(app)
+    scenario = _forced_safety_gate_scenario()
+    scenario["tasks"][0]["releaseTime"] = 2
+    scenario["tasks"][0]["targets"] = [[0, 0]]
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    response = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 8})
+
+    assert response.status_code == 200
+    payload = response.json()
+    task_state = next(state for state in payload["taskStates"] if state["taskId"] == "T1")
+    assert payload["currentTime"] == 2
+    assert payload["safetyIntervention"] is not None
+    assert task_state["status"] != "completed"
+    assert sessions_module._sessions[session_id].task_waypoint_progress.get("T1", 0) == 0
+    assert payload["completedTaskCount"] == 0
+
+
 def _assert_online_payload_consistent(payload: dict[str, Any]) -> None:
     current_time = payload["currentTime"]
     metric_times = [snapshot["time"] for snapshot in payload["metricsHistory"]]

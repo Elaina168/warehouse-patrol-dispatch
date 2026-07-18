@@ -106,6 +106,7 @@ class DispatchSession:
     replan_window_reason: str | None = None
     last_replan_time_ms: float | None = None
     last_safety_intervention: Conflict | None = None
+    safety_hold_times: dict[str, set[int]] = field(default_factory=dict)
     last_result: DispatchResult | None = None
 
 
@@ -215,9 +216,9 @@ def add_blocked_cell(session_id: str, request: AddBlockRequest) -> SessionResult
         if occupying_robot_id is not None:
             raise HTTPException(status_code=409, detail=f"封锁单元被机器人占用：{occupying_robot_id} ({cell[0]}, {cell[1]})")
     previous_time = session.current_time
-    if current_time > session.current_time:
-        _ensure_planning_started(session)
-    _advance_session(session, current_time)
+    if _advance_runtime_event(session, current_time):
+        _touch_session_if_time_changed(session, previous_time)
+        return _build_result(session)
     is_dynamic_blocked_cell = _is_scenario_dynamic_active(session) and cell in session.scenario.dynamic.blockedCells
     is_new_blocked_cell = cell not in session.runtime_blocked_cells and not is_dynamic_blocked_cell
     if is_new_blocked_cell:
@@ -240,9 +241,9 @@ def remove_blocked_cell(session_id: str, request: RemoveBlockRequest) -> Session
     if not _is_inside(cell, session.scenario):
         raise HTTPException(status_code=422, detail=f"解除封锁单元超出地图范围：{cell[0]},{cell[1]}")
     previous_time = session.current_time
-    if current_time > session.current_time:
-        _ensure_planning_started(session)
-    _advance_session(session, current_time)
+    if _advance_runtime_event(session, current_time):
+        _touch_session_if_time_changed(session, previous_time)
+        return _build_result(session)
     removed = False
     if cell in session.runtime_blocked_cells:
         session.runtime_blocked_cells = [blocked for blocked in session.runtime_blocked_cells if blocked != cell]
@@ -273,9 +274,9 @@ def fail_robot(session_id: str, request: FailRobotRequest) -> SessionResult:
     if request.robotId not in robot_ids:
         raise HTTPException(status_code=404, detail=f"机器人不存在：{request.robotId}")
     previous_time = session.current_time
-    if current_time > session.current_time:
-        _ensure_planning_started(session)
-    _advance_session(session, current_time)
+    if _advance_runtime_event(session, current_time):
+        _touch_session_if_time_changed(session, previous_time)
+        return _build_result(session)
     is_dynamic_failed_robot = _is_scenario_dynamic_active(session) and request.robotId in session.scenario.dynamic.failedRobots
     is_new_failed_robot = request.robotId not in session.runtime_failed_robot_ids and not is_dynamic_failed_robot
     if is_new_failed_robot:
@@ -297,9 +298,9 @@ def restore_robot(session_id: str, request: RestoreRobotRequest) -> SessionResul
     if request.robotId not in robot_ids:
         raise HTTPException(status_code=404, detail=f"机器人不存在：{request.robotId}")
     previous_time = session.current_time
-    if current_time > session.current_time:
-        _ensure_planning_started(session)
-    _advance_session(session, current_time)
+    if _advance_runtime_event(session, current_time):
+        _touch_session_if_time_changed(session, previous_time)
+        return _build_result(session)
     restored = False
     if request.robotId in session.runtime_failed_robot_ids:
         session.runtime_failed_robot_ids = [
@@ -368,6 +369,14 @@ def _runtime_request_time(
     return session.current_time
 
 
+def _advance_runtime_event(session: DispatchSession, current_time: int) -> bool:
+    if current_time <= session.current_time:
+        return False
+    session.last_safety_intervention = None
+    _ensure_planning_started(session)
+    return _advance_session(session, current_time)
+
+
 def _require_task_capacity(session: DispatchSession, incoming_count: int) -> None:
     current_count = len(_all_known_tasks(session))
     if current_count + incoming_count > MAX_SESSION_TASKS:
@@ -426,6 +435,7 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.replan_window_reason = None
     session.last_replan_time_ms = None
     session.last_safety_intervention = None
+    session.safety_hold_times.clear()
     session.last_result = None
     _initialize_shelf_inventory(session)
     _touch_session(session, updated=updated)
@@ -786,7 +796,7 @@ def _safety_hold_result(session: DispatchSession, result: DispatchResult) -> Dis
         position = session.robot_positions.get(robot.id, robot.start)
         history = session.robot_path_history.get(robot.id, [position])
         prefix = _history_prefix(history, position, session.current_time)
-        hold_paths[robot.id] = [*prefix, position]
+        hold_paths[robot.id] = prefix
 
     active_charging_visits = [
         visit
@@ -810,6 +820,8 @@ def _apply_safety_hold(
         raise ValueError("safety hold must apply to the next session tick")
     hold_result = _safety_hold_result(session, result)
     _apply_result_through_time(session, hold_result, conflict.time)
+    for robot in session.scenario.robots:
+        session.safety_hold_times.setdefault(robot.id, set()).add(conflict.time)
     session.last_safety_intervention = conflict
     robot_ids = " / ".join(conflict.robots)
     _record_session_event(
@@ -820,9 +832,9 @@ def _apply_safety_hold(
     _invalidate_plan(session)
 
 
-def _advance_session(session: DispatchSession, target_time: int) -> None:
+def _advance_session(session: DispatchSession, target_time: int) -> bool:
     if target_time <= session.current_time:
-        return
+        return False
 
     result = session.last_result
     if result is None:
@@ -848,32 +860,29 @@ def _advance_session(session: DispatchSession, target_time: int) -> None:
     )
 
     if next_trigger_time is not None and next_trigger_time < target_time:
-        _advance_session(session, next_trigger_time)
-        if session.last_safety_intervention is not None:
-            return
-        _advance_session(session, target_time)
-        return
+        if _advance_session(session, next_trigger_time):
+            return True
+        return _advance_session(session, target_time)
 
     if safety_conflict is not None and safety_conflict.time == target_time:
         if target_time > session.current_time + 1:
-            _advance_session(session, target_time - 1)
-            if session.last_safety_intervention is not None:
-                return
-            _advance_session(session, target_time)
-            return
+            if _advance_session(session, target_time - 1):
+                return True
+            return _advance_session(session, target_time)
 
         _apply_safety_hold(session, result, safety_conflict)
         if dynamic_trigger_time == target_time:
             _activate_scenario_dynamic(session, target_time, result)
         if window_trigger_time == target_time:
             _activate_rolling_window(session, target_time)
-        return
+        return True
 
     _apply_result_through_time(session, result, target_time)
     if dynamic_trigger_time == target_time:
         _activate_scenario_dynamic(session, target_time, result)
     if window_trigger_time == target_time:
         _activate_rolling_window(session, target_time)
+    return False
 
 
 def _invalidate_plan(session: DispatchSession) -> None:
@@ -1327,6 +1336,7 @@ def _session_task_completion_times(session: DispatchSession, result: DispatchRes
     completions = dict(session.task_completion_times)
     for assignment in result.assignments:
         path = result.paths.get(assignment.robotId, [])
+        ignored_indices = session.safety_hold_times.get(assignment.robotId, set())
         cursor_index = min(session.current_time, max(0, len(path) - 1))
         for task in assignment.tasks:
             if task.id in completions:
@@ -1339,6 +1349,7 @@ def _session_task_completion_times(session: DispatchSession, result: DispatchRes
                 completed_before,
                 cursor_index,
                 len(path) - 1,
+                ignored_indices,
             )
             if _is_task_fully_completed(task, completed_count):
                 service_started_at = session.task_service_started_times.get(task.id, completion_index)
@@ -1394,15 +1405,21 @@ def _session_task_start_times(session: DispatchSession, result: DispatchResult) 
     starts: dict[str, int] = {}
     for assignment in result.assignments:
         path = result.paths.get(assignment.robotId, [])
+        ignored_indices = session.safety_hold_times.get(assignment.robotId, set())
         cursor_index = min(session.current_time, max(0, len(path) - 1))
         for task in assignment.tasks:
-            start_index, cursor_index = _task_execution_window(path, task, cursor_index)
+            start_index, cursor_index = _task_execution_window(path, task, cursor_index, ignored_indices)
             if start_index is not None:
                 starts[task.id] = start_index
     return starts
 
 
-def _task_execution_window(path: list[Cell], task: Task, start_index: int) -> tuple[int | None, int]:
+def _task_execution_window(
+    path: list[Cell],
+    task: Task,
+    start_index: int,
+    ignored_indices: set[int],
+) -> tuple[int | None, int]:
     if not path:
         return None, start_index
 
@@ -1417,7 +1434,7 @@ def _task_execution_window(path: list[Cell], task: Task, start_index: int) -> tu
 
     completion_index: int | None = None
     for waypoint in waypoints:
-        found_index = _find_next_visit_until(path, waypoint, cursor_index, len(path) - 1)
+        found_index = _find_next_visit_until(path, waypoint, cursor_index, len(path) - 1, ignored_indices)
         if found_index is None:
             return None, cursor_index
         completion_index = found_index
@@ -1435,6 +1452,7 @@ def _update_task_waypoint_progress(
     outbound_pickup_times: dict[str, int] = {}
     for assignment in result.assignments:
         path = result.paths.get(assignment.robotId, [])
+        ignored_indices = session.safety_hold_times.get(assignment.robotId, set())
         cursor_index = min(session.current_time, max(0, len(path) - 1))
         for task in assignment.tasks:
             completion_time = session.task_completion_times.get(task.id)
@@ -1457,6 +1475,7 @@ def _update_task_waypoint_progress(
                     task.pickup,
                     max(cursor_index, release_time),
                     min(target_time, len(path) - 1),
+                    ignored_indices,
                 )
             completed_count, cursor_index, completion_index = _completed_remaining_waypoints(
                 path,
@@ -1464,6 +1483,7 @@ def _update_task_waypoint_progress(
                 completed_before,
                 cursor_index,
                 target_time,
+                ignored_indices,
             )
             if completed_count > completed_before:
                 session.task_waypoint_progress[task.id] = completed_count
@@ -1487,6 +1507,7 @@ def _completed_remaining_waypoints(
     completed_before: int,
     start_index: int,
     target_time: int,
+    ignored_indices: set[int],
 ) -> tuple[int, int, int | None]:
     if not path:
         return completed_before, start_index, None
@@ -1502,7 +1523,7 @@ def _completed_remaining_waypoints(
     completed_count = min(completed_before, len(waypoints))
     completion_index: int | None = None
     for waypoint in waypoints[completed_count:]:
-        found_index = _find_next_visit_until(path, waypoint, cursor_index, end_index)
+        found_index = _find_next_visit_until(path, waypoint, cursor_index, end_index, ignored_indices)
         if found_index is None:
             break
         completed_count += 1
@@ -1536,9 +1557,16 @@ def _update_payload_position(
         session.task_payload_positions[task.id] = position
 
 
-def _find_next_visit_until(path: list[Cell], waypoint: Cell, start_index: int, end_index: int) -> int | None:
+def _find_next_visit_until(
+    path: list[Cell],
+    waypoint: Cell,
+    start_index: int,
+    end_index: int,
+    ignored_indices: set[int] | None = None,
+) -> int | None:
+    ignored_indices = ignored_indices or set()
     for index in range(start_index, end_index + 1):
-        if path[index] == waypoint:
+        if index not in ignored_indices and path[index] == waypoint:
             return index
     return None
 
