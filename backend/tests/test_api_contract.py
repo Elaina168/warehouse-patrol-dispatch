@@ -165,6 +165,14 @@ def test_frontend_types_match_backend_api_model_fields() -> None:
     assert "shelfStates" in _backend_fields(schemas.SessionResult)
 
 
+def test_session_safety_intervention_is_required_and_nullable() -> None:
+    assert "safetyIntervention" in _backend_fields(schemas.SessionResult)
+    assert "safetyIntervention" in _frontend_fields("SessionResult")
+    assert "safetyIntervention" in _backend_nullable_fields(schemas.SessionResult)
+    assert "safetyIntervention" in _frontend_nullable_fields("SessionResult")
+    assert "safetyIntervention" not in _frontend_optional_fields("SessionResult")
+
+
 def test_frontend_task_union_covers_backend_task_fields() -> None:
     frontend_task_fields = (
         _frontend_fields("PatrolTask")

@@ -453,6 +453,7 @@ class SessionResult(ApiModel):
     taskStates: list[TaskRuntimeState]
     metricsHistory: list[MetricSnapshot]
     completedTaskCount: int
+    safetyIntervention: Conflict | None = None
     result: DispatchResult
 
 

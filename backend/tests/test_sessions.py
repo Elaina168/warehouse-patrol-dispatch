@@ -86,6 +86,21 @@ def _post_generated_task(
     )
 
 
+def test_session_create_serializes_null_safety_intervention() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario_payload(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert response.status_code == 200
+    assert "safetyIntervention" in response.json()
+    assert response.json()["safetyIntervention"] is None
+
+
 def shelf_session_scenario() -> dict[str, Any]:
     return {
         "id": "shelf-session",

@@ -291,6 +291,7 @@ export type SessionResult = {
   taskStates: TaskRuntimeState[];
   metricsHistory: MetricSnapshot[];
   completedTaskCount: number;
+  safetyIntervention: Conflict | null;
   result: DispatchResult;
 };
 

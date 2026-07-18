@@ -35,6 +35,7 @@ from backend.app.schemas import (
     AddTaskRequest,
     Assignment,
     Cell,
+    Conflict,
     CreateSessionRequest,
     DeleteSessionResult,
     DispatchOptions,
@@ -104,6 +105,7 @@ class DispatchSession:
     effective_assignment_replan_window: int | None = None
     replan_window_reason: str | None = None
     last_replan_time_ms: float | None = None
+    last_safety_intervention: Conflict | None = None
     last_result: DispatchResult | None = None
 
 
@@ -327,6 +329,7 @@ def tick_session(session_id: str, request: SessionTickRequest) -> SessionResult:
     _require_not_past_time(session, request.currentTime)
     previous_time = session.current_time
     if request.currentTime > session.current_time:
+        session.last_safety_intervention = None
         _ensure_planning_started(session)
     _advance_session(session, request.currentTime)
     if session.current_time != previous_time:
@@ -422,6 +425,7 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.effective_assignment_replan_window = None
     session.replan_window_reason = None
     session.last_replan_time_ms = None
+    session.last_safety_intervention = None
     session.last_result = None
     _initialize_shelf_inventory(session)
     _touch_session(session, updated=updated)
@@ -502,6 +506,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
             taskStates=task_states,
             metricsHistory=session.metrics_history,
             completedTaskCount=len(session.completed_task_ids),
+            safetyIntervention=session.last_safety_intervention,
             result=result,
         )
     if result is None:
@@ -557,6 +562,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
         taskStates=task_states,
         metricsHistory=session.metrics_history,
         completedTaskCount=len(session.completed_task_ids),
+        safetyIntervention=session.last_safety_intervention,
         result=result,
     )
 
