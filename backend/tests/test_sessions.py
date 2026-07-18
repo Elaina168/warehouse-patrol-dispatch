@@ -74,6 +74,93 @@ def test_first_execution_conflict_ignores_past_and_out_of_range_conflicts() -> N
     assert sessions_module._first_execution_conflict(result, current_time=2, target_time=5) is None
 
 
+def _forced_safety_gate_scenario() -> dict[str, Any]:
+    return {
+        "id": "forced-safety-gate",
+        "name": "forced-safety-gate",
+        "description": "能力约束强制两台机器人在单通道对向执行",
+        "width": 3,
+        "height": 1,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [[0, 0]],
+            "inspection": [[2, 0]],
+            "delivery": [],
+            "charging": [],
+        },
+        "robots": [
+            {
+                "id": "R1",
+                "name": "R1",
+                "start": [0, 0],
+                "battery": 90,
+                "batteryCapacity": 100,
+                "load": 1,
+                "capabilities": ["inspection"],
+            },
+            {
+                "id": "R2",
+                "name": "R2",
+                "start": [2, 0],
+                "battery": 90,
+                "batteryCapacity": 100,
+                "load": 1,
+                "capabilities": ["emergency"],
+            },
+        ],
+        "tasks": [
+            {
+                "id": "T1",
+                "type": "inspection",
+                "title": "R1 到右端",
+                "priority": 2,
+                "targets": [[2, 0]],
+            },
+            {
+                "id": "T2",
+                "type": "emergency",
+                "title": "R2 到左端",
+                "priority": 4,
+                "target": [0, 0],
+            },
+        ],
+        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+    }
+
+
+def test_session_safety_gate_holds_fleet_at_first_vertex_conflict() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _forced_safety_gate_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    response = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 8})
+    assert response.status_code == 200
+    payload = response.json()
+    positions = {state["robotId"]: state["position"] for state in payload["robotStates"]}
+    batteries = {state["robotId"]: state["battery"] for state in payload["robotStates"]}
+
+    assert payload["currentTime"] == 2
+    assert payload["safetyIntervention"] == {
+        "time": 2,
+        "type": "vertex",
+        "robots": ["R1", "R2"],
+        "cell": [0, 0],
+    }
+    assert positions == {"R1": [0, 0], "R2": [1, 0]}
+    assert len({tuple(position) for position in positions.values()}) == 2
+    assert payload["metricsHistory"][-1]["activeConflictCount"] == 0
+    assert payload["metricsHistory"][-1]["travelledDistance"] == 1
+    assert batteries == {"R1": 90, "R2": 89}
+    assert any("T=2 执行安全门拦截 vertex 冲突：R1 / R2" == item["text"] for item in payload["result"]["eventLog"])
+
+
 def _assert_online_payload_consistent(payload: dict[str, Any]) -> None:
     current_time = payload["currentTime"]
     metric_times = [snapshot["time"] for snapshot in payload["metricsHistory"]]

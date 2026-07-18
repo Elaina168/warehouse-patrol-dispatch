@@ -713,29 +713,11 @@ def _first_execution_conflict(
     )
 
 
-def _advance_session(session: DispatchSession, target_time: int) -> None:
-    if target_time <= session.current_time:
-        return
-
-    result = session.last_result
-    if result is None:
-        result = _build_result(session).result
-
-    dynamic_trigger_time = _next_scenario_dynamic_trigger_time(session, target_time)
-    window_trigger_time = _next_rolling_window_trigger_time(session, target_time)
-    active_completion_time = _next_active_task_completion_time(session, result, target_time)
-    next_trigger_time = _earliest_time(
-        _earliest_time(dynamic_trigger_time, window_trigger_time),
-        active_completion_time,
-    )
-    if next_trigger_time is not None and next_trigger_time < target_time:
-        _advance_session(session, next_trigger_time)
-        _advance_session(session, target_time)
-        return
-
-    activate_dynamic_after_advance = dynamic_trigger_time == target_time
-    activate_window_after_advance = window_trigger_time == target_time
-
+def _apply_result_through_time(
+    session: DispatchSession,
+    result: DispatchResult,
+    target_time: int,
+) -> None:
     for robot in session.scenario.robots:
         path = result.paths.get(robot.id, [session.robot_positions.get(robot.id, robot.start)])
         history = session.robot_path_history.setdefault(robot.id, [robot.start])
@@ -758,8 +740,7 @@ def _advance_session(session: DispatchSession, target_time: int) -> None:
                 if visit.completionTime == tick_time:
                     session.robot_battery_levels[robot.id] = robot.batteryCapacity
                     _record_session_event(session, tick_time, f"{robot.id} 完成充电")
-        position = history[target_time]
-        session.robot_positions[robot.id] = position
+        session.robot_positions[robot.id] = history[target_time]
 
     _update_locked_task_assignments(session, result, target_time)
     outbound_pickup_times = _update_task_waypoint_progress(session, result, target_time)
@@ -797,9 +778,101 @@ def _advance_session(session: DispatchSession, target_time: int) -> None:
     session.current_time = target_time
     if completed_task:
         _invalidate_plan(session)
-    if activate_dynamic_after_advance:
+
+
+def _safety_hold_result(session: DispatchSession, result: DispatchResult) -> DispatchResult:
+    hold_paths: dict[str, list[Cell]] = {}
+    for robot in session.scenario.robots:
+        position = session.robot_positions.get(robot.id, robot.start)
+        history = session.robot_path_history.get(robot.id, [position])
+        prefix = _history_prefix(history, position, session.current_time)
+        hold_paths[robot.id] = [*prefix, position]
+
+    active_charging_visits = [
+        visit
+        for visit in result.chargingVisits
+        if visit.arrivalTime <= session.current_time
+    ]
+    return result.model_copy(
+        update={
+            "paths": hold_paths,
+            "chargingVisits": active_charging_visits,
+        }
+    )
+
+
+def _apply_safety_hold(
+    session: DispatchSession,
+    result: DispatchResult,
+    conflict: Conflict,
+) -> None:
+    if conflict.time != session.current_time + 1:
+        raise ValueError("safety hold must apply to the next session tick")
+    hold_result = _safety_hold_result(session, result)
+    _apply_result_through_time(session, hold_result, conflict.time)
+    session.last_safety_intervention = conflict
+    robot_ids = " / ".join(conflict.robots)
+    _record_session_event(
+        session,
+        conflict.time,
+        f"T={conflict.time} 执行安全门拦截 {conflict.type} 冲突：{robot_ids}",
+    )
+    _invalidate_plan(session)
+
+
+def _advance_session(session: DispatchSession, target_time: int) -> None:
+    if target_time <= session.current_time:
+        return
+
+    result = session.last_result
+    if result is None:
+        result = _build_result(session).result
+
+    dynamic_trigger_time = _next_scenario_dynamic_trigger_time(session, target_time)
+    window_trigger_time = _next_rolling_window_trigger_time(session, target_time)
+    active_completion_time = _next_active_task_completion_time(session, result, target_time)
+    safety_conflict = (
+        _first_execution_conflict(result, session.current_time, target_time)
+        if session.options.avoidConflicts
+        else None
+    )
+    next_trigger_time = _first_crossed_time(
+        session.current_time,
+        target_time,
+        [
+            dynamic_trigger_time,
+            window_trigger_time,
+            active_completion_time,
+            safety_conflict.time if safety_conflict is not None else None,
+        ],
+    )
+
+    if next_trigger_time is not None and next_trigger_time < target_time:
+        _advance_session(session, next_trigger_time)
+        if session.last_safety_intervention is not None:
+            return
+        _advance_session(session, target_time)
+        return
+
+    if safety_conflict is not None and safety_conflict.time == target_time:
+        if target_time > session.current_time + 1:
+            _advance_session(session, target_time - 1)
+            if session.last_safety_intervention is not None:
+                return
+            _advance_session(session, target_time)
+            return
+
+        _apply_safety_hold(session, result, safety_conflict)
+        if dynamic_trigger_time == target_time:
+            _activate_scenario_dynamic(session, target_time, result)
+        if window_trigger_time == target_time:
+            _activate_rolling_window(session, target_time)
+        return
+
+    _apply_result_through_time(session, result, target_time)
+    if dynamic_trigger_time == target_time:
         _activate_scenario_dynamic(session, target_time, result)
-    if activate_window_after_advance:
+    if window_trigger_time == target_time:
         _activate_rolling_window(session, target_time)
 
 
