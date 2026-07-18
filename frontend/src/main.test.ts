@@ -40,6 +40,10 @@ import {
   applyMapPickToManualTask,
   selectLatestConflictAlert,
   selectMapConflictMarkers,
+  shouldPauseForSafetyIntervention,
+  safetyInterventionLabel,
+  mergeSafetyInterventionMarker,
+  isSafetyInterventionRobot,
   filterInitialScenarioTaskLabels,
   shouldDisplayConflictMarker,
   robotColorForIndex,
@@ -106,6 +110,52 @@ describe("robot charging runtime status contract", () => {
   });
 });
 
+describe("execution safety intervention", () => {
+  const intervention = {
+    time: 7,
+    type: "vertex" as const,
+    robots: ["R1", "R2"],
+    cell: [3, 2] as [number, number]
+  };
+
+  it("pauses only for a structured safety intervention", () => {
+    expect(shouldPauseForSafetyIntervention(intervention)).toBe(true);
+    expect(shouldPauseForSafetyIntervention(null)).toBe(false);
+  });
+
+  it("formats the status without parsing event text", () => {
+    expect(safetyInterventionLabel(intervention)).toBe("T=7 安全门已拦截顶点冲突：R1 / R2");
+    expect(safetyInterventionLabel({ ...intervention, type: "edge" })).toBe(
+      "T=7 安全门已拦截边交换冲突：R1 / R2"
+    );
+    expect(safetyInterventionLabel(null)).toBeNull();
+  });
+
+  it("adds the intercepted cell and robots only at the intervention tick", () => {
+    expect(mergeSafetyInterventionMarker([], intervention, 7)).toEqual([intervention]);
+    expect(mergeSafetyInterventionMarker([intervention], intervention, 7)).toEqual([intervention]);
+    expect(mergeSafetyInterventionMarker([], intervention, 8)).toEqual([]);
+    expect(isSafetyInterventionRobot("R1", intervention, 7)).toBe(true);
+    expect(isSafetyInterventionRobot("R3", intervention, 7)).toBe(false);
+    expect(isSafetyInterventionRobot("R1", intervention, 8)).toBe(false);
+  });
+
+  it("does not apply a safety intervention from an invalidated request generation", async () => {
+    const coordinator = createSessionRequestCoordinator();
+    const staleGeneration = coordinator.currentGeneration();
+    const stalePayload = Promise.resolve(intervention);
+    coordinator.invalidate();
+    let playing = true;
+
+    const payload = await stalePayload;
+    if (coordinator.isCurrent(staleGeneration) && shouldPauseForSafetyIntervention(payload)) {
+      playing = false;
+    }
+
+    expect(playing).toBe(true);
+  });
+});
+
 describe("warehouse shelf map", () => {
   it("keeps robot markers circular and bounded by responsive map cells", () => {
     const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -138,6 +188,7 @@ describe("warehouse shelf map", () => {
       mapPickTarget: null,
       onPickCell: () => undefined,
       unresolvedConflictAlert: null,
+      safetyIntervention: null,
       contextMenu: null,
       canManageBlocks: false,
       onOpenContextMenu: () => undefined,
@@ -171,6 +222,7 @@ describe("warehouse shelf map", () => {
       mapPickTarget: null,
       onPickCell: () => undefined,
       unresolvedConflictAlert: null,
+      safetyIntervention: null,
       contextMenu: null,
       canManageBlocks: false,
       onOpenContextMenu: () => undefined,
@@ -207,6 +259,7 @@ describe("warehouse shelf map", () => {
       mapPickTarget: null,
       onPickCell: () => undefined,
       unresolvedConflictAlert: null,
+      safetyIntervention: null,
       contextMenu: null,
       canManageBlocks: false,
       onOpenContextMenu: () => undefined,
@@ -1310,6 +1363,7 @@ describe("replan status", () => {
         }
       ],
       completedTaskCount: 2,
+      safetyIntervention: null,
       result
     } satisfies SessionResult;
 

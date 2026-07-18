@@ -115,6 +115,11 @@ h2 {
   gap: 6px;
 }
 
+.status-strip .safety-status {
+  border-color: rgba(255, 166, 77, 0.65);
+  color: #ffd4a3;
+}
+
 .api.online {
   color: #2e6f3f;
 }
@@ -801,6 +806,10 @@ input {
 
 .cell.failed-robot-cell .robot-marker {
   background: var(--conflict);
+}
+
+.cell.safety-intervention-robot-cell .robot-marker {
+  box-shadow: 0 0 0 3px rgba(255, 157, 66, 0.9), 0 0 16px rgba(255, 120, 45, 0.7);
 }
 
 .robot-marker {

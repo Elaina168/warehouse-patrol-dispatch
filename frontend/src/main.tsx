@@ -204,12 +204,17 @@ function App() {
     setSession(payload);
     setResult(payload.result);
     setTime(payload.currentTime);
+    if (shouldPauseForSafetyIntervention(payload.safetyIntervention)) {
+      setPlaying(false);
+    }
     setApiStatus("online");
     setDispatchStatus("ready");
     if (previousSessionId && previousSessionId !== payload.sessionId) {
       void deleteSession(API_BASE, previousSessionId).catch(() => undefined);
     }
   }
+
+  const safetyStatus = safetyInterventionLabel(session?.safetyIntervention ?? null);
 
   useEffect(() => {
     return () => {
@@ -614,6 +619,9 @@ function App() {
           <span>T={time}</span>
           <span>{scenario.name}</span>
           <span>{avoidConflicts ? "避碰规划" : "基线对比"}</span>
+          {safetyStatus ? (
+            <span className="safety-status" title={safetyStatus}>{safetyStatus}</span>
+          ) : null}
           <span title={adaptiveReplanWindow ? result?.replanWindowReason : undefined}>
             {assignmentReplanWindowStatusLabel(
               assignmentReplanWindow,
@@ -715,6 +723,7 @@ function App() {
                     mapPickTarget={mapPickTarget}
                     onPickCell={pickManualTaskCell}
                     unresolvedConflictAlert={shouldDisplayConflictMarker(latestConflictAlert, latestConflictResolved) ? latestConflictAlert : null}
+                    safetyIntervention={session?.safetyIntervention ?? null}
                     contextMenu={mapContextMenu}
                     canManageBlocks={session !== null && dispatchStatus === "ready"}
                     onOpenContextMenu={setMapContextMenu}
@@ -1173,6 +1182,7 @@ export function MapBoard({
   mapPickTarget,
   onPickCell,
   unresolvedConflictAlert,
+  safetyIntervention,
   contextMenu,
   canManageBlocks,
   onOpenContextMenu,
@@ -1191,6 +1201,7 @@ export function MapBoard({
   mapPickTarget: MapPickTarget | null;
   onPickCell: (cell: Cell) => void;
   unresolvedConflictAlert: ConflictAlert | null;
+  safetyIntervention: Conflict | null;
   contextMenu: MapContextMenuState | null;
   canManageBlocks: boolean;
   onOpenContextMenu: (context: MapContextMenuState) => void;
@@ -1223,10 +1234,19 @@ export function MapBoard({
     () => new Set([...occupied.values()].map(cellKey)),
     [occupied]
   );
-  const activeConflicts = useMemo(
-    () => new Map(selectMapConflictMarkers(result.conflicts, time, unresolvedConflictAlert, result.paths, result.conflictStates).map((conflict) => [cellKey(conflict.cell), conflict])),
-    [result.conflicts, result.conflictStates, result.paths, time, unresolvedConflictAlert]
-  );
+  const activeConflicts = useMemo(() => {
+    const plannedMarkers = selectMapConflictMarkers(
+      result.conflicts,
+      time,
+      unresolvedConflictAlert,
+      result.paths,
+      result.conflictStates
+    );
+    return new Map(
+      mergeSafetyInterventionMarker(plannedMarkers, safetyIntervention, time)
+        .map((conflict) => [cellKey(conflict.cell), conflict])
+    );
+  }, [result.conflicts, result.conflictStates, result.paths, safetyIntervention, time, unresolvedConflictAlert]);
   const routeArrows = useMemo(
     () => buildActiveRouteArrows(result, time, useRuntimeRobotSnapshot ? robotStates : [], routeHintsEnabled),
     [result, robotStates, routeHintsEnabled, time, useRuntimeRobotSnapshot]
@@ -1267,6 +1287,7 @@ export function MapBoard({
         mapPickTarget && !obstacles.has(key) ? "map-pickable-cell" : "",
         robotId ? "robot-cell" : "",
         runtimeState?.status === "failed" ? "failed-robot-cell" : "",
+        isSafetyInterventionRobot(robotId, safetyIntervention, time) ? "safety-intervention-robot-cell" : "",
         isSelectedRobotCell(robotId, selectedRobotId) ? "selected-robot-cell" : ""
       ]
         .filter(Boolean)
@@ -2093,6 +2114,41 @@ export function selectMapConflictMarkers(
 
 export function shouldDisplayConflictMarker(alert: ConflictAlert | null, resolved: boolean): boolean {
   return alert !== null && !resolved;
+}
+
+
+export function shouldPauseForSafetyIntervention(intervention: Conflict | null): boolean {
+  return intervention !== null;
+}
+
+
+export function safetyInterventionLabel(intervention: Conflict | null): string | null {
+  if (!intervention) return null;
+  const conflictType = intervention.type === "vertex" ? "顶点冲突" : "边交换冲突";
+  return `T=${intervention.time} 安全门已拦截${conflictType}：${intervention.robots.join(" / ")}`;
+}
+
+
+export function mergeSafetyInterventionMarker(
+  markers: Conflict[],
+  intervention: Conflict | null,
+  currentTime: number
+): Conflict[] {
+  if (!intervention || intervention.time !== currentTime) return markers;
+  if (markers.some((marker) => sameConflictAlert(marker, intervention))) return markers;
+  return [...markers, intervention];
+}
+
+
+export function isSafetyInterventionRobot(
+  robotId: string | null,
+  intervention: Conflict | null,
+  currentTime: number
+): boolean {
+  return robotId !== null
+    && intervention !== null
+    && intervention.time === currentTime
+    && intervention.robots.includes(robotId);
 }
 
 
