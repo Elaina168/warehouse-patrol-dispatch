@@ -4,7 +4,16 @@ from fastapi.testclient import TestClient
 
 import backend.app.sessions as sessions_module
 from backend.app.main import app
-from backend.app.schemas import Assignment, Conflict, DispatchOptions, DispatchResult, Metrics, Scenario, Task
+from backend.app.schemas import (
+    Assignment,
+    ChargingVisit,
+    Conflict,
+    DispatchOptions,
+    DispatchResult,
+    Metrics,
+    Scenario,
+    Task,
+)
 from backend.tests.helpers import frontend_demo_scenario, scenario_payload, seeded_pressure_scenario
 
 
@@ -128,6 +137,30 @@ def _forced_safety_gate_scenario() -> dict[str, Any]:
     }
 
 
+def _assert_executed_history_is_collision_free(histories: dict[str, list[tuple[int, int]]]) -> None:
+    horizon = max((len(path) for path in histories.values()), default=0)
+    for tick in range(horizon):
+        positions = {
+            robot_id: path[min(tick, len(path) - 1)]
+            for robot_id, path in histories.items()
+        }
+        assert len(set(positions.values())) == len(positions)
+        if tick == 0:
+            continue
+        robot_ids = sorted(histories)
+        for first_index, first_id in enumerate(robot_ids):
+            for second_id in robot_ids[first_index + 1 :]:
+                first_previous = histories[first_id][min(tick - 1, len(histories[first_id]) - 1)]
+                first_current = positions[first_id]
+                second_previous = histories[second_id][min(tick - 1, len(histories[second_id]) - 1)]
+                second_current = positions[second_id]
+                assert not (
+                    first_previous == second_current
+                    and second_previous == first_current
+                    and first_previous != first_current
+                )
+
+
 def test_session_safety_gate_holds_fleet_at_first_vertex_conflict() -> None:
     client = TestClient(app)
     created = client.post(
@@ -159,6 +192,240 @@ def test_session_safety_gate_holds_fleet_at_first_vertex_conflict() -> None:
     assert payload["metricsHistory"][-1]["travelledDistance"] == 1
     assert batteries == {"R1": 90, "R2": 89}
     assert any("T=2 执行安全门拦截 vertex 冲突：R1 / R2" == item["text"] for item in payload["result"]["eventLog"])
+
+
+def test_session_safety_gate_blocks_reverse_edge_swap() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "edge-safety",
+            "name": "edge-safety",
+            "description": "反向边交换安全门测试",
+            "width": 3,
+            "height": 2,
+            "obstacles": [],
+            "zones": {"warehouse": [[0, 0]], "inspection": [], "delivery": [], "charging": []},
+            "robots": [
+                {"id": "R1", "name": "R1", "start": [0, 0], "battery": 80, "load": 1},
+                {"id": "R2", "name": "R2", "start": [1, 0], "battery": 80, "load": 1},
+            ],
+            "tasks": [],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+    conflict = Conflict(time=1, type="edge", robots=["R1", "R2"], cell=(1, 0))
+    result = _safety_test_result(
+        scenario,
+        {"R1": [(0, 0), (1, 0)], "R2": [(1, 0), (0, 0)]},
+        [conflict],
+    )
+    session = sessions_module.DispatchSession(
+        session_id="edge-safety",
+        scenario=scenario,
+        options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        robot_positions={"R1": (0, 0), "R2": (1, 0)},
+        robot_path_history={"R1": [(0, 0)], "R2": [(1, 0)]},
+        robot_travelled_distance={"R1": 0, "R2": 0},
+        robot_battery_levels={"R1": 80, "R2": 80},
+        last_result=result,
+        planning_started=True,
+    )
+
+    sessions_module._advance_session(session, 1)
+
+    assert session.current_time == 1
+    assert session.robot_path_history == {
+        "R1": [(0, 0), (0, 0)],
+        "R2": [(1, 0), (1, 0)],
+    }
+    assert session.robot_travelled_distance == {"R1": 0, "R2": 0}
+    assert session.robot_battery_levels == {"R1": 80, "R2": 80}
+    assert session.last_safety_intervention == conflict
+
+
+def test_safety_hold_does_not_complete_unexecuted_delivery_pickup() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "held-pickup",
+            "name": "held-pickup",
+            "description": "安全等待不得完成未执行取货",
+            "width": 3,
+            "height": 2,
+            "obstacles": [],
+            "zones": {"warehouse": [[0, 1]], "inspection": [], "delivery": [[2, 1]], "charging": []},
+            "robots": [
+                {"id": "R1", "name": "R1", "start": [0, 1], "battery": 80, "load": 1},
+                {"id": "R2", "name": "R2", "start": [0, 0], "battery": 80, "load": 1},
+                {"id": "R3", "name": "R3", "start": [1, 0], "battery": 80, "load": 1},
+            ],
+            "tasks": [
+                {
+                    "id": "D1",
+                    "type": "delivery",
+                    "title": "等待中的取货",
+                    "priority": 2,
+                    "pickup": [1, 1],
+                    "dropoff": [2, 1],
+                    "demand": 1,
+                }
+            ],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+    task = scenario.tasks[0]
+    conflict = Conflict(time=1, type="edge", robots=["R2", "R3"], cell=(1, 0))
+    result = _safety_test_result(
+        scenario,
+        {
+            "R1": [(0, 1), (1, 1), (2, 1)],
+            "R2": [(0, 0), (1, 0)],
+            "R3": [(1, 0), (0, 0)],
+        },
+        [conflict],
+        [Assignment(robotId="R1", tasks=[task])],
+    )
+    session = sessions_module.DispatchSession(
+        session_id="held-pickup",
+        scenario=scenario,
+        options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        robot_positions={robot.id: robot.start for robot in scenario.robots},
+        robot_path_history={robot.id: [robot.start] for robot in scenario.robots},
+        robot_travelled_distance={robot.id: 0 for robot in scenario.robots},
+        robot_battery_levels={robot.id: robot.battery for robot in scenario.robots},
+        last_result=result,
+        planning_started=True,
+    )
+
+    sessions_module._advance_session(session, 1)
+
+    assert session.task_waypoint_progress.get("D1", 0) == 0
+    assert "D1" not in session.task_payload_positions
+    assert "D1" not in session.completed_task_ids
+
+
+def test_safety_hold_counts_service_time_already_started_at_target() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "held-service",
+            "name": "held-service",
+            "description": "安全等待继续累计已开始作业",
+            "width": 3,
+            "height": 2,
+            "obstacles": [],
+            "zones": {"warehouse": [[0, 1]], "inspection": [[0, 1]], "delivery": [], "charging": []},
+            "robots": [
+                {"id": "R1", "name": "R1", "start": [0, 1], "battery": 80, "load": 1},
+                {"id": "R2", "name": "R2", "start": [0, 0], "battery": 80, "load": 1},
+                {"id": "R3", "name": "R3", "start": [1, 0], "battery": 80, "load": 1},
+            ],
+            "tasks": [
+                {
+                    "id": "I1",
+                    "type": "inspection",
+                    "title": "原地作业",
+                    "priority": 2,
+                    "targets": [[0, 1]],
+                    "serviceTime": 1,
+                }
+            ],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+    task = scenario.tasks[0]
+    conflict = Conflict(time=1, type="edge", robots=["R2", "R3"], cell=(1, 0))
+    result = _safety_test_result(
+        scenario,
+        {
+            "R1": [(0, 1), (0, 1)],
+            "R2": [(0, 0), (1, 0)],
+            "R3": [(1, 0), (0, 0)],
+        },
+        [conflict],
+        [Assignment(robotId="R1", tasks=[task])],
+    )
+    session = sessions_module.DispatchSession(
+        session_id="held-service",
+        scenario=scenario,
+        options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        robot_positions={robot.id: robot.start for robot in scenario.robots},
+        robot_path_history={robot.id: [robot.start] for robot in scenario.robots},
+        robot_travelled_distance={robot.id: 0 for robot in scenario.robots},
+        robot_battery_levels={robot.id: robot.battery for robot in scenario.robots},
+        last_result=result,
+        planning_started=True,
+    )
+
+    sessions_module._advance_session(session, 1)
+
+    assert session.task_waypoint_progress["I1"] == 1
+    assert session.task_completion_times["I1"] == 1
+    assert "I1" in session.completed_task_ids
+
+
+def test_safety_hold_keeps_an_active_charge_completion() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "held-charge",
+            "name": "held-charge",
+            "description": "安全等待保持已开始充电的完成语义",
+            "width": 3,
+            "height": 2,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": [[0, 1]]},
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [0, 1],
+                    "battery": 10,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                },
+                {"id": "R2", "name": "R2", "start": [0, 0], "battery": 80, "load": 1},
+                {"id": "R3", "name": "R3", "start": [1, 0], "battery": 80, "load": 1},
+            ],
+            "tasks": [],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+    conflict = Conflict(time=2, type="edge", robots=["R2", "R3"], cell=(1, 0))
+    result = _safety_test_result(
+        scenario,
+        {
+            "R1": [(0, 1), (0, 1), (0, 1)],
+            "R2": [(0, 0), (0, 0), (1, 0)],
+            "R3": [(1, 0), (1, 0), (0, 0)],
+        },
+        [conflict],
+    ).model_copy(
+        update={
+            "chargingVisits": [
+                ChargingVisit(
+                    robotId="R1",
+                    station=(0, 1),
+                    departureTime=0,
+                    arrivalTime=1,
+                    completionTime=2,
+                )
+            ]
+        }
+    )
+    session = sessions_module.DispatchSession(
+        session_id="held-charge",
+        scenario=scenario,
+        options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        current_time=1,
+        robot_positions={robot.id: robot.start for robot in scenario.robots},
+        robot_path_history={robot.id: [robot.start, robot.start] for robot in scenario.robots},
+        robot_travelled_distance={robot.id: 0 for robot in scenario.robots},
+        robot_battery_levels={"R1": 10, "R2": 80, "R3": 80},
+        last_result=result,
+        planning_started=True,
+    )
+
+    sessions_module._advance_session(session, 2)
+
+    assert session.robot_battery_levels["R1"] == 100
+    assert any(event.text == "R1 完成充电" for event in session.event_notes)
 
 
 def test_safety_gate_does_not_apply_unreached_future_runtime_events() -> None:
@@ -249,6 +516,159 @@ def test_future_runtime_event_clears_stale_safety_intervention_before_advancing(
     assert payload["currentTime"] == 8
     assert payload["safetyIntervention"] is None
     assert "R1" in payload["result"]["unavailableRobotIds"]
+
+
+def test_safety_intervention_persists_on_read_and_reset_clears_it() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _forced_safety_gate_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    ).json()
+    session_id = created["sessionId"]
+    held = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 8}).json()
+    read_back = client.get(f"/api/sessions/{session_id}").json()
+    runtime_update = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={
+            "task": {
+                "id": "M1",
+                "type": "inspection",
+                "title": "拦截后的运行时任务",
+                "priority": 2,
+                "releaseTime": held["currentTime"],
+                "targets": [[0, 0]],
+            }
+        },
+    ).json()
+    reset = client.post(f"/api/sessions/{session_id}/reset").json()
+
+    assert held["safetyIntervention"] is not None
+    assert read_back["safetyIntervention"] == held["safetyIntervention"]
+    assert runtime_update["safetyIntervention"] == held["safetyIntervention"]
+    assert reset["safetyIntervention"] is None
+
+
+def test_next_safe_tick_clears_the_previous_safety_intervention() -> None:
+    client = TestClient(app)
+    safe_scenario = scenario_payload()
+    safe_scenario["robots"] = safe_scenario["robots"][:1]
+    safe_scenario["tasks"] = []
+    safe_scenario["dynamic"] = {
+        "triggerTime": 0,
+        "blockedCells": [],
+        "failedRobots": [],
+        "tasks": [],
+    }
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": safe_scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    ).json()
+    session_id = created["sessionId"]
+    sessions_module._sessions[session_id].last_safety_intervention = Conflict(
+        time=0,
+        type="vertex",
+        robots=["R1", "R2"],
+        cell=(0, 0),
+    )
+
+    response = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 1})
+
+    assert response.status_code == 200
+    assert response.json()["currentTime"] == 1
+    assert response.json()["safetyIntervention"] is None
+
+
+def test_baseline_mode_keeps_existing_conflict_execution_behavior() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _forced_safety_gate_scenario(),
+            "options": {"avoidConflicts": False, "includeDynamic": False},
+        },
+    ).json()
+    response = client.post(
+        f"/api/sessions/{created['sessionId']}/tick",
+        json={"currentTime": 1},
+    ).json()
+
+    positions = [tuple(state["position"]) for state in response["robotStates"]]
+    assert response["currentTime"] == 1
+    assert response["safetyIntervention"] is None
+    assert len(set(positions)) < len(positions)
+    assert response["metricsHistory"][-1]["activeConflictCount"] == 1
+
+
+def test_safety_hold_preserves_dynamic_trigger_on_the_same_absolute_tick() -> None:
+    scenario_payload_value = _forced_safety_gate_scenario()
+    scenario_payload_value["dynamic"] = {
+        "triggerTime": 1,
+        "blockedCells": [],
+        "failedRobots": [],
+        "tasks": [
+            {
+                "id": "E1",
+                "type": "emergency",
+                "title": "同 tick 动态任务",
+                "priority": 4,
+                "releaseTime": 1,
+                "target": [2, 0],
+            }
+        ],
+    }
+    scenario = Scenario.model_validate(scenario_payload_value)
+    conflict = Conflict(time=1, type="edge", robots=["R1", "R2"], cell=(1, 0))
+    result = _safety_test_result(
+        scenario,
+        {"R1": [(0, 0), (1, 0)], "R2": [(2, 0), (0, 0)]},
+        [conflict],
+    )
+    session = sessions_module.DispatchSession(
+        session_id="same-tick-dynamic-safety",
+        scenario=scenario,
+        options=DispatchOptions(avoidConflicts=True, includeDynamic=True),
+        robot_positions={robot.id: robot.start for robot in scenario.robots},
+        robot_path_history={robot.id: [robot.start] for robot in scenario.robots},
+        robot_travelled_distance={robot.id: 0 for robot in scenario.robots},
+        robot_battery_levels={robot.id: robot.battery for robot in scenario.robots},
+        last_result=result,
+        planning_started=True,
+    )
+
+    sessions_module._advance_session(session, 1)
+
+    texts = [event.text for event in session.event_notes]
+    assert session.current_time == 1
+    assert any(text.startswith("T=1 执行安全门拦截") for text in texts)
+    assert "T=1 场景动态事件触发" in texts
+
+
+def test_repeated_unsolved_plans_continue_to_hold_without_executed_conflicts() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _forced_safety_gate_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    ).json()
+    session_id = created["sessionId"]
+    first = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 8}).json()
+    second = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": first["currentTime"] + 8},
+    ).json()
+
+    session = sessions_module._sessions[session_id]
+    assert first["safetyIntervention"] is not None
+    assert second["safetyIntervention"] is not None
+    _assert_executed_history_is_collision_free(session.robot_path_history)
 
 
 def test_safety_hold_does_not_visit_waypoint_released_at_conflict_time() -> None:
