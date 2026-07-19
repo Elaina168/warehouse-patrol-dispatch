@@ -1,5 +1,146 @@
-from backend.benchmarks.scenarios import benchmark_cases, benchmark_options, build_benchmark_scenario
+from backend.benchmarks.scenarios import BenchmarkCase, benchmark_cases, benchmark_options, build_benchmark_scenario
+from backend.benchmarks.results import BenchmarkReport, BenchmarkRun, nearest_rank_p95, percent, summarize_runs
 from backend.app.dispatch import astar
+
+
+def _benchmark_run(case_id: str, run_index: int, **updates) -> BenchmarkRun:
+    values = {
+        "case_id": case_id,
+        "family": "scale",
+        "mode": "direct",
+        "seed": None,
+        "run_index": run_index,
+        "robot_count": 4,
+        "task_count": 15,
+        "dynamic_task_count": 3,
+        "obstacle_count": 0,
+        "tick_target": None,
+        "outcome": "completed",
+        "error_type": None,
+        "error_message": None,
+        "correctness_stable": True,
+        "released_task_count": None,
+        "covered_task_count": None,
+        "assigned_task_count": 15,
+        "completed_task_count": None,
+        "assignment_rate_percent": 100,
+        "coverage_rate_percent": None,
+        "actual_completion_rate_percent": None,
+        "predicted_conflict_count": 0,
+        "active_conflict_count": None,
+        "execution_safety_evaluated": False,
+        "safety_intervention_count": 0,
+        "deadline_miss_count": 0,
+        "failure_count": 0,
+        "total_distance": 10,
+        "makespan": 10,
+        "replan_time_ms": 4,
+        "max_snapshot_replan_time_ms": None,
+        "wall_clock_ms": 10,
+    }
+    values.update(updates)
+    return BenchmarkRun(**values)
+
+
+def test_algorithm_benchmark_statistics_use_completed_runs_only() -> None:
+    runs = [
+        _benchmark_run("scale-r4-t15", 1, wall_clock_ms=10, replan_time_ms=4),
+        _benchmark_run("scale-r4-t15", 2, wall_clock_ms=20, replan_time_ms=8),
+        _benchmark_run("scale-r4-t15", 3, wall_clock_ms=30, replan_time_ms=12),
+        _benchmark_run(
+            "scale-r4-t15",
+            4,
+            outcome="timeout",
+            correctness_stable=False,
+            error_type="TimeoutError",
+            error_message="运行超时",
+            replan_time_ms=None,
+            wall_clock_ms=30,
+        ),
+    ]
+    summary = summarize_runs(runs)[0]
+    assert percent(1, 3) == 33.3
+    assert nearest_rank_p95([10, 20, 30]) == 30
+    assert summary.completed_run_count == 3
+    assert summary.timeout_count == 1
+    assert summary.median_wall_clock_ms == 20
+    assert summary.p95_wall_clock_ms == 30
+    assert summary.median_replan_time_ms == 8
+    assert summary.p95_replan_time_ms == 12
+
+
+def test_algorithm_benchmark_summary_uses_null_timings_without_completed_runs() -> None:
+    summary = summarize_runs([
+        _benchmark_run(
+            "scale-r4-t15",
+            1,
+            outcome="timeout",
+            correctness_stable=False,
+            error_type="TimeoutError",
+            error_message="运行超时",
+            replan_time_ms=None,
+            wall_clock_ms=30,
+        )
+    ])[0]
+    assert summary.median_wall_clock_ms is None
+    assert summary.p95_wall_clock_ms is None
+    assert summary.median_replan_time_ms is None
+    assert summary.p95_replan_time_ms is None
+
+
+def test_algorithm_benchmark_failed_run_factories_preserve_case_metadata() -> None:
+    case = BenchmarkCase("bottleneck-r4-t4", "bottleneck", "online", None, 4, 4, 0, 120)
+    timeout = BenchmarkRun.timeout(case, 1, 30)
+    error = BenchmarkRun.error(case, 2, "ValueError", "无效输入", 20)
+
+    assert timeout.to_record() == {
+        "caseId": "bottleneck-r4-t4",
+        "family": "bottleneck",
+        "mode": "online",
+        "seed": None,
+        "runIndex": 1,
+        "robotCount": 4,
+        "taskCount": 4,
+        "dynamicTaskCount": 0,
+        "obstacleCount": None,
+        "tickTarget": 120,
+        "outcome": "timeout",
+        "errorType": "TimeoutError",
+        "errorMessage": None,
+        "correctnessStable": False,
+        "releasedTaskCount": None,
+        "coveredTaskCount": None,
+        "assignedTaskCount": None,
+        "completedTaskCount": None,
+        "assignmentRatePercent": None,
+        "coverageRatePercent": None,
+        "actualCompletionRatePercent": None,
+        "predictedConflictCount": None,
+        "activeConflictCount": None,
+        "executionSafetyEvaluated": True,
+        "safetyInterventionCount": 0,
+        "deadlineMissCount": None,
+        "failureCount": None,
+        "totalDistance": None,
+        "makespan": None,
+        "replanTimeMs": None,
+        "maxSnapshotReplanTimeMs": None,
+        "wallClockMs": 30,
+    }
+    assert error.error_type == "ValueError"
+    assert error.error_message == "无效输入"
+    assert error.outcome == "error"
+
+
+def test_algorithm_benchmark_report_serializes_runs_and_summaries() -> None:
+    report = BenchmarkReport.create({"repetitions": 5}, [_benchmark_run("scale-r4-t15", 1)])
+    record = report.to_record()
+
+    assert record["schemaVersion"] == 1
+    assert record["generatedAt"].endswith("Z")
+    assert record["config"] == {"repetitions": 5}
+    assert record["runs"][0]["caseId"] == "scale-r4-t15"
+    assert record["caseSummaries"][0]["completedRunCount"] == 1
 
 
 def test_algorithm_benchmark_catalog_has_exact_cases_and_options() -> None:
