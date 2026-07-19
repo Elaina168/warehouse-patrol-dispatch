@@ -1,3 +1,9 @@
+import multiprocessing
+import queue as queue_module
+import sys
+import traceback
+from collections.abc import Callable
+from dataclasses import replace
 from time import perf_counter
 
 from backend.app.dispatch import run_dispatch
@@ -19,6 +25,94 @@ def execute_benchmark_case(case_id: str, run_index: int) -> BenchmarkRun:
     if case.mode == "direct":
         return _execute_direct(case, run_index)
     return _execute_online(case, run_index)
+
+
+def _sanitize_error_text(text: str) -> str:
+    return text.replace("\r", "").replace("\n", "")[:500]
+
+
+def _guarded_worker_entry(
+    result_queue,
+    worker_callable: Callable[[str, int], BenchmarkRun],
+    case_id: str,
+    run_index: int,
+) -> None:
+    try:
+        result_queue.put(("completed", worker_callable(case_id, run_index)))
+    except Exception as exc:
+        result_queue.put(("error", type(exc).__name__, str(exc), traceback.format_exc()))
+
+
+def run_isolated_case(
+    case: BenchmarkCase,
+    run_index: int,
+    timeout_seconds: float,
+    worker_callable: Callable[[str, int], BenchmarkRun] = execute_benchmark_case,
+) -> BenchmarkRun:
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue(maxsize=1)
+    process = context.Process(
+        target=_guarded_worker_entry,
+        args=(result_queue, worker_callable, case.case_id, run_index),
+    )
+    process_started = False
+    started_at = perf_counter()
+    try:
+        process.start()
+        process_started = True
+        process.join(timeout_seconds)
+        wall_clock_ms = round((perf_counter() - started_at) * 1000, 2)
+        if process.is_alive():
+            process.terminate()
+            process.join()
+            return BenchmarkRun.timeout(case, run_index, wall_clock_ms)
+        try:
+            payload = result_queue.get(timeout=1)
+        except queue_module.Empty:
+            payload = None
+        if payload is None:
+            return BenchmarkRun.error(
+                case,
+                run_index,
+                "ChildProcessError",
+                f"子进程退出码: {process.exitcode}",
+                wall_clock_ms,
+            )
+        if payload[0] == "error":
+            sys.stderr.write(payload[3])
+            sys.stderr.flush()
+            return BenchmarkRun.error(
+                case,
+                run_index,
+                payload[1],
+                _sanitize_error_text(payload[2]),
+                wall_clock_ms,
+            )
+        run = payload[1]
+        return replace(run, wall_clock_ms=wall_clock_ms)
+    finally:
+        if process_started:
+            if process.is_alive():
+                process.terminate()
+                process.join()
+            process.close()
+        result_queue.close()
+        result_queue.join_thread()
+
+
+def run_benchmark_cases(
+    cases: tuple[BenchmarkCase, ...],
+    repetitions: int,
+    timeout_seconds: float,
+    on_result: Callable[[list[BenchmarkRun]], None] | None = None,
+) -> list[BenchmarkRun]:
+    runs: list[BenchmarkRun] = []
+    for case in cases:
+        for run_index in range(1, repetitions + 1):
+            runs.append(run_isolated_case(case, run_index, timeout_seconds))
+            if on_result is not None:
+                on_result(list(runs))
+    return runs
 
 
 def _execute_direct(case: BenchmarkCase, run_index: int) -> BenchmarkRun:

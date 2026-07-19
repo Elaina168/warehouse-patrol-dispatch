@@ -1,8 +1,23 @@
+import time
+
+from backend.benchmarks import runner as runner_module
 from backend.benchmarks.scenarios import BenchmarkCase, benchmark_cases, benchmark_options, build_benchmark_scenario
 from backend.benchmarks.results import BenchmarkReport, BenchmarkRun, nearest_rank_p95, percent, summarize_runs
-from backend.benchmarks.runner import execute_benchmark_case
+from backend.benchmarks.runner import execute_benchmark_case, run_benchmark_cases, run_isolated_case
 from backend.app.dispatch import astar
 from backend.app import sessions as sessions_module
+
+
+def _sleeping_benchmark_worker(case_id: str, run_index: int):
+    time.sleep(2)
+
+
+def _failing_benchmark_worker(case_id: str, run_index: int):
+    raise RuntimeError("benchmark worker failed")
+
+
+def _multiline_failing_benchmark_worker(case_id: str, run_index: int):
+    raise RuntimeError("first\r\nsecond" + "x" * 600)
 
 
 def _benchmark_run(case_id: str, run_index: int, **updates) -> BenchmarkRun:
@@ -42,6 +57,71 @@ def _benchmark_run(case_id: str, run_index: int, **updates) -> BenchmarkRun:
     }
     values.update(updates)
     return BenchmarkRun(**values)
+
+
+def test_isolated_algorithm_benchmark_records_timeout() -> None:
+    case = benchmark_cases(("scale",))[0]
+    started_at = time.perf_counter()
+    run = run_isolated_case(case, 1, 0.05, worker_callable=_sleeping_benchmark_worker)
+
+    assert time.perf_counter() - started_at < 1
+    assert run.outcome == "timeout"
+    assert run.correctness_stable is False
+    assert run.error_type == "TimeoutError"
+
+
+def test_isolated_algorithm_benchmark_records_worker_error(capsys) -> None:
+    case = benchmark_cases(("scale",))[0]
+    run = run_isolated_case(case, 1, 5, worker_callable=_failing_benchmark_worker)
+    captured = capsys.readouterr()
+
+    assert run.outcome == "error"
+    assert run.error_type == "RuntimeError"
+    assert run.error_message == "benchmark worker failed"
+    assert "Traceback (most recent call last)" in captured.err
+    assert "benchmark worker failed" in captured.err
+    assert captured.out == ""
+
+
+def test_isolated_algorithm_benchmark_sanitizes_worker_error() -> None:
+    case = benchmark_cases(("scale",))[0]
+    run = run_isolated_case(case, 1, 5, worker_callable=_multiline_failing_benchmark_worker)
+
+    assert run.error_message is not None
+    assert len(run.error_message) == 500
+    assert "\r" not in run.error_message
+    assert "\n" not in run.error_message
+    assert run.error_message.startswith("firstsecond")
+
+
+def test_algorithm_benchmark_batch_continues_and_reports_cumulative_copies(monkeypatch) -> None:
+    cases = benchmark_cases(("scale",))[:2]
+    calls: list[tuple[str, int, float]] = []
+    snapshots: list[list[BenchmarkRun]] = []
+
+    def fake_run_isolated_case(
+        case: BenchmarkCase,
+        run_index: int,
+        timeout_seconds: float,
+    ) -> BenchmarkRun:
+        calls.append((case.case_id, run_index, timeout_seconds))
+        if len(calls) == 1:
+            return BenchmarkRun.error(case, run_index, "RuntimeError", "failed", 1)
+        return _benchmark_run(case.case_id, run_index)
+
+    monkeypatch.setattr(runner_module, "run_isolated_case", fake_run_isolated_case)
+    runs = run_benchmark_cases(cases, 2, 3.5, on_result=snapshots.append)
+
+    assert calls == [
+        (cases[0].case_id, 1, 3.5),
+        (cases[0].case_id, 2, 3.5),
+        (cases[1].case_id, 1, 3.5),
+        (cases[1].case_id, 2, 3.5),
+    ]
+    assert [run.outcome for run in runs] == ["error", "completed", "completed", "completed"]
+    assert [len(snapshot) for snapshot in snapshots] == [1, 2, 3, 4]
+    assert len({id(snapshot) for snapshot in snapshots}) == 4
+    assert snapshots[0] == [runs[0]]
 
 
 def test_algorithm_benchmark_statistics_use_completed_runs_only() -> None:
