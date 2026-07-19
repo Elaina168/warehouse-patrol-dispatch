@@ -388,6 +388,33 @@ http://127.0.0.1:8011/health
 
 后端仍保留实验接口和固定种子压力测试，用于自动化回归和后续报告取数；基线对比、直接调度和实验接口仍可返回或执行预测冲突，用于对照，且这些接口不再出现在前端主界面。
 
+### 6.1 离线算法边界基准人工复核
+
+离线基准用于记录当前竞争范围内的规模、密度和瓶颈边界；它不替代在线界面的人工操作测试，也不证明完整 MAPF 能力。先运行聚焦回归和完整项目检查：
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m pytest backend/tests/test_algorithm_benchmark.py -q
+& 'C:\nvm4w\nodejs\npm.cmd' run check
+```
+
+然后运行标准完整基准：
+
+```powershell
+& 'C:\nvm4w\nodejs\npm.cmd' run benchmark:algorithm -- --repetitions 5 --timeout-seconds 30 --output-dir output/algorithm-boundary-benchmark
+```
+
+命令会在 `output/algorithm-boundary-benchmark` 下创建一个 UTC 时间戳结果目录。最终目录必须同时包含 `results.json`、`runs.csv` 和 `case-summaries.csv`；`runs.csv` 与 `case-summaries.csv` 使用 UTF-8 with BOM，可直接按 UTF-8 打开。默认九个案例为 `scale-r4-t15`、`scale-r8-t27`、`scale-r12-t39`、`density-r8-t31`、`density-r8-t43`、`density-r8-t55`、`bottleneck-r4-t4`、`bottleneck-r6-t6`、`bottleneck-r8-t8`，各运行五次。
+
+字段含义：`outcome` 为 `completed`、`timeout` 或 `error`；`correctnessStable` 表示该次运行满足对应案例的稳定性条件；`stableRunRatePercent` 是每案例稳定运行率；`medianWallClockMs`、`p95WallClockMs`、`medianReplanTimeMs` 和 `p95ReplanTimeMs` 分别汇总完成运行的墙钟和规划耗时。`predictedConflictCount` 对应 `Metrics.conflictCount`，仅代表规划预测。在线案例的 `executionSafetyEvaluated` 应为 `true`，并应复核 `activeConflictCount` 和 `safetyInterventionCount`；直接规划案例不评价实际执行安全。
+
+人工复核清单：
+
+1. `results.json.runs`、`runs.csv` 和 `case-summaries.csv` 的案例数、运行数、完成数、超时数和错误数一致；默认完整基准应有 45 条运行记录和 9 条案例汇总。
+2. 逐案例记录 `completed`、`timeout`、`error`、`stableRunCount`、`stableRunRatePercent`、中位数和 P95；`timeout` 或 `error` 是边界结果，不能不经排查直接认定为代码缺陷。
+3. 复核在线 `bottleneck-*` 案例的 `executionSafetyEvaluated`、`activeConflictCount` 和 `safetyInterventionCount` 字段均存在，并将安全门介入次数写入人工结论。
+4. 以 UTF-8 打开两份 CSV，确认表头和记录可读；不要只凭自动汇总生成报告结论，也不要把预测零冲突写成完整 MAPF 保证。
+5. 运行 `git status --short`，确认 `output/` 基准证据未跟踪且未暂存，不提交结果目录。
+
 ## 7. 指标解释
 
 常用指标：

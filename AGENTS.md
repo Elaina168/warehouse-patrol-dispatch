@@ -188,7 +188,9 @@ Recommended execution order:
    - The previous 8-robot seed-43 late-goal conflict boundary is now a passing regression through reservation-aware post-task parking.
    - An explainable adaptive rolling-window policy is implemented with fixed-mode compatibility, task-pressure and planning-latency contraction, low-load future-work expansion, effective-window explanations, and experiment comparison support. Fixed mode remains the cross-environment deterministic regression baseline because wall-clock latency feedback can vary by machine load.
    - Online execution safety is now a code-enforced invariant for `avoidConflicts=true`: the first predicted vertex or reverse-edge conflict tick causes a full-fleet hold, is returned early through `SessionResult.safetyIntervention`, and never writes the conflicting action into actual path history. Baseline comparison, direct dispatch, and experiments intentionally remain prediction/comparison paths and can still return or execute conflicts.
+   - The offline algorithm boundary benchmark is implemented with deterministic scale, density, and online bottleneck cases, isolated per-run timeouts, JSON/CSV result reports, and stability summaries. It records planning forecasts separately from online execution safety evidence; it does not establish complete MAPF or full-horizon zero-conflict guarantees.
    - Remaining work is algorithmic quality beyond the current heuristic planner, especially richer MAPF behavior if needed, adaptive-threshold calibration, performance tuning on larger instances, and full-horizon zero-conflict guarantees. The safety gate prevents unsafe execution but does not guarantee that every input has a zero-conflict route.
+   - Next, run and manually review the complete boundary benchmark, then choose performance optimization, threshold calibration, or an independent MAPF evaluation from the evidence.
    - Battery and charging are now hard runtime constraints: a robot consumes one unit per moved grid cell, routes to a reachable charger when needed, waits for `chargeTime`, and remains unavailable to preemption while charging.
 
 3. Online scheduling module completion - 接近完成
@@ -238,7 +240,8 @@ Recommended execution order:
    - Scale comparison now has backend regression coverage across the real fixed demo scenario set, not only synthetic scale inputs.
    - Scale comparison also covers labeled homogeneous and specialized capability fleets, and a focused online regression covers the unique-compatible-robot failure and recovery sequence without adding another experiment endpoint.
    - Fixed-seed pressure comparison has backend coverage for standard and extended stability sets, including the repaired seed-43 pressure boundary, with assignment-rate, deadline-miss, planning-budget, distance, and makespan evidence.
-   - Remaining work is manually reviewed final wording after the official competition material requirements are known.
+   - The offline algorithm boundary benchmark is implemented as command-line evidence for nine deterministic scale, density, and online bottleneck cases. Its reports distinguish predicted conflicts from active online conflicts and safety interventions; the six existing experiment APIs remain unchanged.
+   - Next, run and manually review the complete boundary benchmark, then use the evidence to choose performance optimization, threshold calibration, or an independent MAPF evaluation. Do not present the benchmark as a complete MAPF result.
    - Output should feed the report and defense: charts, tables, conclusions, and a short explanation of why the algorithm improves the baseline.
 
 9. Competition materials and demo package - 未开始

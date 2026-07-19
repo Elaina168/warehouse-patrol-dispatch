@@ -248,6 +248,22 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 
 基线对比、直接调度和实验接口仍可返回或执行预测冲突，用于对照；安全门只属于开启避碰的在线执行链路。实验接口不模拟前端暂停或在线执行拦截。
 
+## 离线算法边界基准
+
+现有六个 `/api/experiments/*` 接口保持不变：`/api/experiments/conflict-avoidance`、`/api/experiments/dynamic-replanning`、`/api/experiments/replan-window`、`/api/experiments/scale`、`/api/experiments/seeded-pressure`、`/api/experiments/online-pressure`。离线基准是独立的命令行取证流程，不新增实验接口，也不替代这些接口的回归用途。
+
+在项目根目录运行默认完整基准：
+
+```powershell
+& 'C:\nvm4w\nodejs\npm.cmd' run benchmark:algorithm -- --repetitions 5 --timeout-seconds 30 --output-dir output/algorithm-boundary-benchmark
+```
+
+默认场景族共九个案例：`scale-r4-t15`、`scale-r8-t27`、`scale-r12-t39`、`density-r8-t31`、`density-r8-t43`、`density-r8-t55`、`bottleneck-r4-t4`、`bottleneck-r6-t6`、`bottleneck-r8-t8`。每个案例默认运行五次，结果写入命令输出目录下按 UTC 时间创建的子目录。
+
+报告中的 `predictedConflictCount` 对应直接规划或在线最终规划的 `Metrics.conflictCount`，是规划预测，不表示冲突动作已经执行。在线案例还以 `activeConflictCount` 和 `safetyInterventionCount` 提供实际执行安全证据：前者是最终指标快照中的活动冲突数，后者是执行过程中安全门的介入次数。直接规划案例的 `executionSafetyEvaluated` 为 `false`，在线案例为 `true`。
+
+`timeout` 和 `error` 是算法边界基准的结果类别，不自动判为代码缺陷；应结合案例、错误信息、稳定运行率和人工复核再判断。报告结论必须人工复核，不能把预测零冲突或在线安全门表述为完整 MAPF 保证或任意输入下的全规划时域零冲突保证。
+
 ## 后续实验方向
 
 后续可以继续增加：
