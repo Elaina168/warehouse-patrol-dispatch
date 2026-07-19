@@ -13,6 +13,7 @@
     "frontend:test": "npm --prefix frontend run test",
     "backend:dev": ".\\.tools\\powershell\\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev-backend.ps1",
     "backend:test": ".\\.venv\\Scripts\\python.exe -m pytest backend/tests",
+    "benchmark:algorithm": ".\\.venv\\Scripts\\python.exe -m backend.benchmarks.algorithm_boundary",
     "check": "npm run frontend:build && npm run frontend:test && npm run backend:test"
   },
   "engines": {

@@ -1,7 +1,16 @@
+import csv
+import datetime as datetime_module
+import json
 import multiprocessing
+import re
 import time
 
+import pytest
+
+from backend.benchmarks import algorithm_boundary as algorithm_boundary_module
 from backend.benchmarks import runner as runner_module
+from backend.benchmarks.algorithm_boundary import main, parse_args
+from backend.benchmarks.reporting import write_final_report, write_partial_report
 from backend.benchmarks.scenarios import BenchmarkCase, benchmark_cases, benchmark_options, build_benchmark_scenario
 from backend.benchmarks.results import BenchmarkReport, BenchmarkRun, nearest_rank_p95, percent, summarize_runs
 from backend.benchmarks.runner import execute_benchmark_case, run_benchmark_cases, run_isolated_case
@@ -436,3 +445,137 @@ def test_online_algorithm_benchmark_uses_execution_safety(monkeypatch) -> None:
     assert run.active_conflict_count == 0
     assert captured_histories
     _assert_history_collision_free(captured_histories[0])
+
+
+def test_algorithm_benchmark_writes_utf8_json_and_csv(tmp_path) -> None:
+    run = execute_benchmark_case("scale-r4-t15", 1)
+    report = BenchmarkReport.create(
+        config={"families": ["scale"], "repetitions": 1, "timeoutSeconds": 30},
+        runs=[run],
+    )
+
+    write_final_report(tmp_path, report)
+
+    payload = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
+    assert payload["schemaVersion"] == 1
+    assert payload["runs"][0]["caseId"] == "scale-r4-t15"
+    assert payload["caseSummaries"][0]["runCount"] == 1
+    with (tmp_path / "runs.csv").open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["caseId"] == "scale-r4-t15"
+    assert (tmp_path / "case-summaries.csv").exists()
+
+
+def test_algorithm_benchmark_replaces_partial_report_and_removes_it_after_final(tmp_path) -> None:
+    first_run = _benchmark_run("scale-r4-t15", 1)
+    second_run = _benchmark_run("scale-r4-t15", 2)
+
+    write_partial_report(tmp_path, BenchmarkReport.create({}, [first_run]))
+    write_partial_report(tmp_path, BenchmarkReport.create({}, [first_run, second_run]))
+
+    partial_path = tmp_path / "results.partial.json"
+    partial_payload = json.loads(partial_path.read_text(encoding="utf-8"))
+    assert [run["runIndex"] for run in partial_payload["runs"]] == [1, 2]
+    assert not list(tmp_path.glob("*.tmp"))
+
+    write_final_report(tmp_path, BenchmarkReport.create({}, [first_run, second_run]))
+    assert partial_path.exists() is False
+
+
+@pytest.mark.parametrize(
+    ("writer", "file_name"),
+    [
+        (write_partial_report, "results.partial.json"),
+        (write_final_report, "results.json"),
+    ],
+)
+def test_algorithm_benchmark_write_failure_includes_absolute_target_path(
+    tmp_path,
+    writer,
+    file_name,
+) -> None:
+    blocked_output_path = tmp_path / "blocked"
+    blocked_output_path.write_text("not a directory", encoding="utf-8")
+    target_path = (blocked_output_path / file_name).resolve()
+
+    with pytest.raises(OSError, match=re.escape(str(target_path))):
+        writer(blocked_output_path, BenchmarkReport.create({}, []))
+
+
+def test_algorithm_benchmark_rejects_invalid_config_before_creating_output(tmp_path) -> None:
+    assert main(["--families", "unknown", "--output-dir", str(tmp_path)]) != 0
+    assert list(tmp_path.iterdir()) == []
+    assert main(["--repetitions", "0", "--output-dir", str(tmp_path)]) != 0
+    assert list(tmp_path.iterdir()) == []
+    assert main(["--timeout-seconds", "0", "--output-dir", str(tmp_path)]) != 0
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_algorithm_benchmark_parse_args_splits_and_trims_families() -> None:
+    args = parse_args(["--families", " scale, density ,,bottleneck "])
+
+    assert args.families == ("scale", "density", "bottleneck")
+
+
+def test_algorithm_benchmark_main_uses_unique_timestamp_directory_and_exact_config(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    class FixedDatetime:
+        @classmethod
+        def now(cls, timezone_value):
+            assert timezone_value is algorithm_boundary_module.timezone.utc
+            return datetime_module.datetime(2026, 7, 19, 1, 2, 3, tzinfo=timezone_value)
+
+    existing_path = tmp_path / "20260719T010203Z"
+    existing_path.mkdir()
+    run = _benchmark_run("scale-r4-t15", 1)
+
+    def fake_run_benchmark_cases(cases, repetitions, timeout_seconds, on_result):
+        assert [case.case_id for case in cases] == [
+            "scale-r4-t15",
+            "scale-r8-t27",
+            "scale-r12-t39",
+        ]
+        assert repetitions == 1
+        assert timeout_seconds == 30
+        on_result([run])
+        return [run]
+
+    monkeypatch.setattr(algorithm_boundary_module, "datetime", FixedDatetime)
+    monkeypatch.setattr(
+        algorithm_boundary_module,
+        "run_benchmark_cases",
+        fake_run_benchmark_cases,
+    )
+
+    exit_code = main(
+        [
+            "--families",
+            "scale",
+            "--repetitions",
+            "1",
+            "--timeout-seconds",
+            "30",
+            "--output-dir",
+            str(tmp_path),
+        ]
+    )
+
+    result_path = tmp_path / "20260719T010203Z-2"
+    payload = json.loads((result_path / "results.json").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert payload["config"] == {
+        "families": ["scale"],
+        "repetitions": 1,
+        "timeoutSeconds": 30,
+        "outputDir": str(result_path.resolve()),
+        "options": benchmark_options().model_dump(mode="json"),
+    }
+    assert set(path.name for path in result_path.iterdir()) == {
+        "results.json",
+        "runs.csv",
+        "case-summaries.csv",
+    }
+    assert str(result_path.resolve()) in capsys.readouterr().out
