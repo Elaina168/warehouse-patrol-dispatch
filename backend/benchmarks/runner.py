@@ -1,4 +1,5 @@
 import multiprocessing
+import pickle
 import queue as queue_module
 import sys
 import traceback
@@ -31,6 +32,49 @@ def _sanitize_error_text(text: str) -> str:
     return text.replace("\r", "").replace("\n", "")[:500]
 
 
+def _write_traceback(traceback_text: str) -> None:
+    sys.stderr.write(traceback_text)
+    sys.stderr.flush()
+
+
+def _cleanup_isolated_resources(process, result_queue) -> tuple[str, str, str] | None:
+    cleanup_error: tuple[str, str, str] | None = None
+
+    def record_cleanup_error(exc: Exception) -> None:
+        nonlocal cleanup_error
+        traceback_text = traceback.format_exc()
+        _write_traceback(traceback_text)
+        if cleanup_error is None:
+            cleanup_error = (type(exc).__name__, str(exc), traceback_text)
+
+    if process is not None:
+        try:
+            process_alive = process.is_alive()
+        except Exception as exc:
+            record_cleanup_error(exc)
+            process_alive = False
+        if process_alive:
+            try:
+                process.terminate()
+                process.join()
+            except Exception as exc:
+                record_cleanup_error(exc)
+        try:
+            process.close()
+        except Exception as exc:
+            record_cleanup_error(exc)
+    if result_queue is not None:
+        try:
+            result_queue.close()
+        except Exception as exc:
+            record_cleanup_error(exc)
+        try:
+            result_queue.join_thread()
+        except Exception as exc:
+            record_cleanup_error(exc)
+    return cleanup_error
+
+
 def _guarded_worker_entry(
     result_queue,
     worker_callable: Callable[[str, int], BenchmarkRun],
@@ -49,55 +93,72 @@ def run_isolated_case(
     timeout_seconds: float,
     worker_callable: Callable[[str, int], BenchmarkRun] = execute_benchmark_case,
 ) -> BenchmarkRun:
-    context = multiprocessing.get_context("spawn")
-    result_queue = context.Queue(maxsize=1)
-    process = context.Process(
-        target=_guarded_worker_entry,
-        args=(result_queue, worker_callable, case.case_id, run_index),
-    )
-    process_started = False
     started_at = perf_counter()
+    result_queue = None
+    process = None
+    run: BenchmarkRun | None = None
+    parent_error: tuple[str, str, str] | None = None
     try:
+        pickle.dumps(worker_callable)
+        context = multiprocessing.get_context("spawn")
+        result_queue = context.Queue(maxsize=1)
+        process = context.Process(
+            target=_guarded_worker_entry,
+            args=(result_queue, worker_callable, case.case_id, run_index),
+        )
         process.start()
-        process_started = True
         process.join(timeout_seconds)
         wall_clock_ms = round((perf_counter() - started_at) * 1000, 2)
         if process.is_alive():
-            process.terminate()
-            process.join()
-            return BenchmarkRun.timeout(case, run_index, wall_clock_ms)
-        try:
-            payload = result_queue.get(timeout=1)
-        except queue_module.Empty:
-            payload = None
-        if payload is None:
-            return BenchmarkRun.error(
-                case,
-                run_index,
-                "ChildProcessError",
-                f"子进程退出码: {process.exitcode}",
-                wall_clock_ms,
-            )
-        if payload[0] == "error":
-            sys.stderr.write(payload[3])
-            sys.stderr.flush()
-            return BenchmarkRun.error(
-                case,
-                run_index,
-                payload[1],
-                _sanitize_error_text(payload[2]),
-                wall_clock_ms,
-            )
-        run = payload[1]
-        return replace(run, wall_clock_ms=wall_clock_ms)
-    finally:
-        if process_started:
-            if process.is_alive():
-                process.terminate()
-                process.join()
-            process.close()
-        result_queue.close()
-        result_queue.join_thread()
+            run = BenchmarkRun.timeout(case, run_index, wall_clock_ms)
+        else:
+            try:
+                payload = result_queue.get(timeout=1)
+            except queue_module.Empty:
+                payload = None
+            if payload is None:
+                run = BenchmarkRun.error(
+                    case,
+                    run_index,
+                    "ChildProcessError",
+                    f"子进程退出码: {process.exitcode}",
+                    wall_clock_ms,
+                )
+            elif payload[0] == "error":
+                _write_traceback(payload[3])
+                run = BenchmarkRun.error(
+                    case,
+                    run_index,
+                    payload[1],
+                    _sanitize_error_text(payload[2]),
+                    wall_clock_ms,
+                )
+            else:
+                run = replace(payload[1], wall_clock_ms=wall_clock_ms)
+    except Exception as exc:
+        parent_error = (type(exc).__name__, str(exc), traceback.format_exc())
+
+    cleanup_error = _cleanup_isolated_resources(process, result_queue)
+    error = parent_error or cleanup_error
+    if error is not None:
+        if parent_error is not None:
+            _write_traceback(parent_error[2])
+        return BenchmarkRun.error(
+            case,
+            run_index,
+            error[0],
+            _sanitize_error_text(error[1]),
+            round((perf_counter() - started_at) * 1000, 2),
+        )
+    if run is None:
+        return BenchmarkRun.error(
+            case,
+            run_index,
+            "ChildProcessError",
+            "子进程未返回基准结果",
+            round((perf_counter() - started_at) * 1000, 2),
+        )
+    return run
 
 
 def run_benchmark_cases(
@@ -109,7 +170,20 @@ def run_benchmark_cases(
     runs: list[BenchmarkRun] = []
     for case in cases:
         for run_index in range(1, repetitions + 1):
-            runs.append(run_isolated_case(case, run_index, timeout_seconds))
+            started_at = perf_counter()
+            try:
+                run = run_isolated_case(case, run_index, timeout_seconds)
+            except Exception as exc:
+                traceback_text = traceback.format_exc()
+                _write_traceback(traceback_text)
+                run = BenchmarkRun.error(
+                    case,
+                    run_index,
+                    type(exc).__name__,
+                    _sanitize_error_text(str(exc)),
+                    round((perf_counter() - started_at) * 1000, 2),
+                )
+            runs.append(run)
             if on_result is not None:
                 on_result(list(runs))
     return runs

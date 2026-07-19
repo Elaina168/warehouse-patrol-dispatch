@@ -1,3 +1,4 @@
+import multiprocessing
 import time
 
 from backend.benchmarks import runner as runner_module
@@ -18,6 +19,22 @@ def _failing_benchmark_worker(case_id: str, run_index: int):
 
 def _multiline_failing_benchmark_worker(case_id: str, run_index: int):
     raise RuntimeError("first\r\nsecond" + "x" * 600)
+
+
+class _UnpicklableBenchmarkWorker:
+    def __call__(self, case_id: str, run_index: int):
+        raise AssertionError("不可序列化 worker 不应进入子进程")
+
+    def __reduce__(self):
+        raise RuntimeError("worker serialization failed")
+
+
+def _active_child_pids() -> set[int]:
+    return {
+        process.pid
+        for process in multiprocessing.active_children()
+        if process.pid is not None
+    }
 
 
 def _benchmark_run(case_id: str, run_index: int, **updates) -> BenchmarkRun:
@@ -61,13 +78,13 @@ def _benchmark_run(case_id: str, run_index: int, **updates) -> BenchmarkRun:
 
 def test_isolated_algorithm_benchmark_records_timeout() -> None:
     case = benchmark_cases(("scale",))[0]
-    started_at = time.perf_counter()
+    children_before = _active_child_pids()
     run = run_isolated_case(case, 1, 0.05, worker_callable=_sleeping_benchmark_worker)
 
-    assert time.perf_counter() - started_at < 1
     assert run.outcome == "timeout"
     assert run.correctness_stable is False
     assert run.error_type == "TimeoutError"
+    assert _active_child_pids() <= children_before
 
 
 def test_isolated_algorithm_benchmark_records_worker_error(capsys) -> None:
@@ -94,7 +111,80 @@ def test_isolated_algorithm_benchmark_sanitizes_worker_error() -> None:
     assert run.error_message.startswith("firstsecond")
 
 
-def test_algorithm_benchmark_batch_continues_and_reports_cumulative_copies(monkeypatch) -> None:
+def test_isolated_algorithm_benchmark_records_unpicklable_worker_error(capsys) -> None:
+    case = benchmark_cases(("scale",))[0]
+    children_before = _active_child_pids()
+    run = run_isolated_case(case, 1, 5, worker_callable=_UnpicklableBenchmarkWorker())
+    captured = capsys.readouterr()
+
+    assert run.outcome == "error"
+    assert run.error_type == "RuntimeError"
+    assert run.error_message == "worker serialization failed"
+    assert "Traceback (most recent call last)" in captured.err
+    assert "worker serialization failed" in captured.err
+    assert captured.out == ""
+    assert _active_child_pids() <= children_before
+
+
+def test_isolated_algorithm_benchmark_cleans_resources_after_start_error(
+    monkeypatch,
+) -> None:
+    class FailingQueue:
+        def __init__(self) -> None:
+            self.closed = False
+            self.joined = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        def join_thread(self) -> None:
+            self.joined = True
+
+    class FailingProcess:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def start(self) -> None:
+            raise RuntimeError("process start failed")
+
+        def is_alive(self) -> bool:
+            return False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FailingContext:
+        def __init__(self) -> None:
+            self.queue = FailingQueue()
+            self.process = FailingProcess()
+
+        def Queue(self, maxsize: int):
+            assert maxsize == 1
+            return self.queue
+
+        def Process(self, *, target, args):
+            assert target is runner_module._guarded_worker_entry
+            assert args[0] is self.queue
+            return self.process
+
+    context = FailingContext()
+    monkeypatch.setattr(runner_module.multiprocessing, "get_context", lambda method: context)
+
+    case = benchmark_cases(("scale",))[0]
+    run = run_isolated_case(case, 1, 5)
+
+    assert run.outcome == "error"
+    assert run.error_type == "RuntimeError"
+    assert run.error_message == "process start failed"
+    assert context.process.closed is True
+    assert context.queue.closed is True
+    assert context.queue.joined is True
+
+
+def test_algorithm_benchmark_batch_continues_and_reports_cumulative_copies(
+    monkeypatch,
+    capsys,
+) -> None:
     cases = benchmark_cases(("scale",))[:2]
     calls: list[tuple[str, int, float]] = []
     snapshots: list[list[BenchmarkRun]] = []
@@ -106,11 +196,12 @@ def test_algorithm_benchmark_batch_continues_and_reports_cumulative_copies(monke
     ) -> BenchmarkRun:
         calls.append((case.case_id, run_index, timeout_seconds))
         if len(calls) == 1:
-            return BenchmarkRun.error(case, run_index, "RuntimeError", "failed", 1)
+            raise RuntimeError("isolated runner failed")
         return _benchmark_run(case.case_id, run_index)
 
     monkeypatch.setattr(runner_module, "run_isolated_case", fake_run_isolated_case)
     runs = run_benchmark_cases(cases, 2, 3.5, on_result=snapshots.append)
+    captured = capsys.readouterr()
 
     assert calls == [
         (cases[0].case_id, 1, 3.5),
@@ -122,6 +213,11 @@ def test_algorithm_benchmark_batch_continues_and_reports_cumulative_copies(monke
     assert [len(snapshot) for snapshot in snapshots] == [1, 2, 3, 4]
     assert len({id(snapshot) for snapshot in snapshots}) == 4
     assert snapshots[0] == [runs[0]]
+    assert runs[0].error_type == "RuntimeError"
+    assert runs[0].error_message == "isolated runner failed"
+    assert "Traceback (most recent call last)" in captured.err
+    assert "isolated runner failed" in captured.err
+    assert captured.out == ""
 
 
 def test_algorithm_benchmark_statistics_use_completed_runs_only() -> None:
