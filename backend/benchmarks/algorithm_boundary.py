@@ -1,4 +1,5 @@
 import argparse
+import math
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,13 +30,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _validate_config(args: argparse.Namespace) -> None:
+    if not args.families:
+        raise ValueError("--families 必须至少包含一个场景族")
     unknown_families = sorted(set(args.families) - set(DEFAULT_FAMILIES))
     if unknown_families:
         raise ValueError(f"未知基准场景族: {', '.join(unknown_families)}")
     if args.repetitions <= 0:
         raise ValueError("--repetitions 必须为正整数")
-    if args.timeout_seconds <= 0:
-        raise ValueError("--timeout-seconds 必须为正数")
+    if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
+        raise ValueError("--timeout-seconds 必须为有限正数")
 
 
 def _create_result_directory(output_dir: str) -> Path:

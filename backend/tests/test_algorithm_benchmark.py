@@ -511,6 +511,40 @@ def test_algorithm_benchmark_rejects_invalid_config_before_creating_output(tmp_p
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("families", [",", "   "])
+def test_algorithm_benchmark_rejects_empty_families_before_creating_output(
+    tmp_path,
+    families,
+) -> None:
+    assert main(["--families", families, "--output-dir", str(tmp_path)]) != 0
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("timeout_seconds", ["nan", "inf"])
+def test_algorithm_benchmark_rejects_non_finite_timeout_before_creating_output(
+    tmp_path,
+    monkeypatch,
+    timeout_seconds,
+) -> None:
+    monkeypatch.setattr(
+        algorithm_boundary_module,
+        "run_benchmark_cases",
+        lambda cases, repetitions, timeout_seconds, on_result: [],
+    )
+
+    assert main(
+        [
+            "--families",
+            "scale",
+            "--timeout-seconds",
+            timeout_seconds,
+            "--output-dir",
+            str(tmp_path),
+        ]
+    ) != 0
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_algorithm_benchmark_parse_args_splits_and_trims_families() -> None:
     args = parse_args(["--families", " scale, density ,,bottleneck "])
 
