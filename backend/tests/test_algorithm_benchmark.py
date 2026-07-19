@@ -1,6 +1,8 @@
 from backend.benchmarks.scenarios import BenchmarkCase, benchmark_cases, benchmark_options, build_benchmark_scenario
 from backend.benchmarks.results import BenchmarkReport, BenchmarkRun, nearest_rank_p95, percent, summarize_runs
+from backend.benchmarks.runner import execute_benchmark_case
 from backend.app.dispatch import astar
+from backend.app import sessions as sessions_module
 
 
 def _benchmark_run(case_id: str, run_index: int, **updates) -> BenchmarkRun:
@@ -201,3 +203,60 @@ def test_algorithm_benchmark_targets_are_reachable_and_bottleneck_has_bypass() -
         scenario = build_benchmark_scenario(case.case_id)
         open_rows = [y for y in range(scenario.height) if (6, y) not in set(scenario.obstacles)]
         assert open_rows == [3, 4, 5]
+
+
+def test_direct_algorithm_benchmark_maps_existing_metrics() -> None:
+    run = execute_benchmark_case("scale-r4-t15", 1)
+    assert run.outcome == "completed"
+    assert run.mode == "direct"
+    assert run.execution_safety_evaluated is False
+    assert run.safety_intervention_count == 0
+    assert run.active_conflict_count is None
+    assert run.assigned_task_count == run.task_count
+    assert run.assignment_rate_percent == 100
+    assert run.coverage_rate_percent is None
+    assert run.actual_completion_rate_percent is None
+    assert run.predicted_conflict_count is not None
+    assert run.wall_clock_ms is not None and run.wall_clock_ms >= 0
+
+
+def _assert_history_collision_free(history: dict[str, list[tuple[int, int]]]) -> None:
+    robot_ids = sorted(history)
+    horizon = max((len(history[robot_id]) for robot_id in robot_ids), default=0)
+    for time_index in range(horizon):
+        positions = {
+            robot_id: history[robot_id][min(time_index, len(history[robot_id]) - 1)]
+            for robot_id in robot_ids
+        }
+        assert len(set(positions.values())) == len(positions)
+        if time_index == 0:
+            continue
+        previous = {
+            robot_id: history[robot_id][min(time_index - 1, len(history[robot_id]) - 1)]
+            for robot_id in robot_ids
+        }
+        for first_index, first_id in enumerate(robot_ids):
+            for second_id in robot_ids[first_index + 1 :]:
+                assert not (
+                    previous[first_id] == positions[second_id]
+                    and previous[second_id] == positions[first_id]
+                )
+
+
+def test_online_algorithm_benchmark_uses_execution_safety(monkeypatch) -> None:
+    real_delete = sessions_module.delete_session
+    captured_histories = []
+
+    def capture_delete(session_id: str):
+        session = sessions_module._sessions[session_id]
+        captured_histories.append({key: list(value) for key, value in session.robot_path_history.items()})
+        return real_delete(session_id)
+
+    monkeypatch.setattr("backend.benchmarks.runner.delete_session", capture_delete)
+    run = execute_benchmark_case("bottleneck-r4-t4", 1)
+    assert run.outcome == "completed"
+    assert run.mode == "online"
+    assert run.execution_safety_evaluated is True
+    assert run.active_conflict_count == 0
+    assert captured_histories
+    _assert_history_collision_free(captured_histories[0])
