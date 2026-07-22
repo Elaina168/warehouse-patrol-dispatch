@@ -15,6 +15,7 @@ from backend.benchmarks.scenarios import BenchmarkCase, benchmark_cases, benchma
 from backend.benchmarks.results import BenchmarkReport, BenchmarkRun, nearest_rank_p95, percent, summarize_runs
 from backend.benchmarks.runner import execute_benchmark_case, run_benchmark_cases, run_isolated_case
 from backend.app.dispatch import astar
+from backend.app.schemas import SessionTickRequest
 from backend.app import sessions as sessions_module
 
 
@@ -28,6 +29,10 @@ def _failing_benchmark_worker(case_id: str, run_index: int):
 
 def _multiline_failing_benchmark_worker(case_id: str, run_index: int):
     raise RuntimeError("first\r\nsecond" + "x" * 600)
+
+
+def _large_failing_benchmark_worker(case_id: str, run_index: int):
+    raise RuntimeError("large-error-marker-" + "x" * 2_000_000)
 
 
 class _UnpicklableBenchmarkWorker:
@@ -96,10 +101,10 @@ def test_isolated_algorithm_benchmark_records_timeout() -> None:
     assert _active_child_pids() <= children_before
 
 
-def test_isolated_algorithm_benchmark_records_worker_error(capsys) -> None:
+def test_isolated_algorithm_benchmark_records_worker_error(capfd) -> None:
     case = benchmark_cases(("scale",))[0]
     run = run_isolated_case(case, 1, 5, worker_callable=_failing_benchmark_worker)
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
 
     assert run.outcome == "error"
     assert run.error_type == "RuntimeError"
@@ -120,6 +125,22 @@ def test_isolated_algorithm_benchmark_sanitizes_worker_error() -> None:
     assert run.error_message.startswith("firstsecond")
 
 
+def test_isolated_algorithm_benchmark_large_error_payload_is_not_misreported_as_timeout(
+    capfd,
+) -> None:
+    case = benchmark_cases(("scale",))[0]
+    run = run_isolated_case(case, 1, 5, worker_callable=_large_failing_benchmark_worker)
+    captured = capfd.readouterr()
+
+    assert run.outcome == "error"
+    assert run.error_type == "RuntimeError"
+    assert run.error_message is not None
+    assert len(run.error_message) == 500
+    assert run.error_message.startswith("large-error-marker-")
+    assert "Traceback (most recent call last)" in captured.err
+    assert "large-error-marker-" in captured.err
+
+
 def test_isolated_algorithm_benchmark_records_unpicklable_worker_error(capsys) -> None:
     case = benchmark_cases(("scale",))[0]
     children_before = _active_child_pids()
@@ -138,16 +159,12 @@ def test_isolated_algorithm_benchmark_records_unpicklable_worker_error(capsys) -
 def test_isolated_algorithm_benchmark_cleans_resources_after_start_error(
     monkeypatch,
 ) -> None:
-    class FailingQueue:
+    class FailingConnection:
         def __init__(self) -> None:
             self.closed = False
-            self.joined = False
 
         def close(self) -> None:
             self.closed = True
-
-        def join_thread(self) -> None:
-            self.joined = True
 
     class FailingProcess:
         def __init__(self) -> None:
@@ -164,16 +181,17 @@ def test_isolated_algorithm_benchmark_cleans_resources_after_start_error(
 
     class FailingContext:
         def __init__(self) -> None:
-            self.queue = FailingQueue()
+            self.parent_connection = FailingConnection()
+            self.child_connection = FailingConnection()
             self.process = FailingProcess()
 
-        def Queue(self, maxsize: int):
-            assert maxsize == 1
-            return self.queue
+        def Pipe(self, duplex: bool):
+            assert duplex is False
+            return self.parent_connection, self.child_connection
 
         def Process(self, *, target, args):
             assert target is runner_module._guarded_worker_entry
-            assert args[0] is self.queue
+            assert args[0] is self.child_connection
             return self.process
 
     context = FailingContext()
@@ -186,8 +204,138 @@ def test_isolated_algorithm_benchmark_cleans_resources_after_start_error(
     assert run.error_type == "RuntimeError"
     assert run.error_message == "process start failed"
     assert context.process.closed is True
-    assert context.queue.closed is True
-    assert context.queue.joined is True
+    assert context.parent_connection.closed is True
+    assert context.child_connection.closed is True
+
+
+def test_isolated_algorithm_benchmark_uses_kill_fallback_after_terminate_error(
+    monkeypatch,
+) -> None:
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def poll(self, timeout: float) -> bool:
+            assert timeout == 0.01
+            return False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.alive = True
+            self.join_timeouts: list[float] = []
+            self.kill_called = False
+            self.closed = False
+
+        def start(self) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def terminate(self) -> None:
+            raise OSError("terminate failed")
+
+        def join(self, timeout: float) -> None:
+            self.join_timeouts.append(timeout)
+
+        def kill(self) -> None:
+            self.kill_called = True
+            self.alive = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.parent_connection = FakeConnection()
+            self.child_connection = FakeConnection()
+            self.process = FakeProcess()
+
+        def Pipe(self, duplex: bool):
+            assert duplex is False
+            return self.parent_connection, self.child_connection
+
+        def Process(self, *, target, args):
+            return self.process
+
+    context = FakeContext()
+    monkeypatch.setattr(runner_module.multiprocessing, "get_context", lambda method: context)
+
+    case = benchmark_cases(("scale",))[0]
+    run = run_isolated_case(case, 1, 0.01)
+
+    assert run.outcome == "timeout"
+    assert context.process.kill_called is True
+    assert context.process.join_timeouts
+    assert all(timeout > 0 for timeout in context.process.join_timeouts)
+    assert context.process.closed is True
+    assert context.parent_connection.closed is True
+    assert context.child_connection.closed is True
+
+
+def test_isolated_algorithm_benchmark_propagates_unstoppable_child_cleanup_failure(
+    monkeypatch,
+) -> None:
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def poll(self, timeout: float) -> bool:
+            return False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.join_timeouts: list[float] = []
+            self.closed = False
+
+        def start(self) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return True
+
+        def terminate(self) -> None:
+            return None
+
+        def join(self, timeout: float) -> None:
+            self.join_timeouts.append(timeout)
+
+        def kill(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.parent_connection = FakeConnection()
+            self.child_connection = FakeConnection()
+            self.process = FakeProcess()
+
+        def Pipe(self, duplex: bool):
+            return self.parent_connection, self.child_connection
+
+        def Process(self, *, target, args):
+            return self.process
+
+    context = FakeContext()
+    monkeypatch.setattr(runner_module.multiprocessing, "get_context", lambda method: context)
+
+    case = benchmark_cases(("scale",))[0]
+    with pytest.raises(RuntimeError, match="无法确认基准子进程已停止"):
+        run_isolated_case(case, 1, 0.01)
+
+    assert len(context.process.join_timeouts) == 2
+    assert all(timeout > 0 for timeout in context.process.join_timeouts)
+    assert context.process.closed is False
+    assert context.parent_connection.closed is True
+    assert context.child_connection.closed is True
 
 
 def test_algorithm_benchmark_batch_continues_and_reports_cumulative_copies(
@@ -227,6 +375,27 @@ def test_algorithm_benchmark_batch_continues_and_reports_cumulative_copies(
     assert "Traceback (most recent call last)" in captured.err
     assert "isolated runner failed" in captured.err
     assert captured.out == ""
+
+
+def test_algorithm_benchmark_batch_propagates_parent_infrastructure_failure(
+    monkeypatch,
+) -> None:
+    case = benchmark_cases(("scale",))[0]
+
+    def fail_isolated_case(
+        case: BenchmarkCase,
+        run_index: int,
+        timeout_seconds: float,
+    ) -> BenchmarkRun:
+        raise runner_module.BenchmarkInfrastructureError("无法确认基准子进程已停止")
+
+    monkeypatch.setattr(runner_module, "run_isolated_case", fail_isolated_case)
+
+    with pytest.raises(
+        runner_module.BenchmarkInfrastructureError,
+        match="无法确认基准子进程已停止",
+    ):
+        run_benchmark_cases((case,), 1, 5)
 
 
 def test_algorithm_benchmark_statistics_use_completed_runs_only() -> None:
@@ -356,6 +525,19 @@ def test_algorithm_benchmark_catalog_has_exact_cases_and_options() -> None:
     }
 
 
+def test_algorithm_benchmark_catalog_filters_scale_family_exactly() -> None:
+    assert [case.case_id for case in benchmark_cases(("scale",))] == [
+        "scale-r4-t15",
+        "scale-r8-t27",
+        "scale-r12-t39",
+    ]
+
+
+def test_algorithm_benchmark_catalog_rejects_unknown_family() -> None:
+    with pytest.raises(ValueError, match="^未知基准场景族: unknown$"):
+        benchmark_cases(("unknown",))
+
+
 def test_algorithm_benchmark_scenarios_match_catalog_and_are_deterministic() -> None:
     for case in benchmark_cases():
         first = build_benchmark_scenario(case.case_id)
@@ -430,19 +612,29 @@ def _assert_history_collision_free(history: dict[str, list[tuple[int, int]]]) ->
 
 def test_online_algorithm_benchmark_uses_execution_safety(monkeypatch) -> None:
     real_delete = sessions_module.delete_session
+    real_tick = sessions_module.tick_session
     captured_histories = []
+    observed_safety_interventions = []
+
+    def capture_tick(session_id: str, request: SessionTickRequest):
+        session = real_tick(session_id, request)
+        if session.safetyIntervention is not None:
+            observed_safety_interventions.append(session.safetyIntervention)
+        return session
 
     def capture_delete(session_id: str):
         session = sessions_module._sessions[session_id]
         captured_histories.append({key: list(value) for key, value in session.robot_path_history.items()})
         return real_delete(session_id)
 
+    monkeypatch.setattr("backend.benchmarks.runner.tick_session", capture_tick)
     monkeypatch.setattr("backend.benchmarks.runner.delete_session", capture_delete)
     run = execute_benchmark_case("bottleneck-r4-t4", 1)
     assert run.outcome == "completed"
     assert run.mode == "online"
     assert run.execution_safety_evaluated is True
     assert run.active_conflict_count == 0
+    assert run.safety_intervention_count == len(observed_safety_interventions)
     assert captured_histories
     _assert_history_collision_free(captured_histories[0])
 
