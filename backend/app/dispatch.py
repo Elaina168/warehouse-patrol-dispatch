@@ -5,7 +5,10 @@ import math
 import time
 from dataclasses import dataclass, field
 
-from backend.app.planning_diagnostics import PathCandidateDiagnostics
+from backend.app.planning_diagnostics import (
+    PathCandidateDiagnostics,
+    PlanningDiagnostics,
+)
 from backend.app.replan_window import ReplanWindowDecision, decide_replan_window
 from backend.app.schemas import (
     Assignment,
@@ -621,6 +624,7 @@ def plan_robot_path(
     delayed_block_time: int | None = None,
     charging_visits: list[ChargingVisit] | None = None,
     active_charging_visit: ChargingVisit | None = None,
+    candidate_diagnostics: PathCandidateDiagnostics | None = None,
 ) -> tuple[list[Cell], bool]:
     path = [start]
     cursor = start
@@ -656,7 +660,16 @@ def plan_robot_path(
         if charge_station is not None:
             departure_time = len(path) - 1
             segment = (
-                astar_timed(scenario, cursor, charge_station, departure_time, reservations, extra_blocked, move_ticks)
+                astar_timed(
+                    scenario,
+                    cursor,
+                    charge_station,
+                    departure_time,
+                    reservations,
+                    extra_blocked,
+                    move_ticks,
+                    candidate_diagnostics=candidate_diagnostics,
+                )
                 if avoid_conflicts
                 else expand_path_by_move_ticks(astar(scenario, cursor, charge_station, extra_blocked), move_ticks)
             )
@@ -692,6 +705,7 @@ def plan_robot_path(
                     reservations,
                     segment_blocked,
                     move_ticks,
+                    candidate_diagnostics=candidate_diagnostics,
                 )
                 if avoid_conflicts
                 else expand_path_by_move_ticks(astar(scenario, cursor, waypoint, segment_blocked), move_ticks)
@@ -766,6 +780,7 @@ def append_parking_step(
     delayed_blocked: list[Cell] | None = None,
     delayed_block_time: int | None = None,
     horizon_padding: int = 12,
+    candidate_diagnostics: PathCandidateDiagnostics | None = None,
 ) -> list[Cell]:
     if not path:
         return path
@@ -790,6 +805,7 @@ def append_parking_step(
             reservations,
             blocked_cells_at_time(extra_blocked, delayed_blocked, delayed_block_time, start_time),
             move_ticks,
+            candidate_diagnostics=candidate_diagnostics,
         )
         if not segment:
             continue
@@ -808,6 +824,7 @@ def plan_idle_robot_parking_path(
     extra_blocked: list[Cell],
     delayed_blocked: list[Cell] | None = None,
     horizon_padding: int = 12,
+    candidate_diagnostics: PathCandidateDiagnostics | None = None,
 ) -> list[Cell]:
     blocked_cells = merge_cells(extra_blocked, delayed_blocked or [])
     blocked = make_blocked_set(scenario, blocked_cells)
@@ -821,7 +838,16 @@ def plan_idle_robot_parking_path(
         key=lambda cell: (manhattan(start, cell), cell),
     )
     for candidate in candidates:
-        path = astar_timed(scenario, start, candidate, 0, reservations, blocked_cells, move_ticks)
+        path = astar_timed(
+            scenario,
+            start,
+            candidate,
+            0,
+            reservations,
+            blocked_cells,
+            move_ticks,
+            candidate_diagnostics=candidate_diagnostics,
+        )
         if path and can_hold_cell(candidate, len(path), reservations, horizon_padding):
             return path
     return [start]
@@ -924,6 +950,7 @@ def build_paths_for_order(
     delayed_blocked: list[Cell] | None = None,
     delayed_block_time: int | None = None,
     active_charging_visits: dict[str, ChargingVisit] | None = None,
+    candidate_diagnostics: PathCandidateDiagnostics | None = None,
 ) -> PathPlanningCandidate:
     reservations = Reservations()
     paths: dict[str, list[Cell]] = {}
@@ -954,6 +981,7 @@ def build_paths_for_order(
                 extra_blocked,
                 delayed_blocked,
                 horizon_padding,
+                candidate_diagnostics,
             )
             failed = False
         else:
@@ -971,6 +999,7 @@ def build_paths_for_order(
                 delayed_block_time,
                 charging_visits,
                 active_charging_visits.get(robot.id),
+                candidate_diagnostics,
             )
         if avoid_conflicts and assigned and not failed:
             path = append_parking_step(
@@ -982,6 +1011,7 @@ def build_paths_for_order(
                 delayed_blocked,
                 delayed_block_time,
                 horizon_padding,
+                candidate_diagnostics,
             )
         paths[robot.id] = path
         all_charging_visits.extend(charging_visits if assigned else [])
@@ -1030,6 +1060,7 @@ def build_paths(
     delayed_block_time: int | None = None,
     include_charging_visits: bool = False,
     active_charging_visits: dict[str, ChargingVisit] | None = None,
+    planning_diagnostics: PlanningDiagnostics | None = None,
 ) -> tuple[dict[str, list[Cell]], list[str]] | tuple[dict[str, list[Cell]], list[str], list[ChargingVisit]]:
     locked_task_robot_ids = locked_task_robot_ids or {}
     tasks_by_robot = {assignment.robotId: assignment.tasks for assignment in assignments}
@@ -1042,6 +1073,18 @@ def build_paths(
         locked_task_robot_ids,
         extra_blocked,
     ):
+        candidate_index = (
+            planning_diagnostics.path_candidate_count
+            if planning_diagnostics is not None
+            else 0
+        )
+        candidate_diagnostics = (
+            planning_diagnostics.start_path_candidate(
+                [robot.id for robot in order]
+            )
+            if planning_diagnostics is not None
+            else None
+        )
         candidate = build_paths_for_order(
             scenario,
             robots,
@@ -1053,11 +1096,22 @@ def build_paths(
             delayed_blocked,
             delayed_block_time,
             active_charging_visits,
+            candidate_diagnostics,
         )
         score = path_planning_candidate_score(candidate, assignments)
+        if candidate_diagnostics is not None:
+            candidate_diagnostics.finish(
+                failure_count=int(score[0]),
+                conflict_count=int(score[1]),
+                deadline_miss_count=int(score[2]),
+            )
         if best_score is None or score < best_score:
             best_candidate = candidate
             best_score = score
+            if planning_diagnostics is not None:
+                planning_diagnostics.selected_path_candidate_index = (
+                    candidate_index
+                )
         if avoid_conflicts and score[0] == 0 and score[1] == 0 and score[2] == 0:
             break
     if best_candidate is None:
@@ -1829,6 +1883,7 @@ def run_dispatch(
     task_limit_per_robot: int | None = None,
     replan_window_decision: ReplanWindowDecision | None = None,
     active_charging_visits: dict[str, ChargingVisit] | None = None,
+    planning_diagnostics: PlanningDiagnostics | None = None,
 ) -> DispatchResult:
     avoid_conflicts = options.avoidConflicts
     include_dynamic = options.includeDynamic
@@ -1908,6 +1963,7 @@ def run_dispatch(
         delayed_block_time,
         True,
         active_charging_visits,
+        planning_diagnostics,
     )
     assigned_task_ids = {
         task.id

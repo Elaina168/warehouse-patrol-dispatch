@@ -14,7 +14,8 @@ from backend.benchmarks.reporting import write_final_report, write_partial_repor
 from backend.benchmarks.scenarios import BenchmarkCase, benchmark_cases, benchmark_options, build_benchmark_scenario
 from backend.benchmarks.results import BenchmarkReport, BenchmarkRun, nearest_rank_p95, percent, summarize_runs
 from backend.benchmarks.runner import execute_benchmark_case, run_benchmark_cases, run_isolated_case
-from backend.app.dispatch import astar
+from backend.app.dispatch import astar, run_dispatch
+from backend.app.planning_diagnostics import PlanningDiagnostics
 from backend.app.schemas import SessionTickRequest
 from backend.app import sessions as sessions_module
 
@@ -550,6 +551,55 @@ def test_algorithm_benchmark_scenarios_match_catalog_and_are_deterministic() -> 
         assert len({robot.start for robot in first.robots}) == len(first.robots)
         all_tasks = [*first.tasks, *first.dynamic.tasks]
         assert len({task.id for task in all_tasks}) == len(all_tasks)
+
+
+def test_planning_diagnostics_collect_path_candidates_for_density_case() -> None:
+    scenario = build_benchmark_scenario("density-r8-t31")
+    diagnostics = PlanningDiagnostics()
+
+    result = run_dispatch(
+        scenario,
+        benchmark_options(),
+        planning_diagnostics=diagnostics,
+    )
+
+    assert result.metrics.assignedTaskCount == 31
+    assert result.metrics.conflictCount == 0
+    assert result.metrics.failureCount == 0
+    assert result.metrics.deadlineMissCount == 0
+    assert diagnostics.path_candidate_count == 2
+    assert diagnostics.selected_path_candidate_index == 1
+    assert diagnostics.failed_path_candidate_count == 1
+    assert diagnostics.timed_astar_call_count > 0
+    assert diagnostics.timed_astar_expanded_state_count > 0
+    assert diagnostics.max_timed_astar_expanded_state_count > 0
+    assert diagnostics.timed_astar_exhausted_search_count == 1
+    assert diagnostics.timed_astar_goal_fully_reserved_reject_count == 0
+    assert diagnostics.path_candidates[0].failure_count == 1
+    assert diagnostics.path_candidates[1].failure_count == 0
+
+
+def test_optional_planning_diagnostics_do_not_change_dispatch_result() -> None:
+    scenario = build_benchmark_scenario("scale-r4-t15")
+    without_diagnostics = run_dispatch(scenario, benchmark_options())
+    diagnostics = PlanningDiagnostics()
+    with_diagnostics = run_dispatch(
+        scenario,
+        benchmark_options(),
+        planning_diagnostics=diagnostics,
+    )
+
+    without_payload = without_diagnostics.model_dump(mode="json")
+    with_payload = with_diagnostics.model_dump(mode="json")
+    without_replan_time_ms = without_payload["metrics"].pop("replanTimeMs")
+    with_replan_time_ms = with_payload["metrics"].pop("replanTimeMs")
+
+    assert isinstance(without_replan_time_ms, float)
+    assert without_replan_time_ms >= 0
+    assert isinstance(with_replan_time_ms, float)
+    assert with_replan_time_ms >= 0
+    assert with_payload == without_payload
+    assert diagnostics.path_candidate_count >= 1
 
 
 def test_algorithm_benchmark_targets_are_reachable_and_bottleneck_has_bypass() -> None:
