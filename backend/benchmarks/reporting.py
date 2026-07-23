@@ -39,6 +39,15 @@ RUN_FIELD_NAMES = (
     "replanTimeMs",
     "maxSnapshotReplanTimeMs",
     "wallClockMs",
+    "planningDiagnosticsEvaluated",
+    "pathCandidateCount",
+    "selectedPathCandidateIndex",
+    "failedPathCandidateCount",
+    "timedAStarCallCount",
+    "timedAStarExpandedStateCount",
+    "maxTimedAStarExpandedStateCount",
+    "timedAStarExhaustedSearchCount",
+    "timedAStarGoalFullyReservedRejectCount",
 )
 
 CASE_SUMMARY_FIELD_NAMES = (
@@ -54,6 +63,9 @@ CASE_SUMMARY_FIELD_NAMES = (
     "medianReplanTimeMs",
     "p95ReplanTimeMs",
     "maxSafetyInterventionCount",
+    "medianTimedAStarExpandedStateCount",
+    "p95TimedAStarExpandedStateCount",
+    "maxTimedAStarGoalFullyReservedRejectCount",
 )
 
 

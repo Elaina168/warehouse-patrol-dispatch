@@ -86,6 +86,15 @@ def _benchmark_run(case_id: str, run_index: int, **updates) -> BenchmarkRun:
         "replan_time_ms": 4,
         "max_snapshot_replan_time_ms": None,
         "wall_clock_ms": 10,
+        "planning_diagnostics_evaluated": True,
+        "path_candidate_count": 1,
+        "selected_path_candidate_index": 0,
+        "failed_path_candidate_count": 0,
+        "timed_astar_call_count": 4,
+        "timed_astar_expanded_state_count": 20,
+        "max_timed_astar_expanded_state_count": 8,
+        "timed_astar_exhausted_search_count": 0,
+        "timed_astar_goal_fully_reserved_reject_count": 0,
     }
     values.update(updates)
     return BenchmarkRun(**values)
@@ -483,6 +492,15 @@ def test_algorithm_benchmark_failed_run_factories_preserve_case_metadata() -> No
         "replanTimeMs": None,
         "maxSnapshotReplanTimeMs": None,
         "wallClockMs": 30,
+        "planningDiagnosticsEvaluated": False,
+        "pathCandidateCount": None,
+        "selectedPathCandidateIndex": None,
+        "failedPathCandidateCount": None,
+        "timedAStarCallCount": None,
+        "timedAStarExpandedStateCount": None,
+        "maxTimedAStarExpandedStateCount": None,
+        "timedAStarExhaustedSearchCount": None,
+        "timedAStarGoalFullyReservedRejectCount": None,
     }
     assert error.error_type == "ValueError"
     assert error.error_message == "无效输入"
@@ -493,11 +511,81 @@ def test_algorithm_benchmark_report_serializes_runs_and_summaries() -> None:
     report = BenchmarkReport.create({"repetitions": 5}, [_benchmark_run("scale-r4-t15", 1)])
     record = report.to_record()
 
-    assert record["schemaVersion"] == 1
+    assert record["schemaVersion"] == 2
     assert record["generatedAt"].endswith("Z")
     assert record["config"] == {"repetitions": 5}
     assert record["runs"][0]["caseId"] == "scale-r4-t15"
     assert record["caseSummaries"][0]["completedRunCount"] == 1
+
+
+def test_algorithm_benchmark_summary_aggregates_planning_work() -> None:
+    summary = summarize_runs(
+        [
+            _benchmark_run(
+                "density-r8-t31",
+                1,
+                timed_astar_expanded_state_count=10,
+                timed_astar_goal_fully_reserved_reject_count=0,
+            ),
+            _benchmark_run(
+                "density-r8-t31",
+                2,
+                timed_astar_expanded_state_count=20,
+                timed_astar_goal_fully_reserved_reject_count=1,
+            ),
+            _benchmark_run(
+                "density-r8-t31",
+                3,
+                timed_astar_expanded_state_count=30,
+                timed_astar_goal_fully_reserved_reject_count=1,
+            ),
+            _benchmark_run(
+                "density-r8-t31",
+                4,
+                outcome="timeout",
+                correctness_stable=False,
+                error_type="TimeoutError",
+                planning_diagnostics_evaluated=False,
+                path_candidate_count=None,
+                selected_path_candidate_index=None,
+                failed_path_candidate_count=None,
+                timed_astar_call_count=None,
+                timed_astar_expanded_state_count=None,
+                max_timed_astar_expanded_state_count=None,
+                timed_astar_exhausted_search_count=None,
+                timed_astar_goal_fully_reserved_reject_count=None,
+            ),
+        ]
+    )[0]
+
+    assert summary.median_timed_astar_expanded_state_count == 20
+    assert summary.p95_timed_astar_expanded_state_count == 30
+    assert summary.max_timed_astar_goal_fully_reserved_reject_count == 1
+
+
+def test_algorithm_benchmark_summary_uses_null_planning_work_without_diagnostics() -> None:
+    summary = summarize_runs(
+        [
+            _benchmark_run(
+                "bottleneck-r4-t4",
+                1,
+                mode="online",
+                planning_diagnostics_evaluated=False,
+                path_candidate_count=None,
+                selected_path_candidate_index=None,
+                failed_path_candidate_count=None,
+                timed_astar_call_count=None,
+                timed_astar_expanded_state_count=None,
+                max_timed_astar_expanded_state_count=None,
+                timed_astar_exhausted_search_count=None,
+                timed_astar_goal_fully_reserved_reject_count=None,
+            )
+        ]
+    )[0]
+
+    assert summary.median_timed_astar_expanded_state_count is None
+    assert summary.p95_timed_astar_expanded_state_count is None
+    assert summary.max_timed_astar_goal_fully_reserved_reject_count is None
 
 
 def test_algorithm_benchmark_catalog_has_exact_cases_and_options() -> None:
@@ -634,6 +722,11 @@ def test_direct_algorithm_benchmark_maps_existing_metrics() -> None:
     assert run.coverage_rate_percent is None
     assert run.actual_completion_rate_percent is None
     assert run.predicted_conflict_count is not None
+    assert run.planning_diagnostics_evaluated is True
+    assert run.path_candidate_count is not None
+    assert run.selected_path_candidate_index is not None
+    assert run.timed_astar_call_count is not None
+    assert run.timed_astar_expanded_state_count is not None
     assert run.wall_clock_ms is not None and run.wall_clock_ms >= 0
 
 
@@ -685,6 +778,9 @@ def test_online_algorithm_benchmark_uses_execution_safety(monkeypatch) -> None:
     assert run.execution_safety_evaluated is True
     assert run.active_conflict_count == 0
     assert run.safety_intervention_count == len(observed_safety_interventions)
+    assert run.planning_diagnostics_evaluated is False
+    assert run.path_candidate_count is None
+    assert run.timed_astar_expanded_state_count is None
     assert captured_histories
     _assert_history_collision_free(captured_histories[0])
 
@@ -699,7 +795,7 @@ def test_algorithm_benchmark_writes_utf8_json_and_csv(tmp_path) -> None:
     write_final_report(tmp_path, report)
 
     payload = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
-    assert payload["schemaVersion"] == 1
+    assert payload["schemaVersion"] == 2
     assert payload["runs"][0]["caseId"] == "scale-r4-t15"
     assert payload["caseSummaries"][0]["runCount"] == 1
     with (tmp_path / "runs.csv").open(encoding="utf-8-sig", newline="") as handle:

@@ -44,6 +44,15 @@ class BenchmarkRun:
     replan_time_ms: Number | None
     max_snapshot_replan_time_ms: Number | None
     wall_clock_ms: Number | None
+    planning_diagnostics_evaluated: bool
+    path_candidate_count: int | None
+    selected_path_candidate_index: int | None
+    failed_path_candidate_count: int | None
+    timed_astar_call_count: int | None
+    timed_astar_expanded_state_count: int | None
+    max_timed_astar_expanded_state_count: int | None
+    timed_astar_exhausted_search_count: int | None
+    timed_astar_goal_fully_reserved_reject_count: int | None
 
     @classmethod
     def timeout(cls, case: BenchmarkCase, run_index: int, wall_clock_ms: Number) -> "BenchmarkRun":
@@ -103,6 +112,15 @@ class BenchmarkRun:
             replan_time_ms=None,
             max_snapshot_replan_time_ms=None,
             wall_clock_ms=wall_clock_ms,
+            planning_diagnostics_evaluated=False,
+            path_candidate_count=None,
+            selected_path_candidate_index=None,
+            failed_path_candidate_count=None,
+            timed_astar_call_count=None,
+            timed_astar_expanded_state_count=None,
+            max_timed_astar_expanded_state_count=None,
+            timed_astar_exhausted_search_count=None,
+            timed_astar_goal_fully_reserved_reject_count=None,
         )
 
     def to_record(self) -> dict[str, object]:
@@ -139,6 +157,17 @@ class BenchmarkRun:
             "replanTimeMs": self.replan_time_ms,
             "maxSnapshotReplanTimeMs": self.max_snapshot_replan_time_ms,
             "wallClockMs": self.wall_clock_ms,
+            "planningDiagnosticsEvaluated": self.planning_diagnostics_evaluated,
+            "pathCandidateCount": self.path_candidate_count,
+            "selectedPathCandidateIndex": self.selected_path_candidate_index,
+            "failedPathCandidateCount": self.failed_path_candidate_count,
+            "timedAStarCallCount": self.timed_astar_call_count,
+            "timedAStarExpandedStateCount": self.timed_astar_expanded_state_count,
+            "maxTimedAStarExpandedStateCount": self.max_timed_astar_expanded_state_count,
+            "timedAStarExhaustedSearchCount": self.timed_astar_exhausted_search_count,
+            "timedAStarGoalFullyReservedRejectCount": (
+                self.timed_astar_goal_fully_reserved_reject_count
+            ),
         }
 
 
@@ -156,6 +185,9 @@ class BenchmarkCaseSummary:
     median_replan_time_ms: Number | None
     p95_replan_time_ms: Number | None
     max_safety_intervention_count: int
+    median_timed_astar_expanded_state_count: Number | None
+    p95_timed_astar_expanded_state_count: Number | None
+    max_timed_astar_goal_fully_reserved_reject_count: int | None
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -171,6 +203,15 @@ class BenchmarkCaseSummary:
             "medianReplanTimeMs": self.median_replan_time_ms,
             "p95ReplanTimeMs": self.p95_replan_time_ms,
             "maxSafetyInterventionCount": self.max_safety_intervention_count,
+            "medianTimedAStarExpandedStateCount": (
+                self.median_timed_astar_expanded_state_count
+            ),
+            "p95TimedAStarExpandedStateCount": (
+                self.p95_timed_astar_expanded_state_count
+            ),
+            "maxTimedAStarGoalFullyReservedRejectCount": (
+                self.max_timed_astar_goal_fully_reserved_reject_count
+            ),
         }
 
 
@@ -185,7 +226,7 @@ class BenchmarkReport:
     @classmethod
     def create(cls, config: dict[str, object], runs: list[BenchmarkRun]) -> "BenchmarkReport":
         generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        return cls(1, generated_at, config, list(runs), summarize_runs(runs))
+        return cls(2, generated_at, config, list(runs), summarize_runs(runs))
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -215,6 +256,22 @@ def summarize_runs(runs: list[BenchmarkRun]) -> list[BenchmarkCaseSummary]:
         completed = [run for run in case_runs if run.outcome == "completed"]
         wall = [run.wall_clock_ms for run in completed if run.wall_clock_ms is not None]
         replan = [run.replan_time_ms for run in completed if run.replan_time_ms is not None]
+        planning_runs = [
+            run
+            for run in completed
+            if run.planning_diagnostics_evaluated
+            and run.timed_astar_expanded_state_count is not None
+        ]
+        expanded_states = [
+            run.timed_astar_expanded_state_count
+            for run in planning_runs
+            if run.timed_astar_expanded_state_count is not None
+        ]
+        fully_reserved_rejects = [
+            run.timed_astar_goal_fully_reserved_reject_count
+            for run in planning_runs
+            if run.timed_astar_goal_fully_reserved_reject_count is not None
+        ]
         stable_run_count = sum(run.correctness_stable for run in case_runs)
         summaries.append(
             BenchmarkCaseSummary(
@@ -231,6 +288,13 @@ def summarize_runs(runs: list[BenchmarkRun]) -> list[BenchmarkCaseSummary]:
                 p95_replan_time_ms=nearest_rank_p95(replan),
                 max_safety_intervention_count=max(
                     (run.safety_intervention_count for run in case_runs), default=0
+                ),
+                median_timed_astar_expanded_state_count=(
+                    median(expanded_states) if expanded_states else None
+                ),
+                p95_timed_astar_expanded_state_count=nearest_rank_p95(expanded_states),
+                max_timed_astar_goal_fully_reserved_reject_count=(
+                    max(fully_reserved_rejects) if fully_reserved_rejects else None
                 ),
             )
         )

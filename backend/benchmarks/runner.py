@@ -7,6 +7,7 @@ from dataclasses import replace
 from time import perf_counter
 
 from backend.app.dispatch import run_dispatch
+from backend.app.planning_diagnostics import PlanningDiagnostics
 from backend.app.schemas import CreateSessionRequest, SessionTickRequest
 from backend.app.sessions import create_session, delete_session, tick_session
 from backend.benchmarks.results import BenchmarkRun, percent
@@ -258,8 +259,13 @@ def run_benchmark_cases(
 
 def _execute_direct(case: BenchmarkCase, run_index: int) -> BenchmarkRun:
     scenario = build_benchmark_scenario(case.case_id)
+    planning_diagnostics = PlanningDiagnostics()
     started_at = perf_counter()
-    result = run_dispatch(scenario, benchmark_options())
+    result = run_dispatch(
+        scenario,
+        benchmark_options(),
+        planning_diagnostics=planning_diagnostics,
+    )
     wall_clock_ms = (perf_counter() - started_at) * 1000
     metrics = result.metrics
     correctness_stable = (
@@ -301,6 +307,27 @@ def _execute_direct(case: BenchmarkCase, run_index: int) -> BenchmarkRun:
         replan_time_ms=metrics.replanTimeMs,
         max_snapshot_replan_time_ms=None,
         wall_clock_ms=wall_clock_ms,
+        planning_diagnostics_evaluated=True,
+        path_candidate_count=planning_diagnostics.path_candidate_count,
+        selected_path_candidate_index=(
+            planning_diagnostics.selected_path_candidate_index
+        ),
+        failed_path_candidate_count=(
+            planning_diagnostics.failed_path_candidate_count
+        ),
+        timed_astar_call_count=planning_diagnostics.timed_astar_call_count,
+        timed_astar_expanded_state_count=(
+            planning_diagnostics.timed_astar_expanded_state_count
+        ),
+        max_timed_astar_expanded_state_count=(
+            planning_diagnostics.max_timed_astar_expanded_state_count
+        ),
+        timed_astar_exhausted_search_count=(
+            planning_diagnostics.timed_astar_exhausted_search_count
+        ),
+        timed_astar_goal_fully_reserved_reject_count=(
+            planning_diagnostics.timed_astar_goal_fully_reserved_reject_count
+        ),
     )
 
 
@@ -375,4 +402,13 @@ def _execute_online(case: BenchmarkCase, run_index: int) -> BenchmarkRun:
         replan_time_ms=metrics.replanTimeMs,
         max_snapshot_replan_time_ms=max_snapshot_replan_time_ms,
         wall_clock_ms=wall_clock_ms,
+        planning_diagnostics_evaluated=False,
+        path_candidate_count=None,
+        selected_path_candidate_index=None,
+        failed_path_candidate_count=None,
+        timed_astar_call_count=None,
+        timed_astar_expanded_state_count=None,
+        max_timed_astar_expanded_state_count=None,
+        timed_astar_exhausted_search_count=None,
+        timed_astar_goal_fully_reserved_reject_count=None,
     )
