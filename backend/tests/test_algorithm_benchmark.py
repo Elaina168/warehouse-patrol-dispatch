@@ -661,10 +661,41 @@ def test_planning_diagnostics_collect_path_candidates_for_density_case() -> None
     assert diagnostics.timed_astar_call_count > 0
     assert diagnostics.timed_astar_expanded_state_count > 0
     assert diagnostics.max_timed_astar_expanded_state_count > 0
-    assert diagnostics.timed_astar_exhausted_search_count == 1
-    assert diagnostics.timed_astar_goal_fully_reserved_reject_count == 0
+    assert diagnostics.timed_astar_exhausted_search_count == 0
+    assert diagnostics.timed_astar_goal_fully_reserved_reject_count == 1
     assert diagnostics.path_candidates[0].failure_count == 1
     assert diagnostics.path_candidates[1].failure_count == 0
+
+
+@pytest.mark.parametrize(
+    ("case_id", "task_count", "candidate_count", "selected_index", "reject_count"),
+    [
+        ("density-r8-t31", 31, 2, 1, 1),
+        ("density-r8-t43", 43, 2, 1, 1),
+        ("density-r8-t55", 55, 1, 0, 0),
+    ],
+)
+def test_density_planning_pruning_preserves_results(
+    case_id: str,
+    task_count: int,
+    candidate_count: int,
+    selected_index: int,
+    reject_count: int,
+) -> None:
+    diagnostics = PlanningDiagnostics()
+    result = run_dispatch(
+        build_benchmark_scenario(case_id),
+        benchmark_options(),
+        planning_diagnostics=diagnostics,
+    )
+
+    assert result.metrics.assignedTaskCount == task_count
+    assert result.metrics.conflictCount == 0
+    assert result.metrics.failureCount == 0
+    assert result.metrics.deadlineMissCount == 0
+    assert diagnostics.path_candidate_count == candidate_count
+    assert diagnostics.selected_path_candidate_index == selected_index
+    assert diagnostics.timed_astar_goal_fully_reserved_reject_count == reject_count
 
 
 def test_optional_planning_diagnostics_do_not_change_dispatch_result() -> None:

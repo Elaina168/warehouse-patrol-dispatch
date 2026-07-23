@@ -125,7 +125,7 @@ def test_timed_astar_diagnostics_records_invalid_endpoint() -> None:
     assert diagnostics.timed_astar_calls[0].expanded_state_count == 0
 
 
-def test_timed_astar_diagnostics_records_exhausted_search() -> None:
+def test_timed_astar_rejects_goal_reserved_for_full_search_horizon() -> None:
     scenario = _timed_diagnostics_scenario()
     reservations = dispatch_module.Reservations()
     max_time = scenario.width * scenario.height * 4
@@ -142,8 +142,75 @@ def test_timed_astar_diagnostics_records_exhausted_search() -> None:
         candidate_diagnostics=diagnostics,
     ) == []
 
-    assert diagnostics.timed_astar_calls[0].outcome == "exhausted"
-    assert diagnostics.timed_astar_calls[0].expanded_state_count > 0
+    assert diagnostics.timed_astar_calls[0].outcome == "goalFullyReserved"
+    assert diagnostics.timed_astar_calls[0].expanded_state_count == 0
+
+
+def test_timed_astar_waits_when_goal_becomes_available_later() -> None:
+    scenario = _timed_diagnostics_scenario()
+    reservations = dispatch_module.Reservations(
+        vertices={"2,0@2", "2,0@3"},
+    )
+    diagnostics = PathCandidateDiagnostics(robot_order=["R1"])
+
+    path = dispatch_module.astar_timed(
+        scenario,
+        (0, 0),
+        (2, 0),
+        0,
+        reservations,
+        candidate_diagnostics=diagnostics,
+    )
+
+    assert path[-1] == (2, 0)
+    assert len(path) - 1 == 4
+    assert diagnostics.timed_astar_calls[0].outcome == "success"
+
+
+def test_timed_astar_start_equal_goal_keeps_immediate_success() -> None:
+    scenario = _timed_diagnostics_scenario()
+    reservations = dispatch_module.Reservations(
+        vertices={
+            f"0,0@{time_index}"
+            for time_index in range(0, 13)
+        },
+    )
+    diagnostics = PathCandidateDiagnostics(robot_order=["R1"])
+
+    path = dispatch_module.astar_timed(
+        scenario,
+        (0, 0),
+        (0, 0),
+        0,
+        reservations,
+        candidate_diagnostics=diagnostics,
+    )
+
+    assert path == [(0, 0)]
+    assert diagnostics.timed_astar_calls[0].outcome == "success"
+    assert diagnostics.timed_astar_calls[0].expanded_state_count == 0
+
+
+def test_timed_astar_full_goal_reservation_uses_move_ticks_arrival_bound() -> None:
+    scenario = _timed_diagnostics_scenario()
+    reservations = dispatch_module.Reservations()
+    max_time = scenario.width * scenario.height * 4 * 3
+    for time_index in range(6, max_time + 1):
+        reservations.vertices.add(f"2,0@{time_index}")
+    diagnostics = PathCandidateDiagnostics(robot_order=["R1"])
+
+    assert dispatch_module.astar_timed(
+        scenario,
+        (0, 0),
+        (2, 0),
+        0,
+        reservations,
+        move_ticks=3,
+        candidate_diagnostics=diagnostics,
+    ) == []
+
+    assert diagnostics.timed_astar_calls[0].outcome == "goalFullyReserved"
+    assert diagnostics.timed_astar_calls[0].expanded_state_count == 0
 
 
 def test_avoidance_respects_slow_robot_intermediate_start_cell_occupancy() -> None:

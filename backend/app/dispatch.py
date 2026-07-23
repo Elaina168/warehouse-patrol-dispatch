@@ -200,6 +200,18 @@ def movement_is_reserved(
     return is_reserved(goal, start_time + move_ticks, start, reservations)
 
 
+def has_unreserved_goal_arrival_time(
+    goal: Cell,
+    earliest_arrival: int,
+    max_time: int,
+    reservations: Reservations,
+) -> bool:
+    return any(
+        f"{cell_key(goal)}@{time_index}" not in reservations.vertices
+        for time_index in range(earliest_arrival, max_time + 1)
+    )
+
+
 def astar_timed(
     scenario: Scenario,
     start: Cell,
@@ -227,6 +239,17 @@ def astar_timed(
         return []
 
     max_time = start_time + scenario.width * scenario.height * 4 * move_ticks
+    if not same_cell(start, goal):
+        earliest_arrival = start_time + manhattan(start, goal) * move_ticks
+        if not has_unreserved_goal_arrival_time(
+            goal,
+            earliest_arrival,
+            max_time,
+            reservations,
+        ):
+            if call_diagnostics is not None:
+                call_diagnostics.finish("goalFullyReserved", 0)
+            return []
     start_state_key = timed_key(start, start_time)
     heap: list[tuple[int, int, int, Cell, str]] = [
         (manhattan(start, goal) * move_ticks, start_time, 0, start, start_state_key)
