@@ -5,6 +5,7 @@ import math
 import time
 from dataclasses import dataclass, field
 
+from backend.app.planning_diagnostics import PathCandidateDiagnostics
 from backend.app.replan_window import ReplanWindowDecision, decide_replan_window
 from backend.app.schemas import (
     Assignment,
@@ -204,9 +205,22 @@ def astar_timed(
     reservations: Reservations,
     extra_blocked: list[Cell] | None = None,
     move_ticks: int = 1,
+    candidate_diagnostics: PathCandidateDiagnostics | None = None,
 ) -> list[Cell]:
+    call_diagnostics = (
+        candidate_diagnostics.start_timed_astar_call()
+        if candidate_diagnostics is not None
+        else None
+    )
+    expanded_state_count = 0
     blocked = make_blocked_set(scenario, extra_blocked)
-    if not is_walkable(start, scenario, blocked) or not is_walkable(goal, scenario, blocked):
+    if not is_walkable(start, scenario, blocked) or not is_walkable(
+        goal,
+        scenario,
+        blocked,
+    ):
+        if call_diagnostics is not None:
+            call_diagnostics.finish("invalidEndpoint", 0)
         return []
 
     max_time = start_time + scenario.width * scenario.height * 4 * move_ticks
@@ -221,10 +235,16 @@ def astar_timed(
     while heap:
         _, current_time, current_g, current_cell, current_key = heapq.heappop(heap)
         if same_cell(current_cell, goal):
+            if call_diagnostics is not None:
+                call_diagnostics.finish(
+                    "success",
+                    expanded_state_count,
+                )
             return reconstruct_timed(came_from, current_key)
         if current_key in closed or current_time >= max_time:
             continue
         closed.add(current_key)
+        expanded_state_count += 1
 
         for next_cell in neighbors(current_cell, scenario, blocked, include_wait=True):
             duration = 1 if same_cell(next_cell, current_cell) else move_ticks
@@ -247,6 +267,8 @@ def astar_timed(
                 (tentative + manhattan(next_cell, goal) * move_ticks, next_time, tentative, next_cell, next_key),
             )
 
+    if call_diagnostics is not None:
+        call_diagnostics.finish("exhausted", expanded_state_count)
     return []
 
 

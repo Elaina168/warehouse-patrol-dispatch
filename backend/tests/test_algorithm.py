@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 import backend.app.dispatch as dispatch_module
 from backend.app.dispatch import build_paths, build_paths_for_order, path_planning_candidate_score, task_completion_times
 from backend.app.main import app
+from backend.app.planning_diagnostics import PathCandidateDiagnostics
 from backend.app.schemas import Assignment, DispatchOptions, Scenario
 from backend.tests.helpers import scenario_payload, seeded_pressure_scenario
 
@@ -63,6 +64,86 @@ def test_timed_path_expands_each_move_by_robot_duration() -> None:
     )
 
     assert path == [(0, 0), (0, 0), (0, 0), (1, 0)]
+
+
+def _timed_diagnostics_scenario() -> Scenario:
+    return Scenario.model_validate(
+        {
+            "id": "timed-diagnostics",
+            "name": "timed-diagnostics",
+            "description": "时空 A* 诊断测试",
+            "width": 3,
+            "height": 1,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": []},
+            "robots": [],
+            "tasks": [],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+
+
+def test_timed_astar_diagnostics_records_success_without_changing_path() -> None:
+    scenario = _timed_diagnostics_scenario()
+    diagnostics = PathCandidateDiagnostics(robot_order=["R1"])
+
+    path = dispatch_module.astar_timed(
+        scenario,
+        (0, 0),
+        (2, 0),
+        0,
+        dispatch_module.Reservations(),
+        candidate_diagnostics=diagnostics,
+    )
+
+    assert path == [(0, 0), (1, 0), (2, 0)]
+    assert len(diagnostics.timed_astar_calls) == 1
+    call = diagnostics.timed_astar_calls[0]
+    assert call.outcome == "success"
+    assert call.expanded_state_count == 2
+
+
+def test_timed_astar_diagnostics_records_invalid_endpoint() -> None:
+    scenario = _timed_diagnostics_scenario()
+    diagnostics = PathCandidateDiagnostics(robot_order=["R1"])
+
+    assert dispatch_module.astar_timed(
+        scenario,
+        (-1, 0),
+        (2, 0),
+        0,
+        dispatch_module.Reservations(),
+        candidate_diagnostics=diagnostics,
+    ) == []
+
+    assert diagnostics.timed_astar_calls[0].outcome == "invalidEndpoint"
+    assert diagnostics.timed_astar_calls[0].expanded_state_count == 0
+
+
+def test_timed_astar_diagnostics_records_exhausted_search() -> None:
+    scenario = _timed_diagnostics_scenario()
+    reservations = dispatch_module.Reservations()
+    max_time = scenario.width * scenario.height * 4
+    for time_index in range(2, max_time + 1):
+        reservations.vertices.add(f"2,0@{time_index}")
+    diagnostics = PathCandidateDiagnostics(robot_order=["R1"])
+
+    assert dispatch_module.astar_timed(
+        scenario,
+        (0, 0),
+        (2, 0),
+        0,
+        reservations,
+        candidate_diagnostics=diagnostics,
+    ) == []
+
+    assert diagnostics.timed_astar_calls[0].outcome == "exhausted"
+    assert diagnostics.timed_astar_calls[0].expanded_state_count > 0
 
 
 def test_avoidance_respects_slow_robot_intermediate_start_cell_occupancy() -> None:
