@@ -14,15 +14,19 @@ def _normalized_host(hostname: str, value: str) -> str:
     try:
         address = ip_address(hostname)
     except ValueError:
-        if all(character.isdigit() or character == "." for character in hostname):
+        if not hostname.isascii() or hostname.endswith("."):
             raise ValueError(f"{CORS_ORIGINS_ENV} contains invalid origin: {value}")
-        try:
-            normalized = hostname.encode("idna").decode("ascii").lower()
-        except UnicodeError as error:
-            raise ValueError(f"{CORS_ORIGINS_ENV} contains invalid origin: {value}") from error
-        labels = normalized[:-1].split(".") if normalized.endswith(".") else normalized.split(".")
+        normalized = hostname.lower()
+        labels = normalized.split(".")
+        final_label = labels[-1]
         if (
             not normalized
+            or final_label.isdigit()
+            or (
+                final_label.startswith("0x")
+                and len(final_label) > 2
+                and all(character in "0123456789abcdef" for character in final_label[2:])
+            )
             or any(
                 not label
                 or len(label) > 63

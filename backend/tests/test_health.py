@@ -39,3 +39,28 @@ def test_cors_preflight_allows_only_configured_method_and_header() -> None:
     assert "POST" in response.headers["access-control-allow-methods"]
     assert "content-type" in response.headers["access-control-allow-headers"].lower()
     assert "access-control-allow-credentials" not in response.headers
+
+
+def test_cors_preflight_rejects_unconfigured_method() -> None:
+    response = TestClient(app).options(
+        "/api/sessions",
+        headers={
+            "Origin": "http://localhost:5174",
+            "Access-Control-Request-Method": "PUT",
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_cors_preflight_rejects_unconfigured_header() -> None:
+    response = TestClient(app).options(
+        "/api/sessions",
+        headers={
+            "Origin": "http://localhost:5174",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "X-Test",
+        },
+    )
+
+    assert response.status_code == 400
