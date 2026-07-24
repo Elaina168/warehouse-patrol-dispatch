@@ -266,6 +266,19 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 
 `medianWallClockMs` 和 `p95WallClockMs` 仅用于观察当前机器上的运行分布。第一版不为墙钟分位数设置自动通过或失败阈值；应与正确性、稳定运行率及案例上下文一起人工复核。
 
+算法边界报告 `schemaVersion = 2`。直接规划运行设置 `planningDiagnosticsEvaluated = true`，并记录：
+
+- `pathCandidateCount`
+- `selectedPathCandidateIndex`
+- `failedPathCandidateCount`
+- `timedAStarCallCount`
+- `timedAStarExpandedStateCount`
+- `maxTimedAStarExpandedStateCount`
+- `timedAStarExhaustedSearchCount`
+- `timedAStarGoalFullyReservedRejectCount`
+
+在线、超时和异常记录不伪造规划工作量；未评价时 `planningDiagnosticsEvaluated = false`，其余字段为 `null`。扩展状态数是确定性工作量指标，墙钟中位数和 P95 仍只用于同机人工比较。
+
 ## 后续实验方向
 
 后续可以继续增加：

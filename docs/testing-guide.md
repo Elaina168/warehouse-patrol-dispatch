@@ -403,6 +403,20 @@ http://127.0.0.1:8011/health
 & 'C:\nvm4w\nodejs\npm.cmd' run benchmark:algorithm -- --repetitions 5 --timeout-seconds 30 --output-dir output/algorithm-boundary-benchmark
 ```
 
+单独复核时空 A* 密度剪枝时，运行：
+
+```powershell
+& 'C:\nvm4w\nodejs\npm.cmd' run benchmark:algorithm -- --families density --repetitions 5 --timeout-seconds 30 --output-dir output/timed-astar-density
+```
+
+密度复核清单：
+
+1. density 三个案例共 15 条运行并全部 stable。
+2. 31/43 案例出现 `goalFullyReserved` 拒绝且不再以 exhausted 搜索遍历完整时域。
+3. 55 案例保持首个候选成功。
+4. 只在相同机器和无并发重型任务下比较前后 `medianReplanTimeMs`、P95 和扩展状态数。
+5. 日常 pytest 不断言真实墙钟阈值。
+
 命令会在 `output/algorithm-boundary-benchmark` 下创建一个 UTC 时间戳结果目录。最终目录必须同时包含 `results.json`、`runs.csv` 和 `case-summaries.csv`；`runs.csv` 与 `case-summaries.csv` 使用 UTF-8 with BOM，可直接按 UTF-8 打开。默认九个案例为 `scale-r4-t15`、`scale-r8-t27`、`scale-r12-t39`、`density-r8-t31`、`density-r8-t43`、`density-r8-t55`、`bottleneck-r4-t4`、`bottleneck-r6-t6`、`bottleneck-r8-t8`，各运行五次。
 
 字段含义：`outcome` 为 `completed`、`timeout` 或 `error`；`correctnessStable` 表示该次运行满足对应案例的稳定性条件；`stableRunRatePercent` 是每案例稳定运行率；`medianWallClockMs`、`p95WallClockMs`、`medianReplanTimeMs` 和 `p95ReplanTimeMs` 分别汇总完成运行的墙钟和规划耗时。`medianWallClockMs` 和 `p95WallClockMs` 仅作当前机器运行分布观察，第一版不设墙钟自动通过或失败阈值，必须结合正确性、稳定运行率和案例上下文人工复核。`predictedConflictCount` 对应 `Metrics.conflictCount`，仅代表规划预测。在线案例的 `executionSafetyEvaluated` 应为 `true`，并应复核 `activeConflictCount` 和 `safetyInterventionCount`；直接规划案例不评价实际执行安全。

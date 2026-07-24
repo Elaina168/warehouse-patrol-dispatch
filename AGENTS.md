@@ -190,7 +190,9 @@ Recommended execution order:
    - Online execution safety is now a code-enforced invariant for `avoidConflicts=true`: the first predicted vertex or reverse-edge conflict tick causes a full-fleet hold, is returned early through `SessionResult.safetyIntervention`, and never writes the conflicting action into actual path history. Baseline comparison, direct dispatch, and experiments intentionally remain prediction/comparison paths and can still return or execute conflicts.
    - The offline algorithm boundary benchmark is implemented with deterministic scale, density, and online bottleneck cases, isolated per-run timeouts, JSON/CSV result reports, and stability summaries. It records planning forecasts separately from online execution safety evidence; it does not establish complete MAPF or full-horizon zero-conflict guarantees.
    - Remaining work is algorithmic quality beyond the current heuristic planner, especially richer MAPF behavior if needed, adaptive-threshold calibration, performance tuning on larger instances, and full-horizon zero-conflict guarantees. The safety gate prevents unsafe execution but does not guarantee that every input has a zero-conflict route.
-   - Next, run and manually review the complete boundary benchmark, then choose performance optimization, threshold calibration, or an independent MAPF evaluation from the evidence.
+   - The density benchmark performance anomaly has been attributed to a timed A* candidate whose goal remained vertex-reserved for the complete search horizon. The planner now rejects that candidate before state expansion, records deterministic planning-work diagnostics in benchmark schema v2, and preserves the existing candidate order and result semantics.
+   - 同机 density x5 优化证据的 `medianReplanTimeMs` / P95 为：`density-r8-t31` 150.85 / 155.90 ms、`density-r8-t43` 213.56 / 214.37 ms、`density-r8-t55` 231.33 / 235.45 ms；31/43 的全预留目标拒绝不再进入 exhausted 搜索，55 保持首个候选成功。
+   - Next, use the reviewed deterministic diagnostics and same-machine density evidence to choose performance tuning, adaptive-threshold calibration, or an independent MAPF evaluation; do not claim complete MAPF capability or a global zero-conflict guarantee.
    - Battery and charging are now hard runtime constraints: a robot consumes one unit per moved grid cell, routes to a reachable charger when needed, waits for `chargeTime`, and remains unavailable to preemption while charging.
 
 3. Online scheduling module completion - 接近完成
@@ -241,7 +243,7 @@ Recommended execution order:
    - Scale comparison also covers labeled homogeneous and specialized capability fleets, and a focused online regression covers the unique-compatible-robot failure and recovery sequence without adding another experiment endpoint.
    - Fixed-seed pressure comparison has backend coverage for standard and extended stability sets, including the repaired seed-43 pressure boundary, with assignment-rate, deadline-miss, planning-budget, distance, and makespan evidence.
    - The offline algorithm boundary benchmark is implemented as command-line evidence for nine deterministic scale, density, and online bottleneck cases. Its reports distinguish predicted conflicts from active online conflicts and safety interventions; the six existing experiment APIs remain unchanged.
-   - Next, run and manually review the complete boundary benchmark, then use the evidence to choose performance optimization, threshold calibration, or an independent MAPF evaluation. Do not present the benchmark as a complete MAPF result.
+   - 已完成 density x5 取证：`density-r8-t31`、`density-r8-t43`、`density-r8-t55` 的 `medianReplanTimeMs` / P95 依次为 150.85 / 155.90 ms、213.56 / 214.37 ms、231.33 / 235.45 ms。下一步基于确定性诊断和同机证据选择性能调优、自适应阈值校准或独立 MAPF 评估；不得把该基准表述为完整 MAPF 结果。
    - Output should feed the report and defense: charts, tables, conclusions, and a short explanation of why the algorithm improves the baseline.
 
 9. Competition materials and demo package - 未开始
