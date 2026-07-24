@@ -577,14 +577,10 @@ def _cleanup_sessions(now: float | None = None) -> None:
 
 
 def _publish_session(session: DispatchSession) -> None:
-    skip_cleanup_once = False
     while True:
         waited_session: DispatchSession | None = None
         with _sessions_lock:
-            if skip_cleanup_once:
-                skip_cleanup_once = False
-            else:
-                _cleanup_sessions_locked()
+            _cleanup_sessions_locked()
             if len(_sessions) < MAX_SESSIONS:
                 session.last_accessed_at = _session_now()
                 _sessions[session.session_id] = session
@@ -618,7 +614,6 @@ def _publish_session(session: DispatchSession) -> None:
             with _sessions_lock:
                 if _sessions.get(waited_session.session_id) is waited_session:
                     waited_session.closing = False
-            skip_cleanup_once = True
 
 
 def _build_session_summary(session: DispatchSession) -> SessionSummary:
