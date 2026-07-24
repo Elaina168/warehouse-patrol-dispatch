@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from threading import Event, Lock, RLock
 
 import pytest
@@ -42,6 +43,16 @@ def _status(callable_) -> int:
 
 def _wait(event: Event, description: str) -> None:
     assert event.wait(WAIT_TIMEOUT_SECONDS), f"等待超时：{description}"
+
+
+@contextmanager
+def _registry_lock_for_competition():
+    acquired = sessions_module._sessions_lock.acquire(timeout=WAIT_TIMEOUT_SECONDS)
+    assert acquired, "等待超时：主线程获取会话注册表锁"
+    try:
+        yield
+    finally:
+        sessions_module._sessions_lock.release()
 
 
 class ObservedRLock:
@@ -302,7 +313,9 @@ def test_delete_never_removes_replacement_with_same_id() -> None:
         observed_lock = ObservedRLock()
         original.lock = observed_lock
     observed_lock.acquire()
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    lock_held = True
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
         deletion = pool.submit(sessions_module.delete_session, session_id)
         observed_lock.wait_for_blockers()
         replacement = sessions_module.DispatchSession(
@@ -310,11 +323,16 @@ def test_delete_never_removes_replacement_with_same_id() -> None:
             scenario=original.scenario.model_copy(deep=True),
             options=original.options.model_copy(deep=True),
         )
-        with sessions_module._sessions_lock:
+        with _registry_lock_for_competition():
             sessions_module._sessions[session_id] = replacement
         observed_lock.release()
+        lock_held = False
         with pytest.raises(HTTPException) as error:
             deletion.result(timeout=WAIT_TIMEOUT_SECONDS)
+    finally:
+        if lock_held:
+            observed_lock.release()
+        pool.shutdown(wait=True)
     assert error.value.status_code == 404
     with sessions_module._sessions_lock:
         assert sessions_module._sessions[session_id] is replacement
@@ -336,7 +354,9 @@ def test_capacity_publish_rechecks_identity_capacity_and_ttl(monkeypatch) -> Non
         options=original.options.model_copy(deep=True),
     )
     observed_lock.acquire()
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    lock_held = True
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
         publishing = pool.submit(sessions_module._publish_session, incoming)
         observed_lock.wait_for_blockers()
         replacement = sessions_module.DispatchSession(
@@ -351,12 +371,17 @@ def test_capacity_publish_rechecks_identity_capacity_and_ttl(monkeypatch) -> Non
             options=original.options.model_copy(deep=True),
             last_accessed_at=0,
         )
-        with sessions_module._sessions_lock:
+        with _registry_lock_for_competition():
             sessions_module._sessions[session_id] = replacement
             sessions_module._sessions[expired.session_id] = expired
         monkeypatch.setattr(sessions_module, "MAX_SESSIONS", 3)
         observed_lock.release()
+        lock_held = False
         publishing.result(timeout=WAIT_TIMEOUT_SECONDS)
+    finally:
+        if lock_held:
+            observed_lock.release()
+        pool.shutdown(wait=True)
 
     with sessions_module._sessions_lock:
         assert sessions_module._sessions[session_id] is replacement
