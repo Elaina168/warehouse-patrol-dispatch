@@ -1,5 +1,6 @@
 import os
 from collections.abc import Mapping
+from ipaddress import IPv6Address, ip_address
 from urllib.parse import urlsplit
 
 CORS_ORIGINS_ENV = "WAREHOUSE_PATROL_CORS_ORIGINS"
@@ -7,6 +8,35 @@ DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:5174",
     "http://localhost:5174",
 )
+
+
+def _normalized_host(hostname: str, value: str) -> str:
+    try:
+        address = ip_address(hostname)
+    except ValueError:
+        if all(character.isdigit() or character == "." for character in hostname):
+            raise ValueError(f"{CORS_ORIGINS_ENV} contains invalid origin: {value}")
+        try:
+            normalized = hostname.encode("idna").decode("ascii").lower()
+        except UnicodeError as error:
+            raise ValueError(f"{CORS_ORIGINS_ENV} contains invalid origin: {value}") from error
+        labels = normalized[:-1].split(".") if normalized.endswith(".") else normalized.split(".")
+        if (
+            not normalized
+            or any(
+                not label
+                or len(label) > 63
+                or label.startswith("-")
+                or label.endswith("-")
+                or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-" for character in label)
+                for label in labels
+            )
+        ):
+            raise ValueError(f"{CORS_ORIGINS_ENV} contains invalid origin: {value}")
+        return normalized
+    if isinstance(address, IPv6Address):
+        return f"[{address.compressed}]"
+    return address.compressed
 
 
 def cors_allowed_origins(
@@ -22,9 +52,12 @@ def cors_allowed_origins(
 
     origins: list[str] = []
     for value in values:
-        parsed = urlsplit(value)
         try:
-            parsed.port
+            parsed = urlsplit(value)
+        except ValueError as error:
+            raise ValueError(f"{CORS_ORIGINS_ENV} contains invalid origin: {value}") from error
+        try:
+            port = parsed.port
         except ValueError as error:
             raise ValueError(f"{CORS_ORIGINS_ENV} contains invalid origin: {value}") from error
         invalid = (
@@ -39,6 +72,10 @@ def cors_allowed_origins(
         )
         if invalid:
             raise ValueError(f"{CORS_ORIGINS_ENV} contains invalid origin: {value}")
-        if value not in origins:
-            origins.append(value)
+        scheme = parsed.scheme.lower()
+        normalized = f"{scheme}://{_normalized_host(parsed.hostname, value)}"
+        if port is not None and (scheme, port) not in {("http", 80), ("https", 443)}:
+            normalized = f"{normalized}:{port}"
+        if normalized not in origins:
+            origins.append(normalized)
     return origins

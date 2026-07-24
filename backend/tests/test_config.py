@@ -1,6 +1,9 @@
 import pytest
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.testclient import TestClient
 
-from backend.app.config import cors_allowed_origins
+from backend.app.config import CORS_ORIGINS_ENV, cors_allowed_origins
 
 
 def test_cors_defaults_to_two_local_frontend_origins() -> None:
@@ -21,6 +24,45 @@ def test_cors_parses_trims_and_deduplicates_explicit_origins() -> None:
         "http://192.168.1.10:5174",
         "https://demo.example.com",
     ]
+
+
+def test_cors_normalizes_browser_serialized_origins_before_deduplication() -> None:
+    assert cors_allowed_origins({
+        CORS_ORIGINS_ENV: (
+            "HTTP://EXAMPLE.COM,http://example.com:80,"
+            "HTTPS://EXAMPLE.COM:443,https://example.com,"
+            "https://example.com:8443,"
+            "HTTP://[2001:0DB8:0000:0000:0000:0000:0000:0001]:80,"
+            "http://[2001:db8::1]"
+        )
+    }) == [
+        "http://example.com",
+        "https://example.com",
+        "https://example.com:8443",
+        "http://[2001:db8::1]",
+    ]
+
+
+def test_cors_middleware_matches_browser_normalized_origin_from_explicit_config() -> None:
+    temporary_app = FastAPI()
+    temporary_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_allowed_origins({CORS_ORIGINS_ENV: "HTTP://EXAMPLE.COM:80"}),
+        allow_credentials=False,
+        allow_methods=["GET"],
+        allow_headers=["Content-Type"],
+    )
+
+    @temporary_app.get("/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    response = TestClient(temporary_app).get(
+        "/health",
+        headers={"Origin": "http://example.com"},
+    )
+
+    assert response.headers["access-control-allow-origin"] == "http://example.com"
 
 
 @pytest.mark.parametrize(
