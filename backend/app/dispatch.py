@@ -1952,7 +1952,7 @@ def run_dispatch(
             released_task_count=released_task_count,
             future_task_count=len(tasks) - released_task_count,
             active_robot_count=len(scenario.robots) - len(unavailable_robot_ids),
-            recent_replan_time_ms=None,
+            latency_slow=False,
         )
     assignment_replan_window = replan_window_decision.window
     planning_tasks, deferred_tasks = split_tasks_for_planning(

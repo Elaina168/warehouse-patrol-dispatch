@@ -4810,7 +4810,7 @@ def test_session_slow_replan_feedback_changes_window_trigger_time() -> None:
             assignmentReplanWindow=24,
             adaptiveReplanWindow=True,
         ),
-        last_replan_time_ms=50,
+        adaptive_latency_slow=True,
     )
     task = scenario.tasks[0]
 
@@ -4818,6 +4818,133 @@ def test_session_slow_replan_feedback_changes_window_trigger_time() -> None:
 
     assert decision.window == 12
     assert sessions_module._rolling_window_trigger_time(session, task) == 28
+
+
+def test_session_latency_recorder_keeps_latest_five_samples() -> None:
+    scenario = Scenario.model_validate(scenario_payload())
+    session = sessions_module.DispatchSession(
+        session_id="latency-samples",
+        scenario=scenario,
+        options=DispatchOptions(
+            avoidConflicts=True,
+            includeDynamic=False,
+            adaptiveReplanWindow=True,
+        ),
+    )
+
+    for value in [10, 20, 30, 40, 50, 60]:
+        sessions_module._record_replan_latency(session, value)
+
+    assert session.recent_replan_times_ms == [20, 30, 40, 50, 60]
+
+
+def test_cached_get_does_not_append_replan_latency_sample() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario_payload(),
+            "options": {
+                "avoidConflicts": True,
+                "includeDynamic": False,
+                "adaptiveReplanWindow": True,
+            },
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+    with sessions_module._locked_session(session_id, touch_access=False) as session:
+        before = list(session.recent_replan_times_ms)
+
+    assert client.get(f"/api/sessions/{session_id}").status_code == 200
+    assert client.get(f"/api/sessions/{session_id}").status_code == 200
+
+    with sessions_module._locked_session(session_id, touch_access=False) as session:
+        assert session.recent_replan_times_ms == before
+
+
+def test_reset_clears_adaptive_latency_history_and_state() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": frontend_demo_scenario("integrated-demo"),
+            "options": {
+                "avoidConflicts": True,
+                "includeDynamic": True,
+                "adaptiveReplanWindow": True,
+            },
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+    with sessions_module._locked_session(session_id, touch_access=False) as session:
+        session.recent_replan_times_ms = [100, 100, 100]
+        session.adaptive_latency_slow = True
+
+    reset = client.post(f"/api/sessions/{session_id}/reset")
+
+    assert reset.status_code == 200
+    with sessions_module._locked_session(session_id, touch_access=False) as session:
+        assert session.recent_replan_times_ms == []
+        assert session.adaptive_latency_slow is False
+
+
+def test_replan_sample_changes_only_the_next_window_decision(monkeypatch) -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario_payload(),
+            "options": {
+                "avoidConflicts": True,
+                "includeDynamic": False,
+                "assignmentReplanWindow": 24,
+                "adaptiveReplanWindow": True,
+            },
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+    real_run_dispatch = sessions_module.run_dispatch
+    decisions = []
+
+    def deterministic_run_dispatch(*args, **kwargs):
+        decisions.append(kwargs["replan_window_decision"])
+        result = real_run_dispatch(*args, **kwargs)
+        return result.model_copy(
+            update={
+                "metrics": result.metrics.model_copy(
+                    update={"replanTimeMs": 100}
+                )
+            }
+        )
+
+    monkeypatch.setattr(
+        sessions_module,
+        "run_dispatch",
+        deterministic_run_dispatch,
+    )
+    with sessions_module._locked_session(session_id, touch_access=False) as session:
+        session.recent_replan_times_ms = [100, 100]
+        session.adaptive_latency_slow = False
+        sessions_module._invalidate_plan(session)
+    first = client.get(f"/api/sessions/{session_id}").json()
+
+    first_decision = decisions[-1]
+    assert first_decision.reason != "近期规划耗时中位数较高，收缩窗口"
+    assert first["result"]["replanWindowReason"] == first_decision.reason
+    assert not any(
+        "近期规划耗时中位数较高" in event["text"]
+        for event in first["result"]["eventLog"]
+    )
+    with sessions_module._locked_session(session_id, touch_access=False) as session:
+        assert session.adaptive_latency_slow is True
+        sessions_module._invalidate_plan(session)
+    second = client.get(f"/api/sessions/{session_id}").json()
+
+    assert decisions[-1].reason == "近期规划耗时中位数较高，收缩窗口"
+    assert second["result"]["replanWindowReason"] == decisions[-1].reason
 
 
 def test_session_task_state_recovers_after_runtime_robot_restore() -> None:

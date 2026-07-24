@@ -33,7 +33,12 @@ from backend.app.inventory import (
     initial_shelf_statuses,
     reserve_shelf_task,
 )
-from backend.app.replan_window import ReplanWindowDecision, decide_replan_window
+from backend.app.replan_window import (
+    REPLAN_TIME_SAMPLE_WINDOW,
+    ReplanWindowDecision,
+    decide_replan_window,
+    update_latency_slow_state,
+)
 from backend.app.schemas import (
     AddBlockRequest,
     AddTaskRequest,
@@ -110,7 +115,8 @@ class DispatchSession:
     shelf_task_bindings: dict[str, ShelfTaskBinding] = field(default_factory=dict)
     effective_assignment_replan_window: int | None = None
     replan_window_reason: str | None = None
-    last_replan_time_ms: float | None = None
+    recent_replan_times_ms: list[float] = field(default_factory=list)
+    adaptive_latency_slow: bool = False
     last_safety_intervention: Conflict | None = None
     safety_stall_signature: tuple[str, tuple[str, ...], Cell] | None = None
     consecutive_safety_intervention_count: int = 0
@@ -571,7 +577,8 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.preferred_task_robot_ids.clear()
     session.effective_assignment_replan_window = None
     session.replan_window_reason = None
-    session.last_replan_time_ms = None
+    session.recent_replan_times_ms.clear()
+    session.adaptive_latency_slow = False
     session.last_safety_intervention = None
     _clear_safety_stall(session)
     session.safety_hold_times.clear()
@@ -731,7 +738,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
             session,
         )
         _record_replan_window_decision(session, replan_window_decision)
-        session.last_replan_time_ms = result.metrics.replanTimeMs
+        _record_replan_latency(session, result.metrics.replanTimeMs)
         _update_task_robot_preferences(session, result)
 
         session.last_result = result
@@ -1199,7 +1206,7 @@ def _session_replan_window_decision(session: DispatchSession) -> ReplanWindowDec
         released_task_count=released_task_count,
         future_task_count=len(tasks) - released_task_count,
         active_robot_count=len(session.scenario.robots) - len(unavailable_robot_ids),
-        recent_replan_time_ms=session.last_replan_time_ms,
+        latency_slow=session.adaptive_latency_slow,
     )
 
 
@@ -1220,6 +1227,20 @@ def _record_replan_window_decision(
             session.current_time,
             f"自适应重规划窗口调整为 {decision.window}T：{decision.reason}",
         )
+
+
+def _record_replan_latency(
+    session: DispatchSession,
+    replan_time_ms: float,
+) -> None:
+    session.recent_replan_times_ms.append(replan_time_ms)
+    session.recent_replan_times_ms = session.recent_replan_times_ms[
+        -REPLAN_TIME_SAMPLE_WINDOW:
+    ]
+    session.adaptive_latency_slow = update_latency_slow_state(
+        session.recent_replan_times_ms,
+        session.adaptive_latency_slow,
+    )
 
 
 def _first_crossed_time(current_time: int, target_time: int, times: list[int | None]) -> int | None:

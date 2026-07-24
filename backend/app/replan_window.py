@@ -1,15 +1,34 @@
 from dataclasses import dataclass
+from statistics import median
 
 
 MIN_ADAPTIVE_REPLAN_WINDOW = 4
 MAX_ADAPTIVE_REPLAN_WINDOW = 120
-SLOW_REPLAN_THRESHOLD_MS = 50
+REPLAN_TIME_SAMPLE_WINDOW = 5
+MIN_REPLAN_TIME_SAMPLES = 3
+SLOW_REPLAN_ENTER_THRESHOLD_MS = 60
+SLOW_REPLAN_EXIT_THRESHOLD_MS = 40
 
 
 @dataclass(frozen=True)
 class ReplanWindowDecision:
     window: int
     reason: str
+
+
+def update_latency_slow_state(
+    samples_ms: list[float],
+    current_slow: bool,
+) -> bool:
+    recent = samples_ms[-REPLAN_TIME_SAMPLE_WINDOW:]
+    if len(recent) < MIN_REPLAN_TIME_SAMPLES:
+        return current_slow
+    value = median(recent)
+    if not current_slow and value >= SLOW_REPLAN_ENTER_THRESHOLD_MS:
+        return True
+    if current_slow and value <= SLOW_REPLAN_EXIT_THRESHOLD_MS:
+        return False
+    return current_slow
 
 
 def decide_replan_window(
@@ -19,7 +38,7 @@ def decide_replan_window(
     released_task_count: int,
     future_task_count: int,
     active_robot_count: int,
-    recent_replan_time_ms: float | None,
+    latency_slow: bool,
 ) -> ReplanWindowDecision:
     if not adaptive:
         return ReplanWindowDecision(window=configured_window, reason="固定窗口")
@@ -31,10 +50,10 @@ def decide_replan_window(
     contracted = max(MIN_ADAPTIVE_REPLAN_WINDOW, baseline // 2)
     expanded = min(MAX_ADAPTIVE_REPLAN_WINDOW, baseline * 2)
 
-    if recent_replan_time_ms is not None and recent_replan_time_ms >= SLOW_REPLAN_THRESHOLD_MS:
+    if latency_slow:
         return ReplanWindowDecision(
             window=contracted,
-            reason="近期规划耗时较高，收缩窗口",
+            reason="近期规划耗时中位数较高，收缩窗口",
         )
 
     robot_count = max(1, active_robot_count)

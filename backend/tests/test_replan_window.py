@@ -1,4 +1,36 @@
-from backend.app.replan_window import decide_replan_window
+import pytest
+
+from backend.app.replan_window import (
+    MIN_REPLAN_TIME_SAMPLES,
+    REPLAN_TIME_SAMPLE_WINDOW,
+    SLOW_REPLAN_ENTER_THRESHOLD_MS,
+    SLOW_REPLAN_EXIT_THRESHOLD_MS,
+    decide_replan_window,
+    update_latency_slow_state,
+)
+
+
+@pytest.mark.parametrize("samples", [[], [100], [100, 100]])
+def test_latency_state_requires_three_samples(samples: list[float]) -> None:
+    assert update_latency_slow_state(samples, False) is False
+
+
+def test_latency_state_uses_only_latest_five_sample_median() -> None:
+    samples = [1000, 10, 60, 70, 80, 90]
+
+    assert update_latency_slow_state(samples, False) is True
+
+
+def test_latency_state_enters_at_60_and_exits_at_40() -> None:
+    assert update_latency_slow_state([60, 60, 60], False) is True
+    assert update_latency_slow_state([40, 40, 40], True) is False
+
+
+def test_latency_state_is_sticky_between_40_and_60() -> None:
+    samples = [50, 50, 50]
+
+    assert update_latency_slow_state(samples, False) is False
+    assert update_latency_slow_state(samples, True) is True
 
 
 def test_fixed_replan_window_preserves_configured_value() -> None:
@@ -8,7 +40,7 @@ def test_fixed_replan_window_preserves_configured_value() -> None:
         released_task_count=20,
         future_task_count=3,
         active_robot_count=2,
-        recent_replan_time_ms=120,
+        latency_slow=True,
     )
 
     assert decision.window == 24
@@ -22,11 +54,11 @@ def test_adaptive_replan_window_shrinks_for_slow_planning() -> None:
         released_task_count=0,
         future_task_count=2,
         active_robot_count=4,
-        recent_replan_time_ms=50,
+        latency_slow=True,
     )
 
     assert decision.window == 12
-    assert decision.reason == "近期规划耗时较高，收缩窗口"
+    assert decision.reason == "近期规划耗时中位数较高，收缩窗口"
 
 
 def test_adaptive_replan_window_shrinks_for_task_pressure() -> None:
@@ -36,7 +68,7 @@ def test_adaptive_replan_window_shrinks_for_task_pressure() -> None:
         released_task_count=8,
         future_task_count=2,
         active_robot_count=4,
-        recent_replan_time_ms=10,
+        latency_slow=False,
     )
 
     assert decision.window == 12
@@ -50,7 +82,7 @@ def test_adaptive_replan_window_expands_for_idle_future_work() -> None:
         released_task_count=0,
         future_task_count=2,
         active_robot_count=4,
-        recent_replan_time_ms=10,
+        latency_slow=False,
     )
 
     assert decision.window == 48
@@ -64,7 +96,7 @@ def test_adaptive_replan_window_keeps_normalized_baseline_for_balanced_work() ->
         released_task_count=2,
         future_task_count=0,
         active_robot_count=4,
-        recent_replan_time_ms=None,
+        latency_slow=False,
     )
 
     assert decision.window == 4
@@ -78,7 +110,7 @@ def test_adaptive_replan_window_respects_maximum() -> None:
         released_task_count=0,
         future_task_count=1,
         active_robot_count=4,
-        recent_replan_time_ms=0,
+        latency_slow=False,
     )
 
     assert decision.window == 120
