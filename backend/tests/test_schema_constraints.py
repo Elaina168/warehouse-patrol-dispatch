@@ -2,9 +2,63 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 import pytest
 
+from backend.app import schemas
+from backend.app.limits import (
+    MAX_SCENARIO_AXIS_LENGTH,
+    MAX_SCENARIO_CELL_COUNT,
+    MAX_SCENARIO_ROBOTS,
+    MAX_SCENARIO_TASKS,
+    MAX_TASK_TARGETS,
+)
 from backend.app.main import app
 from backend.app.schemas import Robot
 from backend.tests.helpers import scenario_payload
+
+
+def _inspection_task(index: int, targets: list[list[int]] | None = None) -> dict:
+    return {
+        "id": f"L{index}",
+        "type": "inspection",
+        "title": f"限制任务 {index}",
+        "priority": 1,
+        "targets": targets if targets is not None else [[0, 0]],
+    }
+
+
+def _robot(index: int) -> dict:
+    return {
+        "id": f"R{index}",
+        "name": f"机器人 {index}",
+        "start": [index % 32, index // 32],
+        "battery": 100,
+        "load": 1,
+    }
+
+
+def _set_axis_over_limit(data: dict) -> None:
+    data["width"] = MAX_SCENARIO_AXIS_LENGTH + 1
+
+
+def _set_area_over_limit(data: dict) -> None:
+    data["width"] = MAX_SCENARIO_AXIS_LENGTH
+    data["height"] = MAX_SCENARIO_AXIS_LENGTH
+
+
+def _set_robot_count_over_limit(data: dict) -> None:
+    data["robots"] = [_robot(i) for i in range(MAX_SCENARIO_ROBOTS + 1)]
+
+
+def _set_task_count_over_limit(data: dict) -> None:
+    data["tasks"] = [
+        _inspection_task(i)
+        for i in range(MAX_SCENARIO_TASKS + 1)
+    ]
+
+
+def _set_targets_over_limit(data: dict) -> None:
+    data["tasks"] = [
+        _inspection_task(0, [[0, 0]] * (MAX_TASK_TARGETS + 1))
+    ]
 
 
 def test_robot_capabilities_default_to_all_task_types() -> None:
@@ -167,3 +221,186 @@ def test_task_priority_accepts_zero_and_rejects_values_outside_zero_to_five() ->
         "/api/dispatch",
         json={"scenario": excessive_priority_scenario},
     ).status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_fragment"),
+    [
+        (_set_axis_over_limit, "less than or equal to 64"),
+        (_set_area_over_limit, "map cell count must be <= 1024"),
+        (_set_robot_count_over_limit, "at most 32"),
+        (_set_task_count_over_limit, "at most 128"),
+        (_set_targets_over_limit, "at most 64"),
+    ],
+)
+def test_scenario_size_limits_reject_one_over_limit(mutate, expected_fragment: str) -> None:
+    payload = scenario_payload()
+    payload["obstacles"] = []
+    payload["tasks"] = []
+    payload["dynamic"]["tasks"] = []
+    mutate(payload)
+
+    response = TestClient(app).post("/api/dispatch", json={"scenario": payload})
+
+    assert response.status_code == 422
+    assert expected_fragment in response.text
+
+
+def _set_map_cell_list(data: dict, field_name: str, count: int) -> None:
+    cells = [[0, 0] for _ in range(count)]
+    if field_name == "obstacles":
+        data["obstacles"] = cells
+    elif field_name == "shelves":
+        data["shelves"] = [
+            {
+                "id": f"S{index}",
+                "cell": [0, 0],
+                "serviceCell": [1, 0],
+                "initialOccupied": False,
+            }
+            for index in range(count)
+        ]
+    elif field_name.startswith("zones."):
+        data["zones"][field_name.split(".", 1)[1]] = cells
+    elif field_name == "dynamic.blockedCells":
+        data["dynamic"]["blockedCells"] = cells
+    else:
+        raise AssertionError(f"unexpected field: {field_name}")
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "obstacles",
+        "shelves",
+        "zones.warehouse",
+        "zones.inspection",
+        "zones.delivery",
+        "zones.charging",
+        "dynamic.blockedCells",
+    ],
+)
+def test_map_cell_lists_cannot_exceed_actual_map_area(field_name: str) -> None:
+    payload = scenario_payload()
+    payload.update(width=4, height=4)
+    payload["obstacles"] = []
+    payload["shelves"] = []
+    payload["zones"] = {
+        "warehouse": [],
+        "inspection": [],
+        "delivery": [],
+        "charging": [],
+    }
+    payload["tasks"] = []
+    payload["dynamic"] = {
+        "triggerTime": 0,
+        "blockedCells": [],
+        "failedRobots": [],
+        "tasks": [],
+    }
+    _set_map_cell_list(payload, field_name, 17)
+
+    response = TestClient(app).post("/api/dispatch", json={"scenario": payload})
+
+    assert response.status_code == 422
+    assert field_name in response.text
+
+
+def test_scenario_size_limits_accept_exact_boundaries() -> None:
+    payload = scenario_payload()
+    payload.update(width=64, height=16)
+    payload["obstacles"] = []
+    payload["shelves"] = []
+    payload["zones"] = {
+        "warehouse": [],
+        "inspection": [],
+        "delivery": [],
+        "charging": [],
+    }
+    payload["robots"] = [_robot(i) for i in range(MAX_SCENARIO_ROBOTS)]
+    payload["tasks"] = [
+        _inspection_task(i, [[0, 0]] * MAX_TASK_TARGETS)
+        for i in range(MAX_SCENARIO_TASKS)
+    ]
+    payload["dynamic"] = {
+        "triggerTime": 0,
+        "blockedCells": [],
+        "failedRobots": [],
+        "tasks": [],
+    }
+
+    scenario = schemas.Scenario.model_validate(payload)
+
+    assert scenario.width * scenario.height == MAX_SCENARIO_CELL_COUNT
+    assert len(scenario.robots) == MAX_SCENARIO_ROBOTS
+    assert len(scenario.tasks) == MAX_SCENARIO_TASKS
+    assert len(scenario.tasks[0].targets or []) == MAX_TASK_TARGETS
+
+
+def test_initial_and_dynamic_tasks_share_128_limit() -> None:
+    payload = scenario_payload()
+    payload["tasks"] = [_inspection_task(i) for i in range(64)]
+    payload["dynamic"]["tasks"] = [_inspection_task(i + 64) for i in range(65)]
+
+    response = TestClient(app).post("/api/sessions", json={"scenario": payload})
+
+    assert response.status_code == 422
+
+
+def test_initial_and_dynamic_tasks_accept_exact_combined_limit() -> None:
+    payload = scenario_payload()
+    payload["tasks"] = [_inspection_task(i) for i in range(64)]
+    payload["dynamic"]["tasks"] = [
+        _inspection_task(i + 64)
+        for i in range(64)
+    ]
+
+    scenario = schemas.Scenario.model_validate(payload)
+
+    assert len(scenario.tasks) + len(scenario.dynamic.tasks) == 128
+
+
+def test_runtime_task_uses_the_same_total_128_limit() -> None:
+    payload = scenario_payload()
+    payload["id"] = "integrated-demo"
+    payload["tasks"] = [
+        _inspection_task(i)
+        for i in range(MAX_SCENARIO_TASKS)
+    ]
+    payload["dynamic"]["tasks"] = []
+    client = TestClient(app)
+    created = client.post("/api/sessions", json={"scenario": payload})
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    response = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={"task": _inspection_task(MAX_SCENARIO_TASKS)},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "调度会话任务数已达上限："
+        f"{MAX_SCENARIO_TASKS} + 1 > {MAX_SCENARIO_TASKS}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/api/dispatch", lambda scenario: {"scenario": scenario}),
+        ("/api/sessions", lambda scenario: {"scenario": scenario}),
+        ("/api/experiments/conflict-avoidance", lambda scenario: {"scenario": scenario}),
+        (
+            "/api/experiments/scale",
+            lambda scenario: {"cases": [{"label": "oversized", "scenario": scenario}]},
+        ),
+    ],
+)
+def test_all_scenario_entry_points_reject_oversized_maps(path, body) -> None:
+    scenario = scenario_payload()
+    scenario.update(width=64, height=64)
+
+    response = TestClient(app).post(path, json=body(scenario))
+
+    assert response.status_code == 422

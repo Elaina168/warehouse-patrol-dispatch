@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from backend.app.limits import MAX_SCENARIO_TASKS
 from backend.app.dispatch import (
     ASSIGNMENT_REPLAN_WINDOW,
     astar,
@@ -65,7 +66,7 @@ MAX_SESSIONS = 50
 MAX_METRICS_HISTORY_SNAPSHOTS = 600
 MAX_SESSION_EVENT_NOTES = 120
 MAX_SESSION_CURRENT_TIME = 10_000
-MAX_SESSION_TASKS = 500
+MAX_SESSION_TASKS = MAX_SCENARIO_TASKS
 
 
 def _session_now() -> float:
@@ -405,7 +406,7 @@ def _require_task_capacity(session: DispatchSession, incoming_count: int) -> Non
     current_count = len(_all_known_tasks(session))
     if current_count + incoming_count > MAX_SESSION_TASKS:
         raise HTTPException(
-            status_code=409,
+            status_code=422,
             detail=f"调度会话任务数已达上限：{current_count} + {incoming_count} > {MAX_SESSION_TASKS}",
         )
 
@@ -414,7 +415,7 @@ def _require_initial_task_capacity(scenario: Scenario) -> None:
     current_count = len(scenario.tasks) + len(scenario.dynamic.tasks)
     if current_count > MAX_SESSION_TASKS:
         raise HTTPException(
-            status_code=409,
+            status_code=422,
             detail=f"调度会话任务数已达上限：{current_count} > {MAX_SESSION_TASKS}",
         )
 

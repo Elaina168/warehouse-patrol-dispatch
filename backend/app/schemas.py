@@ -2,9 +2,18 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from backend.app.limits import (
+    MAX_SCENARIO_AXIS_LENGTH,
+    MAX_SCENARIO_CELL_COUNT,
+    MAX_SCENARIO_ROBOTS,
+    MAX_SCENARIO_TASKS,
+    MAX_TASK_TARGETS,
+)
+
 Cell = tuple[int, int]
 NonNegativeInt = Annotated[int, Field(ge=0)]
 PositiveInt = Annotated[int, Field(gt=0)]
+ScenarioAxisInt = Annotated[int, Field(gt=0, le=MAX_SCENARIO_AXIS_LENGTH)]
 PriorityInt = Annotated[int, Field(ge=0, le=5)]
 AssignmentReplanWindowInt = Annotated[int, Field(ge=0, le=120)]
 TaskType = Literal["inspection", "delivery", "emergency"]
@@ -35,7 +44,7 @@ class Task(ApiModel):
     releaseTime: NonNegativeInt | None = None
     deadline: NonNegativeInt | None = None
     serviceTime: NonNegativeInt | None = None
-    targets: list[Cell] | None = None
+    targets: list[Cell] | None = Field(default=None, max_length=MAX_TASK_TARGETS)
     pickup: Cell | None = None
     dropoff: Cell | None = None
     demand: PositiveInt | None = None
@@ -63,16 +72,16 @@ class Robot(ApiModel):
 
 class DynamicEvent(ApiModel):
     triggerTime: NonNegativeInt
-    blockedCells: list[Cell]
-    failedRobots: list[str]
-    tasks: list[Task]
+    blockedCells: list[Cell] = Field(max_length=MAX_SCENARIO_CELL_COUNT)
+    failedRobots: list[str] = Field(max_length=MAX_SCENARIO_ROBOTS)
+    tasks: list[Task] = Field(max_length=MAX_SCENARIO_TASKS)
 
 
 class Zones(ApiModel):
-    warehouse: list[Cell]
-    inspection: list[Cell]
-    delivery: list[Cell]
-    charging: list[Cell] = Field(default_factory=list)
+    warehouse: list[Cell] = Field(max_length=MAX_SCENARIO_CELL_COUNT)
+    inspection: list[Cell] = Field(max_length=MAX_SCENARIO_CELL_COUNT)
+    delivery: list[Cell] = Field(max_length=MAX_SCENARIO_CELL_COUNT)
+    charging: list[Cell] = Field(default_factory=list, max_length=MAX_SCENARIO_CELL_COUNT)
 
 
 class Shelf(ApiModel):
@@ -93,15 +102,45 @@ class Scenario(ApiModel):
     id: str
     name: str
     description: str
-    width: PositiveInt
-    height: PositiveInt
-    obstacles: list[Cell]
+    width: ScenarioAxisInt
+    height: ScenarioAxisInt
+    obstacles: list[Cell] = Field(max_length=MAX_SCENARIO_CELL_COUNT)
     zones: Zones
-    shelves: list[Shelf] = Field(default_factory=list)
-    robots: list[Robot]
-    tasks: list[Task]
+    shelves: list[Shelf] = Field(default_factory=list, max_length=MAX_SCENARIO_CELL_COUNT)
+    robots: list[Robot] = Field(max_length=MAX_SCENARIO_ROBOTS)
+    tasks: list[Task] = Field(max_length=MAX_SCENARIO_TASKS)
     dynamic: DynamicEvent
     chargeTime: PositiveInt = 4
+
+    @model_validator(mode="after")
+    def validate_size_limits(self) -> "Scenario":
+        cell_count = self.width * self.height
+        if cell_count > MAX_SCENARIO_CELL_COUNT:
+            raise ValueError(
+                f"map cell count must be <= {MAX_SCENARIO_CELL_COUNT}: {cell_count}"
+            )
+        if len(self.tasks) + len(self.dynamic.tasks) > MAX_SCENARIO_TASKS:
+            raise ValueError(
+                "initial and dynamic task count must be "
+                f"<= {MAX_SCENARIO_TASKS}: "
+                f"{len(self.tasks) + len(self.dynamic.tasks)}"
+            )
+        cell_lists = {
+            "obstacles": self.obstacles,
+            "shelves": self.shelves,
+            "zones.warehouse": self.zones.warehouse,
+            "zones.inspection": self.zones.inspection,
+            "zones.delivery": self.zones.delivery,
+            "zones.charging": self.zones.charging,
+            "dynamic.blockedCells": self.dynamic.blockedCells,
+        }
+        for field_name, values in cell_lists.items():
+            if len(values) > cell_count:
+                raise ValueError(
+                    f"{field_name} count must be <= map cell count: "
+                    f"{len(values)} > {cell_count}"
+                )
+        return self
 
 
 class DispatchOptions(ApiModel):
