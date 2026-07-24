@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 import pytest
 
-from backend.app import schemas
+from backend.app import main, schemas
 from backend.app.limits import (
     MAX_SCENARIO_AXIS_LENGTH,
     MAX_SCENARIO_CELL_COUNT,
@@ -59,6 +59,24 @@ def _set_targets_over_limit(data: dict) -> None:
     data["tasks"] = [
         _inspection_task(0, [[0, 0]] * (MAX_TASK_TARGETS + 1))
     ]
+
+
+def _set_initial_and_dynamic_tasks_over_limit(data: dict) -> None:
+    data["tasks"] = [_inspection_task(i) for i in range(64)]
+    data["dynamic"]["tasks"] = [_inspection_task(i + 64) for i in range(65)]
+
+
+def _set_map_cell_list_over_actual_area(data: dict) -> None:
+    data.update(width=4, height=4)
+    data["obstacles"] = [[0, 0] for _ in range(17)]
+
+
+def _forbidden_call(calls: list[str], callable_name: str):
+    def forbidden(*args, **kwargs):
+        calls.append(callable_name)
+        raise AssertionError(f"{callable_name} must not receive an invalid Pydantic request")
+
+    return forbidden
 
 
 def test_robot_capabilities_default_to_all_task_types() -> None:
@@ -363,11 +381,8 @@ def test_initial_and_dynamic_tasks_accept_exact_combined_limit() -> None:
 def test_runtime_task_uses_the_same_total_128_limit() -> None:
     payload = scenario_payload()
     payload["id"] = "integrated-demo"
-    payload["tasks"] = [
-        _inspection_task(i)
-        for i in range(MAX_SCENARIO_TASKS)
-    ]
-    payload["dynamic"]["tasks"] = []
+    payload["tasks"] = [_inspection_task(i) for i in range(64)]
+    payload["dynamic"]["tasks"] = [_inspection_task(i + 64) for i in range(64)]
     client = TestClient(app)
     created = client.post("/api/sessions", json={"scenario": payload})
     assert created.status_code == 200
@@ -386,21 +401,53 @@ def test_runtime_task_uses_the_same_total_128_limit() -> None:
 
 
 @pytest.mark.parametrize(
-    ("path", "body"),
+    ("path", "body", "callable_name"),
     [
-        ("/api/dispatch", lambda scenario: {"scenario": scenario}),
-        ("/api/sessions", lambda scenario: {"scenario": scenario}),
-        ("/api/experiments/conflict-avoidance", lambda scenario: {"scenario": scenario}),
+        ("/api/dispatch", lambda scenario: {"scenario": scenario}, "run_dispatch"),
+        ("/api/sessions", lambda scenario: {"scenario": scenario}, "create_session"),
+        (
+            "/api/experiments/conflict-avoidance",
+            lambda scenario: {"scenario": scenario},
+            "compare_conflict_avoidance",
+        ),
+        (
+            "/api/experiments/dynamic-replanning",
+            lambda scenario: {"scenario": scenario},
+            "compare_dynamic_replanning",
+        ),
+        (
+            "/api/experiments/replan-window",
+            lambda scenario: {"scenario": scenario, "windows": [4]},
+            "compare_replan_windows",
+        ),
         (
             "/api/experiments/scale",
             lambda scenario: {"cases": [{"label": "oversized", "scenario": scenario}]},
+            "compare_scale_cases",
         ),
     ],
 )
-def test_all_scenario_entry_points_reject_oversized_maps(path, body) -> None:
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _set_area_over_limit,
+        _set_initial_and_dynamic_tasks_over_limit,
+        _set_map_cell_list_over_actual_area,
+    ],
+)
+def test_invalid_scenarios_never_call_route_or_planning_functions(
+    path,
+    body,
+    callable_name: str,
+    mutate,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     scenario = scenario_payload()
-    scenario.update(width=64, height=64)
+    mutate(scenario)
+    calls: list[str] = []
+    monkeypatch.setattr(main, callable_name, _forbidden_call(calls, callable_name))
 
     response = TestClient(app).post(path, json=body(scenario))
 
     assert response.status_code == 422
+    assert calls == []
