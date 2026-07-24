@@ -42,6 +42,7 @@ import {
   selectMapConflictMarkers,
   shouldPauseForSafetyIntervention,
   safetyInterventionLabel,
+  safetyStallLabel,
   mergeSafetyInterventionMarker,
   isSafetyInterventionRobot,
   filterInitialScenarioTaskLabels,
@@ -129,6 +130,18 @@ describe("execution safety intervention", () => {
       "T=7 安全门已拦截边交换冲突：R1 / R2"
     );
     expect(safetyInterventionLabel(null)).toBeNull();
+  });
+
+  it("formats a structured consecutive stall without parsing event text", () => {
+    const stall = {
+      conflict: intervention,
+      consecutiveCount: 3,
+      firstInterventionTime: 7,
+      latestInterventionTime: 9
+    };
+
+    expect(safetyStallLabel(stall)).toBe("连续拦截 3 次，当前调度停滞");
+    expect(safetyStallLabel(null)).toBeNull();
   });
 
   it("adds the intercepted cell and robots only at the intervention tick", () => {
@@ -1364,6 +1377,7 @@ describe("replan status", () => {
       ],
       completedTaskCount: 2,
       safetyIntervention: null,
+      safetyStall: null,
       result
     } satisfies SessionResult;
 

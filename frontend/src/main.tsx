@@ -9,7 +9,7 @@ import {
 import { buildShelfCellPresentations, buildWarehouseDeliveryCandidates } from "./domain/inventory";
 import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./domain/view";
 import { scenarios } from "./domain/scenarios";
-import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, RecoveryAction, Robot, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
+import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, RecoveryAction, Robot, SafetyStall, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
 import "./styles.css";
 
 const API_BASE = "http://127.0.0.1:8011";
@@ -214,7 +214,8 @@ function App() {
     }
   }
 
-  const safetyStatus = safetyInterventionLabel(session?.safetyIntervention ?? null);
+  const safetyStatus = safetyStallLabel(session?.safetyStall ?? null)
+    ?? safetyInterventionLabel(session?.safetyIntervention ?? null);
 
   useEffect(() => {
     return () => {
@@ -2126,6 +2127,12 @@ export function safetyInterventionLabel(intervention: Conflict | null): string |
   if (!intervention) return null;
   const conflictType = intervention.type === "vertex" ? "顶点冲突" : "边交换冲突";
   return `T=${intervention.time} 安全门已拦截${conflictType}：${intervention.robots.join(" / ")}`;
+}
+
+
+export function safetyStallLabel(stall: SafetyStall | null): string | null {
+  if (!stall) return null;
+  return `连续拦截 ${stall.consecutiveCount} 次，当前调度停滞`;
 }
 
 

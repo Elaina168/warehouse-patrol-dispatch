@@ -878,10 +878,15 @@ def test_repeated_unsolved_plans_continue_to_hold_without_executed_conflicts() -
         f"/api/sessions/{session_id}/tick",
         json={"currentTime": first["currentTime"] + 8},
     ).json()
+    third = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": second["currentTime"] + 8},
+    ).json()
 
     session = sessions_module._sessions[session_id]
     assert first["safetyIntervention"] is not None
     assert second["safetyIntervention"] is not None
+    assert third["safetyStall"]["consecutiveCount"] == 3
     _assert_executed_history_is_collision_free(session.robot_path_history)
 
 
@@ -1003,6 +1008,218 @@ def test_session_create_serializes_null_safety_intervention() -> None:
     assert response.status_code == 200
     assert "safetyIntervention" in response.json()
     assert response.json()["safetyIntervention"] is None
+
+
+def _create_forced_conflict_session(client: TestClient) -> str:
+    response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _forced_safety_gate_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    assert response.status_code == 200
+    return response.json()["sessionId"]
+
+
+def test_third_same_safety_intervention_exposes_stall() -> None:
+    client = TestClient(app)
+    session_id = _create_forced_conflict_session(client)
+
+    first = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 2}).json()
+    second = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 3}).json()
+    third = client.post(f"/api/sessions/{session_id}/tick", json={"currentTime": 4}).json()
+
+    assert first["safetyStall"] is None
+    assert second["safetyStall"] is None
+    assert third["safetyStall"] == {
+        "conflict": third["safetyIntervention"],
+        "consecutiveCount": 3,
+        "firstInterventionTime": first["safetyIntervention"]["time"],
+        "latestInterventionTime": third["safetyIntervention"]["time"],
+    }
+
+
+def test_stall_signature_normalizes_robots_and_restarts_for_type_or_cell() -> None:
+    scenario = Scenario.model_validate(_forced_safety_gate_scenario())
+    session = sessions_module.DispatchSession(
+        session_id="stall-signature",
+        scenario=scenario,
+        options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+    )
+    sessions_module._track_safety_stall(
+        session,
+        Conflict(time=1, type="vertex", robots=["R2", "R1"], cell=(0, 0)),
+    )
+    sessions_module._track_safety_stall(
+        session,
+        Conflict(time=2, type="vertex", robots=["R1", "R2"], cell=(0, 0)),
+    )
+    sessions_module._track_safety_stall(
+        session,
+        Conflict(time=3, type="vertex", robots=["R2", "R1"], cell=(0, 0)),
+    )
+    assert session.last_safety_stall is not None
+    assert session.last_safety_stall.consecutiveCount == 3
+
+    sessions_module._track_safety_stall(
+        session,
+        Conflict(time=4, type="edge", robots=["R1", "R2"], cell=(0, 0)),
+    )
+    assert session.consecutive_safety_intervention_count == 1
+    assert session.last_safety_stall is None
+    sessions_module._track_safety_stall(
+        session,
+        Conflict(time=5, type="edge", robots=["R2", "R1"], cell=(1, 0)),
+    )
+    assert session.consecutive_safety_intervention_count == 1
+
+
+def test_fourth_same_intervention_updates_without_duplicate_threshold_event() -> None:
+    scenario = Scenario.model_validate(_forced_safety_gate_scenario())
+    session = sessions_module.DispatchSession(
+        session_id="stall-fourth",
+        scenario=scenario,
+        options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+    )
+    for time in range(1, 5):
+        sessions_module._track_safety_stall(
+            session,
+            Conflict(
+                time=time,
+                type="vertex",
+                robots=["R1", "R2"],
+                cell=(0, 0),
+            ),
+        )
+
+    assert session.last_safety_stall is not None
+    assert session.last_safety_stall.consecutiveCount == 4
+    assert session.last_safety_stall.latestInterventionTime == 4
+    assert sum(
+        "连续安全停滞" in event.text
+        for event in session.event_notes
+    ) == 1
+
+
+def _seed_safety_stall(session_id: str) -> None:
+    with sessions_module._locked_session(session_id, touch_access=False) as session:
+        for time in range(1, 4):
+            sessions_module._track_safety_stall(
+                session,
+                Conflict(
+                    time=time,
+                    type="vertex",
+                    robots=["R1", "R2"],
+                    cell=(1, 1),
+                ),
+            )
+
+
+def _create_normal_session(client: TestClient) -> str:
+    response = client.post("/api/sessions", json={"scenario": scenario_payload()})
+    assert response.status_code == 200
+    return response.json()["sessionId"]
+
+
+def test_safe_tick_and_reset_clear_stall() -> None:
+    client = TestClient(app)
+    session_id = _create_normal_session(client)
+    _seed_safety_stall(session_id)
+    advanced = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": 1},
+    )
+    assert advanced.status_code == 200
+    assert advanced.json()["safetyStall"] is None
+
+    _seed_safety_stall(session_id)
+    reset = client.post(f"/api/sessions/{session_id}/reset")
+    assert reset.status_code == 200
+    assert reset.json()["safetyStall"] is None
+
+
+@pytest.mark.parametrize(
+    ("prepare_path", "prepare_body", "action_path", "action_body"),
+    [
+        (
+            None,
+            None,
+            "tasks",
+            {
+                "task": {
+                    "id": "CLEAR-STALL",
+                    "type": "inspection",
+                    "title": "清除停滞",
+                    "priority": 1,
+                    "targets": [[1, 4]],
+                }
+            },
+        ),
+        (None, None, "blocked-cells", {"cell": [1, 1]}),
+        (
+            "blocked-cells",
+            {"cell": [1, 1]},
+            "blocked-cells/remove",
+            {"cell": [1, 1]},
+        ),
+        (None, None, "failed-robots", {"robotId": "R1"}),
+        (
+            "failed-robots",
+            {"robotId": "R1"},
+            "failed-robots/restore",
+            {"robotId": "R1"},
+        ),
+    ],
+)
+def test_successful_runtime_changes_clear_stall(
+    prepare_path: str | None,
+    prepare_body: dict[str, Any] | None,
+    action_path: str,
+    action_body: dict[str, Any],
+) -> None:
+    client = TestClient(app)
+    session_id = _create_normal_session(client)
+    if prepare_path is not None:
+        prepared = client.post(
+            f"/api/sessions/{session_id}/{prepare_path}",
+            json=prepare_body,
+        )
+        assert prepared.status_code == 200
+    _seed_safety_stall(session_id)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/{action_path}",
+        json=action_body,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["safetyStall"] is None
+
+
+def test_idempotent_and_rejected_runtime_updates_keep_stall() -> None:
+    client = TestClient(app)
+    session_id = _create_normal_session(client)
+    assert client.post(
+        f"/api/sessions/{session_id}/blocked-cells",
+        json={"cell": [1, 1]},
+    ).status_code == 200
+    _seed_safety_stall(session_id)
+
+    duplicate = client.post(
+        f"/api/sessions/{session_id}/blocked-cells",
+        json={"cell": [1, 1]},
+    )
+    rejected = client.post(
+        f"/api/sessions/{session_id}/blocked-cells",
+        json={"cell": [2, 1]},
+    )
+    read_back = client.get(f"/api/sessions/{session_id}")
+
+    assert duplicate.status_code == 200
+    assert duplicate.json()["safetyStall"]["consecutiveCount"] == 3
+    assert rejected.status_code == 409
+    assert read_back.json()["safetyStall"]["consecutiveCount"] == 3
 
 
 def shelf_session_scenario() -> dict[str, Any]:

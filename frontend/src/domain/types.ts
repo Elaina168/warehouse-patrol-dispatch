@@ -121,6 +121,13 @@ export type Conflict = {
   cell: Cell;
 };
 
+export type SafetyStall = {
+  conflict: Conflict;
+  consecutiveCount: number;
+  firstInterventionTime: number;
+  latestInterventionTime: number;
+};
+
 export type ConflictState = {
   time: number;
   type: ConflictType;
@@ -292,6 +299,7 @@ export type SessionResult = {
   metricsHistory: MetricSnapshot[];
   completedTaskCount: number;
   safetyIntervention: Conflict | null;
+  safetyStall: SafetyStall | null;
   result: DispatchResult;
 };
 

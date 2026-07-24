@@ -135,6 +135,7 @@ def test_frontend_types_match_backend_api_model_fields() -> None:
         ("Scenario", schemas.Scenario),
         ("Assignment", schemas.Assignment),
         ("Conflict", schemas.Conflict),
+        ("SafetyStall", schemas.SafetyStall),
         ("ConflictState", schemas.ConflictState),
         ("Metrics", schemas.Metrics),
         ("EventItem", schemas.EventItem),
@@ -171,6 +172,16 @@ def test_session_safety_intervention_is_required_and_nullable() -> None:
     assert "safetyIntervention" in _backend_nullable_fields(schemas.SessionResult)
     assert "safetyIntervention" in _frontend_nullable_fields("SessionResult")
     assert "safetyIntervention" not in _frontend_optional_fields("SessionResult")
+
+
+def test_session_safety_stall_is_required_nullable_and_aligned() -> None:
+    assert _frontend_fields("SafetyStall") == _backend_fields(schemas.SafetyStall)
+    assert "safetyStall" in _backend_fields(schemas.SessionResult)
+    assert "safetyStall" in _frontend_fields("SessionResult")
+    assert "safetyStall" in _backend_nullable_fields(schemas.SessionResult)
+    assert "safetyStall" in _frontend_nullable_fields("SessionResult")
+    assert "safetyStall" not in _frontend_optional_fields("SessionResult")
+    assert "safetyStall" not in _backend_fields(schemas.DispatchResult)
 
 
 def test_frontend_task_union_covers_backend_task_fields() -> None:

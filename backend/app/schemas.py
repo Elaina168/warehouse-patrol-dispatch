@@ -236,6 +236,13 @@ class Conflict(ApiModel):
     cell: Cell
 
 
+class SafetyStall(ApiModel):
+    conflict: Conflict
+    consecutiveCount: PositiveInt
+    firstInterventionTime: NonNegativeInt
+    latestInterventionTime: NonNegativeInt
+
+
 class ConflictState(ApiModel):
     time: int
     type: Literal["vertex", "edge"]
@@ -493,6 +500,7 @@ class SessionResult(ApiModel):
     metricsHistory: list[MetricSnapshot]
     completedTaskCount: int
     safetyIntervention: Conflict | None = None
+    safetyStall: SafetyStall | None = None
     result: DispatchResult
 
 

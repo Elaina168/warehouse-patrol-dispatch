@@ -53,6 +53,7 @@ from backend.app.schemas import (
     RemoveBlockRequest,
     RestoreRobotRequest,
     RobotRuntimeState,
+    SafetyStall,
     Scenario,
     SessionResult,
     SessionSummary,
@@ -111,6 +112,10 @@ class DispatchSession:
     replan_window_reason: str | None = None
     last_replan_time_ms: float | None = None
     last_safety_intervention: Conflict | None = None
+    safety_stall_signature: tuple[str, tuple[str, ...], Cell] | None = None
+    consecutive_safety_intervention_count: int = 0
+    safety_stall_first_time: int | None = None
+    last_safety_stall: SafetyStall | None = None
     safety_hold_times: dict[str, set[int]] = field(default_factory=dict)
     active_charging_visits: dict[str, ChargingVisit] = field(default_factory=dict)
     enforce_execution_safety: bool = True
@@ -273,6 +278,7 @@ def add_task(session_id: str, request: AddTaskRequest) -> SessionResult:
         session.shelf_task_bindings = next_bindings
         _release_locks_for_active_higher_priority_task(session, task, session.current_time)
         session.runtime_task_count += 1
+        _clear_safety_stall(session)
         _invalidate_plan(session)
         _touch_session_updated(session)
         _record_session_event(session, session.current_time, f"手动录入任务：{task.id} {task.title}")
@@ -324,6 +330,7 @@ def add_blocked_cell(session_id: str, request: AddBlockRequest) -> SessionResult
             current_result = session.last_result or _build_result(session).result
             _release_locks_for_blocked_cell(session, current_result, cell, current_time)
             session.runtime_blocked_cells.append(cell)
+            _clear_safety_stall(session)
             _invalidate_plan(session)
             _touch_session_updated(session)
             _record_session_event(session, current_time, f"T={current_time} 手动封锁单元：({cell[0]}, {cell[1]})")
@@ -357,6 +364,7 @@ def remove_blocked_cell(session_id: str, request: RemoveBlockRequest) -> Session
             )
             removed = True
         if removed:
+            _clear_safety_stall(session)
             _invalidate_plan(session)
             _touch_session_updated(session)
             _record_session_event(session, current_time, f"T={current_time} 手动解除封锁单元：({cell[0]}, {cell[1]})")
@@ -380,6 +388,7 @@ def fail_robot(session_id: str, request: FailRobotRequest) -> SessionResult:
         is_new_failed_robot = request.robotId not in session.runtime_failed_robot_ids and not is_dynamic_failed_robot
         if is_new_failed_robot:
             session.runtime_failed_robot_ids.append(request.robotId)
+            _clear_safety_stall(session)
             _invalidate_plan(session)
             _release_locks_for_robot(session, request.robotId, current_time)
             _touch_session_updated(session)
@@ -416,6 +425,7 @@ def restore_robot(session_id: str, request: RestoreRobotRequest) -> SessionResul
             )
             restored = True
         if restored:
+            _clear_safety_stall(session)
             _invalidate_plan(session)
             _touch_session_updated(session)
             _record_session_event(session, current_time, f"T={current_time} 手动恢复机器人：{request.robotId}")
@@ -495,6 +505,46 @@ def _touch_session_if_time_changed(session: DispatchSession, previous_time: int)
         _touch_session_updated(session)
 
 
+def _clear_safety_stall(session: DispatchSession) -> None:
+    session.safety_stall_signature = None
+    session.consecutive_safety_intervention_count = 0
+    session.safety_stall_first_time = None
+    session.last_safety_stall = None
+
+
+def _track_safety_stall(session: DispatchSession, conflict: Conflict) -> None:
+    signature = (
+        conflict.type,
+        tuple(sorted(conflict.robots)),
+        conflict.cell,
+    )
+    if signature == session.safety_stall_signature:
+        session.consecutive_safety_intervention_count += 1
+    else:
+        session.safety_stall_signature = signature
+        session.consecutive_safety_intervention_count = 1
+        session.safety_stall_first_time = conflict.time
+    count = session.consecutive_safety_intervention_count
+    if count < 3:
+        session.last_safety_stall = None
+        return
+    first_time = session.safety_stall_first_time
+    if first_time is None:
+        raise AssertionError("safety stall first time must be set")
+    session.last_safety_stall = SafetyStall(
+        conflict=conflict,
+        consecutiveCount=count,
+        firstInterventionTime=first_time,
+        latestInterventionTime=conflict.time,
+    )
+    if count == 3:
+        _record_session_event(
+            session,
+            conflict.time,
+            f"T={conflict.time} 连续安全停滞：同一冲突已拦截 3 次",
+        )
+
+
 def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> None:
     scenario = session.initial_scenario.model_copy(deep=True) if session.initial_scenario else session.scenario
     options = session.initial_options.model_copy(deep=True) if session.initial_options else session.options
@@ -523,6 +573,7 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.replan_window_reason = None
     session.last_replan_time_ms = None
     session.last_safety_intervention = None
+    _clear_safety_stall(session)
     session.safety_hold_times.clear()
     session.active_charging_visits.clear()
     session.last_result = None
@@ -656,6 +707,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
             metricsHistory=session.metrics_history,
             completedTaskCount=len(session.completed_task_ids),
             safetyIntervention=session.last_safety_intervention,
+            safetyStall=session.last_safety_stall,
             result=result,
         )
     if result is None:
@@ -717,6 +769,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
         metricsHistory=session.metrics_history,
         completedTaskCount=len(session.completed_task_ids),
         safetyIntervention=session.last_safety_intervention,
+        safetyStall=session.last_safety_stall,
         result=result,
     )
 
@@ -990,6 +1043,7 @@ def _apply_safety_hold(
     for robot in session.scenario.robots:
         session.safety_hold_times.setdefault(robot.id, set()).add(conflict.time)
     session.last_safety_intervention = conflict
+    _track_safety_stall(session, conflict)
     robot_ids = " / ".join(conflict.robots)
     _record_session_event(
         session,
@@ -1044,6 +1098,7 @@ def _advance_session(session: DispatchSession, target_time: int) -> bool:
             _activate_rolling_window(session, target_time)
         return True
 
+    _clear_safety_stall(session)
     _apply_result_through_time(session, result, target_time)
     if dynamic_trigger_time == target_time:
         _activate_scenario_dynamic(session, target_time, result)
