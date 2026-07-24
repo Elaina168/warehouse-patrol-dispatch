@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.app.config import cors_allowed_origins
 from backend.app.dispatch import run_dispatch
 from backend.app.experiments import (
     compare_conflict_avoidance,
@@ -55,10 +56,10 @@ app = FastAPI(title="Warehouse Patrol Dispatch API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_allowed_origins(),
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type"],
 )
 
 
