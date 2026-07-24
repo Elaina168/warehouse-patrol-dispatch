@@ -241,10 +241,11 @@ def astar_timed(
     max_time = start_time + scenario.width * scenario.height * 4 * move_ticks
     if not same_cell(start, goal):
         earliest_arrival = start_time + manhattan(start, goal) * move_ticks
+        latest_goal_arrival = max_time + move_ticks - 1
         if not has_unreserved_goal_arrival_time(
             goal,
             earliest_arrival,
-            max_time,
+            latest_goal_arrival,
             reservations,
         ):
             if call_diagnostics is not None:
