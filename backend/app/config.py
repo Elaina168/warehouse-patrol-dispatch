@@ -10,7 +10,15 @@ DEFAULT_CORS_ORIGINS = (
 )
 
 
-def _normalized_host(hostname: str, value: str) -> str:
+def _normalized_host(hostname: str, value: str, bracketed_host: bool) -> str:
+    if bracketed_host:
+        try:
+            address = IPv6Address(hostname)
+        except ValueError as error:
+            raise ValueError(f"{CORS_ORIGINS_ENV} contains invalid origin: {value}") from error
+        if address.scope_id:
+            raise ValueError(f"{CORS_ORIGINS_ENV} contains invalid origin: {value}")
+        return f"[{address.compressed}]"
     try:
         address = ip_address(hostname)
     except ValueError:
@@ -77,7 +85,7 @@ def cors_allowed_origins(
         if invalid:
             raise ValueError(f"{CORS_ORIGINS_ENV} contains invalid origin: {value}")
         scheme = parsed.scheme.lower()
-        normalized = f"{scheme}://{_normalized_host(parsed.hostname, value)}"
+        normalized = f"{scheme}://{_normalized_host(parsed.hostname, value, parsed.netloc.startswith('['))}"
         if port is not None and (scheme, port) not in {("http", 80), ("https", 443)}:
             normalized = f"{normalized}:{port}"
         if normalized not in origins:

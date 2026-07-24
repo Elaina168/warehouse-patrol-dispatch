@@ -82,6 +82,8 @@ def test_cors_middleware_matches_browser_normalized_origin_from_explicit_config(
         "http://0x7f.0x0.0x0.0x1",
         "http://127.1",
         "http://2130706433",
+        "http://[fe80::1%25eth0]",
+        "http://[v1.fe80]",
     ],
 )
 def test_cors_rejects_invalid_or_non_origin_values(value: str) -> None:
