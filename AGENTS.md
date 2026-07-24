@@ -141,6 +141,11 @@ Completed and currently expected to remain in the project:
 - Frontend scenario data now lives in `frontend/src/domain/scenarios.json`, with `frontend/src/domain/scenarios.ts` providing typed exports for the React app and tests.
 - Backend tests split by algorithm, session, validation, health, and fixed demo flow.
 - Documentation for environment, algorithm behavior, runtime recovery APIs, and demo flow.
+- Online sessions serialize same-session operations with a registry/per-session lock protocol while allowing different sessions to plan in parallel; the guarantee is process-local and does not cover multiple Uvicorn workers.
+- Repeated identical execution-safety holds expose nullable `SessionResult.safetyStall` after three consecutive interventions without weakening full-fleet safe waiting or automatically failing tasks.
+- Scenario inputs are bounded to 64 cells per axis, 1024 total cells, 32 robots, 128 total initial/dynamic/runtime tasks, and 64 targets per task.
+- Adaptive rolling-window latency uses the median of the latest five real replans after at least three samples, entering slow state at 60ms and leaving it at 40ms; fixed mode remains unchanged.
+- Browser CORS defaults to the two local Vite origins and accepts explicit comma-separated origins through `WAREHOUSE_PATROL_CORS_ORIGINS`; wildcard origins remain rejected.
 
 Recently removed because they are not needed yet:
 

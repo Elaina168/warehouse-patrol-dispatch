@@ -72,6 +72,17 @@ http://127.0.0.1:8011/health
 .\scripts\dev-backend.ps1
 ```
 
+## 浏览器跨域来源
+
+未配置时，浏览器 CORS 仅允许两个本地 Vite 来源：`http://127.0.0.1:5174` 和 `http://localhost:5174`。需要显式允许其他浏览器来源时，使用逗号分隔的 `WAREHOUSE_PATROL_CORS_ORIGINS`：
+
+```powershell
+$env:WAREHOUSE_PATROL_CORS_ORIGINS='http://192.168.1.10:5174,https://demo.example.com'
+npm run backend:dev
+```
+
+空值、通配符、包含路径、查询或片段的值，以及非 HTTP(S) 协议都会使后端启动失败。CORS 不是认证机制，非浏览器客户端不受浏览器 CORS 策略影响。
+
 ## 检查项目
 
 ```powershell

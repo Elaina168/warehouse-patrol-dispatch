@@ -53,6 +53,16 @@ http://127.0.0.1:8011/health
 & 'C:\nvm4w\nodejs\npm.cmd' run check
 ```
 
+聚焦后端回归命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest backend\tests\test_schema_constraints.py -q
+.\.venv\Scripts\python.exe -m pytest backend\tests\test_session_concurrency.py -q
+.\.venv\Scripts\python.exe -m pytest backend\tests\test_sessions.py -k "safety_stall" -q
+.\.venv\Scripts\python.exe -m pytest backend\tests\test_replan_window.py -q
+.\.venv\Scripts\python.exe -m pytest backend\tests\test_config.py backend\tests\test_health.py -q
+```
+
 ## 3. 页面区域
 
 页面顶部状态条显示：
