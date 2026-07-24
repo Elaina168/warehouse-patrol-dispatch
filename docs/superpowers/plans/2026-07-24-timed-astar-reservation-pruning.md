@@ -1143,6 +1143,8 @@ Keep its setup and change assertions to:
     assert diagnostics.timed_astar_calls[0].expanded_state_count == 0
 ```
 
+This existing test uses the default `move_ticks = 1`, so `latest_goal_arrival == max_time`; its reservation setup already covers the complete valid arrival interval.
+
 Add:
 
 ```python
@@ -1195,7 +1197,8 @@ def test_timed_astar_full_goal_reservation_uses_move_ticks_arrival_bound() -> No
     scenario = _timed_diagnostics_scenario()
     reservations = dispatch_module.Reservations()
     max_time = scenario.width * scenario.height * 4 * 3
-    for time_index in range(6, max_time + 1):
+    latest_goal_arrival = max_time + 3 - 1
+    for time_index in range(6, latest_goal_arrival + 1):
         reservations.vertices.add(f"2,0@{time_index}")
     diagnostics = PathCandidateDiagnostics(robot_order=["R1"])
 
@@ -1211,6 +1214,30 @@ def test_timed_astar_full_goal_reservation_uses_move_ticks_arrival_bound() -> No
 
     assert diagnostics.timed_astar_calls[0].outcome == "goalFullyReserved"
     assert diagnostics.timed_astar_calls[0].expanded_state_count == 0
+
+
+def test_timed_astar_goal_reserved_through_search_horizon_keeps_late_slow_arrival() -> None:
+    scenario = _timed_diagnostics_scenario()
+    reservations = dispatch_module.Reservations()
+    max_time = scenario.width * scenario.height * 4 * 3
+    latest_goal_arrival = max_time + 3 - 1
+    for time_index in range(6, max_time + 1):
+        reservations.vertices.add(f"2,0@{time_index}")
+    diagnostics = PathCandidateDiagnostics(robot_order=["R1"])
+
+    path = dispatch_module.astar_timed(
+        scenario,
+        (0, 0),
+        (2, 0),
+        0,
+        reservations,
+        move_ticks=3,
+        candidate_diagnostics=diagnostics,
+    )
+
+    assert path[-1] == (2, 0)
+    assert max_time < len(path) - 1 <= latest_goal_arrival
+    assert diagnostics.timed_astar_calls[0].outcome == "success"
 ```
 
 Update the Task 2 density test:
@@ -1267,11 +1294,12 @@ Run:
   backend/tests/test_algorithm.py::test_timed_astar_waits_when_goal_becomes_available_later `
   backend/tests/test_algorithm.py::test_timed_astar_start_equal_goal_keeps_immediate_success `
   backend/tests/test_algorithm.py::test_timed_astar_full_goal_reservation_uses_move_ticks_arrival_bound `
+  backend/tests/test_algorithm.py::test_timed_astar_goal_reserved_through_search_horizon_keeps_late_slow_arrival `
   backend/tests/test_algorithm_benchmark.py::test_planning_diagnostics_collect_path_candidates_for_density_case `
   backend/tests/test_algorithm_benchmark.py::test_density_planning_pruning_preserves_results -q
 ```
 
-Expected: full-reservation tests fail because the call is still recorded as `exhausted` with expanded states.
+Expected before pruning: the full-reservation tests fail because the call is still recorded as `exhausted` with expanded states, while the late slow-arrival regression passes and preserves the old goal-before-horizon behavior. A precheck that stops at `max_time` would instead make the late slow-arrival regression fail.
 
 - [ ] **Step 3: Add the deterministic availability helper**
 
@@ -1290,6 +1318,8 @@ def has_unreserved_goal_arrival_time(
     )
 ```
 
+The helper parameter name remains the final source identifier `max_time`; the caller passes `latest_goal_arrival`, not the search-expansion boundary.
+
 - [ ] **Step 4: Add the early rejection after endpoint validation**
 
 Keep invalid endpoint validation first. Then calculate:
@@ -1303,10 +1333,11 @@ Keep invalid endpoint validation first. Then calculate:
         earliest_arrival = (
             start_time + manhattan(start, goal) * move_ticks
         )
+        latest_goal_arrival = max_time + move_ticks - 1
         if not has_unreserved_goal_arrival_time(
             goal,
             earliest_arrival,
-            max_time,
+            latest_goal_arrival,
             reservations,
         ):
             if call_diagnostics is not None:
@@ -1314,7 +1345,7 @@ Keep invalid endpoint validation first. Then calculate:
             return []
 ```
 
-Remove the old duplicate `max_time` assignment below this insertion. Keep the existing heap search and goal-before-horizon order unchanged.
+Remove the old duplicate `max_time` assignment below this insertion. Keep invalid endpoint handling before the precheck, skip the precheck for `start == goal`, and keep the existing heap search and goal-before-horizon order unchanged.
 
 - [ ] **Step 5: Run focused and complete backend tests**
 
@@ -1384,7 +1415,7 @@ Expected: one Task 4 commit; both before/after output directories remain untrack
 Add to `docs/algorithm.md` under the current boundary section:
 
 ```markdown
-- 时空 A* 在搜索前检查目标格从曼哈顿最早到达时刻到现有最大搜索时刻的顶点预留；仅当该闭区间每个目标时间槽都已被预留时，才以 `goalFullyReserved` 零状态展开返回并尝试下一个机器人规划顺序。
+- 时空 A* 在搜索前检查目标格从曼哈顿最早到达时刻到旧搜索允许的真实最晚目标到达时刻（`max_time + move_ticks - 1`）的顶点预留；仅当该闭区间每个目标时间槽都已被预留时，才以 `goalFullyReserved` 零状态展开返回并尝试下一个机器人规划顺序。
 - 该剪枝只证明当前预留表和当前搜索时域下不存在目标到达时间槽；它不证明任意边预留、动态障碍或 MAPF 输入全局无解。
 ```
 

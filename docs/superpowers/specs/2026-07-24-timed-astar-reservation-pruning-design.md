@@ -26,7 +26,7 @@
 - `density-r8-t31` 和 `density-r8-t43` 的首个路径候选各有一个失败机器人；随后第二个机器人规划顺序成功。
 - 第二个候选本身只需约十几毫秒，主要耗时来自首个候选中的一次 `astar_timed` 失败搜索。
 - 两次慢搜索都是从 `[1, 1]` 到 `[16, 10]`。
-- 两次搜索从各自最早可能到达时刻到 `max_time` 的每个目标顶点时间槽都已存在于 `Reservations.vertices`，可用目标到达时刻数量为 `0`。
+- 最终复核按旧搜索真实允许的最晚目标到达时刻 `latest_goal_arrival = max_time + move_ticks - 1` 重新检查：两次搜索从各自最早可能到达时刻到 `latest_goal_arrival` 的每个目标顶点时间槽都已存在于 `Reservations.vertices`，可用目标到达时刻数量为 `0`。
 - 当前 `astar_timed` 没有在入队前检查这一确定性条件，而是遍历时空状态直到堆为空或超过搜索时域。
 - `density-r8-t55` 的首个路径候选直接成功，没有发生上述穷举失败。
 
@@ -68,12 +68,17 @@ earliest_arrival =
 
 max_time =
     start_time + scenario.width * scenario.height * 4 * move_ticks
+
+latest_goal_arrival =
+    max_time + move_ticks - 1
 ```
 
-然后检查闭区间 `[earliest_arrival, max_time]`：
+旧搜索只允许在 `current_time < max_time` 时继续展开，但会在 `current_time = max_time - 1` 发起一次耗时 `move_ticks` 的移动，并在弹出状态时先判定目标、再判定时域。因此预检必须检查闭区间 `[earliest_arrival, latest_goal_arrival]`：
 
 - 只要存在一个目标顶点时间槽不在 `Reservations.vertices` 中，继续执行现有时空 A*。
 - 如果该闭区间内每个目标顶点时间槽都已被预留，直接返回空路径，并记录 `goalFullyReserved` 拒绝。
+- 当 `move_ticks > 1` 且目标只预留到 `max_time` 时，不能拒绝；旧搜索仍可能在 `(max_time, latest_goal_arrival]` 到达目标。
+- 保持非法端点优先返回 `invalidEndpoint`，并保持现有弹出目标早于时域判断的顺序。
 - 当 `start` 与 `goal` 相同时，保持现有立即成功语义，不执行预检拒绝。
 
 该检查只根据目标顶点预留作出否定结论，不根据边预留、曼哈顿距离或启发式评分推断路径一定可达。曼哈顿距离只提供不晚于真实最短路径的到达下界；在这个更宽的时间区间内都没有可用目标时间槽时，才判定当前搜索时域内不可能到达，因此不会把现有可行路径误剪掉。
@@ -212,16 +217,19 @@ API 入口仍按原方式调用 `run_dispatch`，不传诊断对象；因此响�
 
 增加确定性小地图测试：
 
-1. 目标在 `[earliest_arrival, max_time]` 每个 tick 都被顶点预留时：
+1. 目标在 `[earliest_arrival, latest_goal_arrival]` 每个 tick 都被顶点预留时：
    - 返回空路径；
    - `outcome = goalFullyReserved`；
    - `expandedStateCount = 0`。
-2. 目标在搜索时域内晚些时候释放时：
+2. `move_ticks > 1` 且目标只在 `[earliest_arrival, max_time]` 被预留时：
+   - 不被预检拒绝；
+   - 保持旧搜索在 `(max_time, latest_goal_arrival]` 成功到达目标的路径。
+3. 目标在搜索时域内晚些时候释放时：
    - 不被预检拒绝；
    - 返回包含必要等待的有效路径。
-3. `start == goal` 时保持现有立即成功行为。
-4. `moveTicks > 1` 时使用乘以 `moveTicks` 的最早到达下界，并保留现有移动展开语义。
-5. 非法起点或目标继续返回空路径，并记录 `invalidEndpoint`。
+4. `start == goal` 时保持现有立即成功行为。
+5. `move_ticks > 1` 时使用乘以 `move_ticks` 的最早到达下界，并保留现有移动展开语义。
+6. 非法起点或目标继续返回空路径，并记录 `invalidEndpoint`。
 
 ### 8.2 路径候选诊断测试
 
