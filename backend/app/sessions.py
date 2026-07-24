@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from threading import RLock
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -112,9 +115,42 @@ class DispatchSession:
     active_charging_visits: dict[str, ChargingVisit] = field(default_factory=dict)
     enforce_execution_safety: bool = True
     last_result: DispatchResult | None = None
+    lock: RLock = field(default_factory=RLock, repr=False, compare=False)
+    closing: bool = field(default=False, repr=False, compare=False)
 
 
 _sessions: dict[str, DispatchSession] = {}
+_sessions_lock = RLock()
+
+
+@contextmanager
+def _locked_session(
+    session_id: str,
+    *,
+    touch_access: bool = True,
+) -> Iterator[DispatchSession]:
+    while True:
+        waited_session: DispatchSession | None = None
+        with _sessions_lock:
+            _cleanup_sessions_locked()
+            session = _sessions.get(session_id)
+            if session is None or session.closing:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"调度会话不存在：{session_id}",
+                )
+            if session.lock.acquire(blocking=False):
+                if touch_access:
+                    session.last_accessed_at = _session_now()
+                break
+            waited_session = session
+        waited_session.lock.acquire()
+        waited_session.lock.release()
+
+    try:
+        yield session
+    finally:
+        session.lock.release()
 
 
 def create_session(
@@ -122,12 +158,10 @@ def create_session(
     *,
     enforce_execution_safety: bool = True,
 ) -> SessionResult:
-    _cleanup_sessions()
     _require_initial_task_capacity(request.scenario)
     diagnostics = validate_scenario(request.scenario, request.options)
     if diagnostics:
         raise HTTPException(status_code=422, detail=diagnostics)
-    _prune_sessions_for_capacity(1)
 
     session_id = str(uuid4())
     now = _session_now()
@@ -147,228 +181,260 @@ def create_session(
         enforce_execution_safety=enforce_execution_safety,
     )
     _initialize_shelf_inventory(session)
-    _sessions[session_id] = session
-    return _build_result(session)
+    initial_result = _build_result(session)
+    _publish_session(session)
+    return initial_result
 
 
 def get_session(session_id: str) -> SessionResult:
-    return _build_result(_require_session(session_id))
+    with _locked_session(session_id) as session:
+        return _build_result(session)
 
 
 def list_sessions() -> list[SessionSummary]:
-    _cleanup_sessions()
-    return [_build_session_summary(session) for session in _sessions_by_recent_access()]
+    with _sessions_lock:
+        _cleanup_sessions_locked()
+        session_ids = [
+            item.session_id
+            for item in sorted(
+                (session for session in _sessions.values() if not session.closing),
+                key=lambda session: session.last_accessed_at,
+                reverse=True,
+            )
+        ]
+
+    summaries: list[SessionSummary] = []
+    for session_id in session_ids:
+        try:
+            with _locked_session(session_id, touch_access=False) as session:
+                summaries.append(_build_session_summary(session))
+        except HTTPException as error:
+            if error.status_code != 404:
+                raise
+    return summaries
 
 
 def delete_session(session_id: str) -> DeleteSessionResult:
-    _cleanup_sessions()
-    deleted = _sessions.pop(session_id, None) is not None
-    if not deleted:
-        raise HTTPException(status_code=404, detail=f"调度会话不存在：{session_id}")
-    return DeleteSessionResult(sessionId=session_id, deleted=True)
+    target: DispatchSession | None = None
+    while True:
+        with _sessions_lock:
+            current = _sessions.get(session_id)
+            if current is None or (current.closing and current is not target):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"调度会话不存在：{session_id}",
+                )
+            if target is None:
+                target = current
+                target.closing = True
+            if current is not target:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"调度会话不存在：{session_id}",
+                )
+            if target.lock.acquire(blocking=False):
+                try:
+                    if _sessions.get(session_id) is target:
+                        _sessions.pop(session_id)
+                        return DeleteSessionResult(sessionId=session_id, deleted=True)
+                finally:
+                    target.lock.release()
+        target.lock.acquire()
+        target.lock.release()
 
 
 def reset_session(session_id: str) -> SessionResult:
-    session = _require_session(session_id)
-    if session.initial_scenario is None or session.initial_options is None:
-        raise HTTPException(status_code=409, detail=f"调度会话缺少初始快照，无法重置：{session_id}")
+    with _locked_session(session_id) as session:
+        if session.initial_scenario is None or session.initial_options is None:
+            raise HTTPException(status_code=409, detail=f"调度会话缺少初始快照，无法重置：{session_id}")
 
-    _reset_session_runtime(session, updated=True)
-    return _build_result(session)
+        _reset_session_runtime(session, updated=True)
+        return _build_result(session)
 
 
 def add_task(session_id: str, request: AddTaskRequest) -> SessionResult:
-    session = _require_session(session_id)
-    task = request.task.model_copy(deep=True)
-    if any(existing.id == task.id for existing in _all_known_tasks(session)):
-        raise HTTPException(status_code=409, detail=f"任务 ID 已存在：{task.id}")
-    _require_task_capacity(session, 1)
+    with _locked_session(session_id) as session:
+        task = request.task.model_copy(deep=True)
+        if any(existing.id == task.id for existing in _all_known_tasks(session)):
+            raise HTTPException(status_code=409, detail=f"任务 ID 已存在：{task.id}")
+        _require_task_capacity(session, 1)
 
-    diagnostics = _validate_runtime_task(session, task)
-    if diagnostics:
-        raise HTTPException(status_code=422, detail=diagnostics)
-    next_statuses = dict(session.shelf_statuses)
-    next_bindings = dict(session.shelf_task_bindings)
-    try:
-        reserve_shelf_task(session.scenario, next_statuses, next_bindings, task)
-    except ShelfInventoryError as error:
-        raise HTTPException(status_code=422, detail=[str(error)]) from error
-    session.scenario.tasks.append(task)
-    session.shelf_statuses = next_statuses
-    session.shelf_task_bindings = next_bindings
-    _release_locks_for_active_higher_priority_task(session, task, session.current_time)
-    session.runtime_task_count += 1
-    _invalidate_plan(session)
-    _touch_session(session, updated=True)
-    _record_session_event(session, session.current_time, f"手动录入任务：{task.id} {task.title}")
-    return _build_result(session)
+        diagnostics = _validate_runtime_task(session, task)
+        if diagnostics:
+            raise HTTPException(status_code=422, detail=diagnostics)
+        next_statuses = dict(session.shelf_statuses)
+        next_bindings = dict(session.shelf_task_bindings)
+        try:
+            reserve_shelf_task(session.scenario, next_statuses, next_bindings, task)
+        except ShelfInventoryError as error:
+            raise HTTPException(status_code=422, detail=[str(error)]) from error
+        session.scenario.tasks.append(task)
+        session.shelf_statuses = next_statuses
+        session.shelf_task_bindings = next_bindings
+        _release_locks_for_active_higher_priority_task(session, task, session.current_time)
+        session.runtime_task_count += 1
+        _invalidate_plan(session)
+        _touch_session_updated(session)
+        _record_session_event(session, session.current_time, f"手动录入任务：{task.id} {task.title}")
+        return _build_result(session)
 
 
 def add_blocked_cell(session_id: str, request: AddBlockRequest) -> SessionResult:
-    session = _require_session(session_id)
-    current_time = _runtime_request_time(session, request)
-    _require_not_past_time(session, current_time)
-    cell = request.cell
-    if not _is_inside(cell, session.scenario):
-        raise HTTPException(status_code=422, detail=f"封锁单元超出地图范围：{cell[0]},{cell[1]}")
-    if cell in session.scenario.obstacles:
-        raise HTTPException(status_code=409, detail=f"封锁单元已是固定障碍：{cell[0]},{cell[1]}")
-    if cell in session.scenario.zones.charging:
-        raise HTTPException(status_code=409, detail=f"封锁单元是充电地块：{cell[0]},{cell[1]}")
-    is_active_dynamic_block_request = (
-        session.options.includeDynamic
-        and current_time >= session.scenario.dynamic.triggerTime
-        and cell in session.scenario.dynamic.blockedCells
-    )
-    if not is_active_dynamic_block_request:
-        occupying_robot_id = _robot_at_cell_at_time(session, cell, current_time)
-        if occupying_robot_id is not None:
-            raise HTTPException(status_code=409, detail=f"封锁单元被机器人占用：{occupying_robot_id} ({cell[0]}, {cell[1]})")
-    previous_time = session.current_time
-    if _advance_runtime_event(session, current_time):
-        _touch_session_if_time_changed(session, previous_time)
-        return _build_result(session)
-    if not is_active_dynamic_block_request:
-        occupying_robot_id = next(
-            (
-                robot.id
-                for robot in session.scenario.robots
-                if session.robot_positions.get(robot.id, robot.start) == cell
-            ),
-            None,
+    with _locked_session(session_id) as session:
+        current_time = _runtime_request_time(session, request)
+        _require_not_past_time(session, current_time)
+        cell = request.cell
+        if not _is_inside(cell, session.scenario):
+            raise HTTPException(status_code=422, detail=f"封锁单元超出地图范围：{cell[0]},{cell[1]}")
+        if cell in session.scenario.obstacles:
+            raise HTTPException(status_code=409, detail=f"封锁单元已是固定障碍：{cell[0]},{cell[1]}")
+        if cell in session.scenario.zones.charging:
+            raise HTTPException(status_code=409, detail=f"封锁单元是充电地块：{cell[0]},{cell[1]}")
+        is_active_dynamic_block_request = (
+            session.options.includeDynamic
+            and current_time >= session.scenario.dynamic.triggerTime
+            and cell in session.scenario.dynamic.blockedCells
         )
-        if occupying_robot_id is not None:
+        if not is_active_dynamic_block_request:
+            occupying_robot_id = _robot_at_cell_at_time(session, cell, current_time)
+            if occupying_robot_id is not None:
+                raise HTTPException(status_code=409, detail=f"封锁单元被机器人占用：{occupying_robot_id} ({cell[0]}, {cell[1]})")
+        previous_time = session.current_time
+        if _advance_runtime_event(session, current_time):
             _touch_session_if_time_changed(session, previous_time)
-            raise HTTPException(
-                status_code=409,
-                detail=f"封锁单元被机器人占用：{occupying_robot_id} ({cell[0]}, {cell[1]})",
+            return _build_result(session)
+        if not is_active_dynamic_block_request:
+            occupying_robot_id = next(
+                (
+                    robot.id
+                    for robot in session.scenario.robots
+                    if session.robot_positions.get(robot.id, robot.start) == cell
+                ),
+                None,
             )
-    is_dynamic_blocked_cell = _is_scenario_dynamic_active(session) and cell in session.scenario.dynamic.blockedCells
-    is_new_blocked_cell = cell not in session.runtime_blocked_cells and not is_dynamic_blocked_cell
-    if is_new_blocked_cell:
-        current_result = session.last_result or _build_result(session).result
-        _release_locks_for_blocked_cell(session, current_result, cell, current_time)
-        session.runtime_blocked_cells.append(cell)
-        _invalidate_plan(session)
-        _touch_session(session, updated=True)
-        _record_session_event(session, current_time, f"T={current_time} 手动封锁单元：({cell[0]}, {cell[1]})")
-    else:
-        _touch_session_if_time_changed(session, previous_time)
-    return _build_result(session)
+            if occupying_robot_id is not None:
+                _touch_session_if_time_changed(session, previous_time)
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"封锁单元被机器人占用：{occupying_robot_id} ({cell[0]}, {cell[1]})",
+                )
+        is_dynamic_blocked_cell = _is_scenario_dynamic_active(session) and cell in session.scenario.dynamic.blockedCells
+        is_new_blocked_cell = cell not in session.runtime_blocked_cells and not is_dynamic_blocked_cell
+        if is_new_blocked_cell:
+            current_result = session.last_result or _build_result(session).result
+            _release_locks_for_blocked_cell(session, current_result, cell, current_time)
+            session.runtime_blocked_cells.append(cell)
+            _invalidate_plan(session)
+            _touch_session_updated(session)
+            _record_session_event(session, current_time, f"T={current_time} 手动封锁单元：({cell[0]}, {cell[1]})")
+        else:
+            _touch_session_if_time_changed(session, previous_time)
+        return _build_result(session)
 
 
 def remove_blocked_cell(session_id: str, request: RemoveBlockRequest) -> SessionResult:
-    session = _require_session(session_id)
-    current_time = _runtime_request_time(session, request)
-    _require_not_past_time(session, current_time)
-    cell = request.cell
-    if not _is_inside(cell, session.scenario):
-        raise HTTPException(status_code=422, detail=f"解除封锁单元超出地图范围：{cell[0]},{cell[1]}")
-    previous_time = session.current_time
-    if _advance_runtime_event(session, current_time):
-        _touch_session_if_time_changed(session, previous_time)
+    with _locked_session(session_id) as session:
+        current_time = _runtime_request_time(session, request)
+        _require_not_past_time(session, current_time)
+        cell = request.cell
+        if not _is_inside(cell, session.scenario):
+            raise HTTPException(status_code=422, detail=f"解除封锁单元超出地图范围：{cell[0]},{cell[1]}")
+        previous_time = session.current_time
+        if _advance_runtime_event(session, current_time):
+            _touch_session_if_time_changed(session, previous_time)
+            return _build_result(session)
+        removed = False
+        if cell in session.runtime_blocked_cells:
+            session.runtime_blocked_cells = [blocked for blocked in session.runtime_blocked_cells if blocked != cell]
+            removed = True
+        if _is_scenario_dynamic_active(session) and cell in session.scenario.dynamic.blockedCells:
+            session.scenario.dynamic = session.scenario.dynamic.model_copy(
+                update={
+                    "blockedCells": [
+                        blocked for blocked in session.scenario.dynamic.blockedCells if blocked != cell
+                    ]
+                }
+            )
+            removed = True
+        if removed:
+            _invalidate_plan(session)
+            _touch_session_updated(session)
+            _record_session_event(session, current_time, f"T={current_time} 手动解除封锁单元：({cell[0]}, {cell[1]})")
+        else:
+            _touch_session_if_time_changed(session, previous_time)
         return _build_result(session)
-    removed = False
-    if cell in session.runtime_blocked_cells:
-        session.runtime_blocked_cells = [blocked for blocked in session.runtime_blocked_cells if blocked != cell]
-        removed = True
-    if _is_scenario_dynamic_active(session) and cell in session.scenario.dynamic.blockedCells:
-        session.scenario.dynamic = session.scenario.dynamic.model_copy(
-            update={
-                "blockedCells": [
-                    blocked for blocked in session.scenario.dynamic.blockedCells if blocked != cell
-                ]
-            }
-        )
-        removed = True
-    if removed:
-        _invalidate_plan(session)
-        _touch_session(session, updated=True)
-        _record_session_event(session, current_time, f"T={current_time} 手动解除封锁单元：({cell[0]}, {cell[1]})")
-    else:
-        _touch_session_if_time_changed(session, previous_time)
-    return _build_result(session)
 
 
 def fail_robot(session_id: str, request: FailRobotRequest) -> SessionResult:
-    session = _require_session(session_id)
-    current_time = _runtime_request_time(session, request)
-    _require_not_past_time(session, current_time)
-    robot_ids = {robot.id for robot in session.scenario.robots}
-    if request.robotId not in robot_ids:
-        raise HTTPException(status_code=404, detail=f"机器人不存在：{request.robotId}")
-    previous_time = session.current_time
-    if _advance_runtime_event(session, current_time):
-        _touch_session_if_time_changed(session, previous_time)
+    with _locked_session(session_id) as session:
+        current_time = _runtime_request_time(session, request)
+        _require_not_past_time(session, current_time)
+        robot_ids = {robot.id for robot in session.scenario.robots}
+        if request.robotId not in robot_ids:
+            raise HTTPException(status_code=404, detail=f"机器人不存在：{request.robotId}")
+        previous_time = session.current_time
+        if _advance_runtime_event(session, current_time):
+            _touch_session_if_time_changed(session, previous_time)
+            return _build_result(session)
+        is_dynamic_failed_robot = _is_scenario_dynamic_active(session) and request.robotId in session.scenario.dynamic.failedRobots
+        is_new_failed_robot = request.robotId not in session.runtime_failed_robot_ids and not is_dynamic_failed_robot
+        if is_new_failed_robot:
+            session.runtime_failed_robot_ids.append(request.robotId)
+            _invalidate_plan(session)
+            _release_locks_for_robot(session, request.robotId, current_time)
+            _touch_session_updated(session)
+            _record_session_event(session, current_time, f"T={current_time} 手动标记故障机器人：{request.robotId}")
+        else:
+            _touch_session_if_time_changed(session, previous_time)
         return _build_result(session)
-    is_dynamic_failed_robot = _is_scenario_dynamic_active(session) and request.robotId in session.scenario.dynamic.failedRobots
-    is_new_failed_robot = request.robotId not in session.runtime_failed_robot_ids and not is_dynamic_failed_robot
-    if is_new_failed_robot:
-        session.runtime_failed_robot_ids.append(request.robotId)
-        _invalidate_plan(session)
-        _release_locks_for_robot(session, request.robotId, current_time)
-        _touch_session(session, updated=True)
-        _record_session_event(session, current_time, f"T={current_time} 手动标记故障机器人：{request.robotId}")
-    else:
-        _touch_session_if_time_changed(session, previous_time)
-    return _build_result(session)
 
 
 def restore_robot(session_id: str, request: RestoreRobotRequest) -> SessionResult:
-    session = _require_session(session_id)
-    current_time = _runtime_request_time(session, request)
-    _require_not_past_time(session, current_time)
-    robot_ids = {robot.id for robot in session.scenario.robots}
-    if request.robotId not in robot_ids:
-        raise HTTPException(status_code=404, detail=f"机器人不存在：{request.robotId}")
-    previous_time = session.current_time
-    if _advance_runtime_event(session, current_time):
-        _touch_session_if_time_changed(session, previous_time)
+    with _locked_session(session_id) as session:
+        current_time = _runtime_request_time(session, request)
+        _require_not_past_time(session, current_time)
+        robot_ids = {robot.id for robot in session.scenario.robots}
+        if request.robotId not in robot_ids:
+            raise HTTPException(status_code=404, detail=f"机器人不存在：{request.robotId}")
+        previous_time = session.current_time
+        if _advance_runtime_event(session, current_time):
+            _touch_session_if_time_changed(session, previous_time)
+            return _build_result(session)
+        restored = False
+        if request.robotId in session.runtime_failed_robot_ids:
+            session.runtime_failed_robot_ids = [
+                robot_id for robot_id in session.runtime_failed_robot_ids if robot_id != request.robotId
+            ]
+            restored = True
+        if _is_scenario_dynamic_active(session) and request.robotId in session.scenario.dynamic.failedRobots:
+            session.scenario.dynamic = session.scenario.dynamic.model_copy(
+                update={
+                    "failedRobots": [
+                        robot_id for robot_id in session.scenario.dynamic.failedRobots if robot_id != request.robotId
+                    ]
+                }
+            )
+            restored = True
+        if restored:
+            _invalidate_plan(session)
+            _touch_session_updated(session)
+            _record_session_event(session, current_time, f"T={current_time} 手动恢复机器人：{request.robotId}")
+        else:
+            _touch_session_if_time_changed(session, previous_time)
         return _build_result(session)
-    restored = False
-    if request.robotId in session.runtime_failed_robot_ids:
-        session.runtime_failed_robot_ids = [
-            robot_id for robot_id in session.runtime_failed_robot_ids if robot_id != request.robotId
-        ]
-        restored = True
-    if _is_scenario_dynamic_active(session) and request.robotId in session.scenario.dynamic.failedRobots:
-        session.scenario.dynamic = session.scenario.dynamic.model_copy(
-            update={
-                "failedRobots": [
-                    robot_id for robot_id in session.scenario.dynamic.failedRobots if robot_id != request.robotId
-                ]
-            }
-        )
-        restored = True
-    if restored:
-        _invalidate_plan(session)
-        _touch_session(session, updated=True)
-        _record_session_event(session, current_time, f"T={current_time} 手动恢复机器人：{request.robotId}")
-    else:
-        _touch_session_if_time_changed(session, previous_time)
-    return _build_result(session)
 
 
 def tick_session(session_id: str, request: SessionTickRequest) -> SessionResult:
-    session = _require_session(session_id)
-    _require_not_past_time(session, request.currentTime)
-    previous_time = session.current_time
-    if request.currentTime > session.current_time:
-        session.last_safety_intervention = None
-        _ensure_planning_started(session)
-    _advance_session(session, request.currentTime)
-    if session.current_time != previous_time:
-        _touch_session(session, updated=True)
-    return _build_result(session)
-
-
-def _require_session(session_id: str) -> DispatchSession:
-    _cleanup_sessions()
-    session = _sessions.get(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail=f"调度会话不存在：{session_id}")
-    _touch_session(session)
-    return session
+    with _locked_session(session_id) as session:
+        _require_not_past_time(session, request.currentTime)
+        previous_time = session.current_time
+        if request.currentTime > session.current_time:
+            session.last_safety_intervention = None
+            _ensure_planning_started(session)
+        _advance_session(session, request.currentTime)
+        if session.current_time != previous_time:
+            _touch_session_updated(session)
+        return _build_result(session)
 
 
 def _require_not_past_time(session: DispatchSession, current_time: int) -> None:
@@ -420,16 +486,13 @@ def _require_initial_task_capacity(scenario: Scenario) -> None:
         )
 
 
-def _touch_session(session: DispatchSession, updated: bool = False) -> None:
-    now = _session_now()
-    session.last_accessed_at = now
-    if updated:
-        session.updated_at = now
+def _touch_session_updated(session: DispatchSession) -> None:
+    session.updated_at = _session_now()
 
 
 def _touch_session_if_time_changed(session: DispatchSession, previous_time: int) -> None:
     if session.current_time != previous_time:
-        _touch_session(session, updated=True)
+        _touch_session_updated(session)
 
 
 def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> None:
@@ -464,7 +527,8 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.active_charging_visits.clear()
     session.last_result = None
     _initialize_shelf_inventory(session)
-    _touch_session(session, updated=updated)
+    if updated:
+        _touch_session_updated(session)
 
 
 def _initialize_shelf_inventory(session: DispatchSession) -> None:
@@ -479,28 +543,82 @@ def _initialize_shelf_inventory(session: DispatchSession) -> None:
     session.shelf_task_bindings = bindings
 
 
+def _cleanup_sessions_locked(now: float | None = None) -> None:
+    cleanup_time = _session_now() if now is None else now
+    candidates = sorted(
+        (
+            item
+            for item in _sessions.values()
+            if not item.closing
+            and cleanup_time - item.last_accessed_at > SESSION_TTL_SECONDS
+        ),
+        key=lambda item: item.last_accessed_at,
+    )
+    for candidate in candidates:
+        if getattr(candidate.lock, "_is_owned", lambda: False)():
+            continue
+        if not candidate.lock.acquire(blocking=False):
+            continue
+        try:
+            if (
+                _sessions.get(candidate.session_id) is candidate
+                and not candidate.closing
+                and cleanup_time - candidate.last_accessed_at > SESSION_TTL_SECONDS
+            ):
+                candidate.closing = True
+                _sessions.pop(candidate.session_id)
+        finally:
+            candidate.lock.release()
+
+
 def _cleanup_sessions(now: float | None = None) -> None:
-    now = _session_now() if now is None else now
-    expired_session_ids = [
-        session_id
-        for session_id, session in _sessions.items()
-        if now - session.last_accessed_at > SESSION_TTL_SECONDS
-    ]
-    for session_id in expired_session_ids:
-        _sessions.pop(session_id, None)
+    with _sessions_lock:
+        _cleanup_sessions_locked(now)
 
 
-def _prune_sessions_for_capacity(incoming_count: int = 0) -> None:
-    overflow_count = len(_sessions) + incoming_count - MAX_SESSIONS
-    if overflow_count <= 0:
-        return
-
-    for session in sorted(_sessions.values(), key=lambda item: item.last_accessed_at)[:overflow_count]:
-        _sessions.pop(session.session_id, None)
-
-
-def _sessions_by_recent_access() -> list[DispatchSession]:
-    return sorted(_sessions.values(), key=lambda session: session.last_accessed_at, reverse=True)
+def _publish_session(session: DispatchSession) -> None:
+    skip_cleanup_once = False
+    while True:
+        waited_session: DispatchSession | None = None
+        with _sessions_lock:
+            if skip_cleanup_once:
+                skip_cleanup_once = False
+            else:
+                _cleanup_sessions_locked()
+            if len(_sessions) < MAX_SESSIONS:
+                session.last_accessed_at = _session_now()
+                _sessions[session.session_id] = session
+                return
+            candidates = sorted(
+                (item for item in _sessions.values() if not item.closing),
+                key=lambda item: item.last_accessed_at,
+            )
+            for candidate in candidates:
+                if candidate.lock.acquire(blocking=False):
+                    try:
+                        if _sessions.get(candidate.session_id) is candidate:
+                            candidate.closing = True
+                            _sessions.pop(candidate.session_id)
+                    finally:
+                        candidate.lock.release()
+                    break
+            else:
+                if candidates:
+                    candidate = candidates[0]
+                    candidate.closing = True
+                    waited_session = candidate
+                else:
+                    waited_session = min(
+                        _sessions.values(),
+                        key=lambda item: item.last_accessed_at,
+                    )
+        if waited_session is not None:
+            waited_session.lock.acquire()
+            waited_session.lock.release()
+            with _sessions_lock:
+                if _sessions.get(waited_session.session_id) is waited_session:
+                    waited_session.closing = False
+            skip_cleanup_once = True
 
 
 def _build_session_summary(session: DispatchSession) -> SessionSummary:

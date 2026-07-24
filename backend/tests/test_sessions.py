@@ -6846,7 +6846,7 @@ def test_oversized_session_create_does_not_prune_existing_sessions(monkeypatch) 
         },
     )
 
-    assert oversized_response.status_code == 409
+    assert oversized_response.status_code == 422
     assert "任务数已达上限" in oversized_response.json()["detail"]
     list_response = client.get("/api/sessions")
     assert list_response.status_code == 200
@@ -6882,7 +6882,7 @@ def test_oversized_invalid_session_create_is_rejected_before_validation_and_prun
         },
     )
 
-    assert oversized_response.status_code == 409
+    assert oversized_response.status_code == 422
     assert oversized_response.json()["detail"] == "调度会话任务数已达上限：3 > 2"
     list_response = client.get("/api/sessions")
     assert list_response.status_code == 200
@@ -6992,7 +6992,7 @@ def test_session_rejects_manual_task_when_task_capacity_is_reached(monkeypatch) 
         },
     )
 
-    assert add_response.status_code == 409
+    assert add_response.status_code == 422
     assert add_response.json()["detail"] == "调度会话任务数已达上限：2 + 1 > 2"
     payload = client.get(f"/api/sessions/{session_id}").json()
     assert payload["runtimeTaskCount"] == 0
@@ -7015,7 +7015,7 @@ def test_session_rejects_generated_task_when_task_capacity_is_reached(monkeypatc
 
     stream_response = _post_generated_task(client, session_id, 4)
 
-    assert stream_response.status_code == 409
+    assert stream_response.status_code == 422
     assert stream_response.json()["detail"] == "调度会话任务数已达上限：3 + 1 > 3"
     payload = client.get(f"/api/sessions/{session_id}").json()
     assert payload["currentTime"] == 4
