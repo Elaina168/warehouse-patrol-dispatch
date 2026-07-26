@@ -5,6 +5,8 @@ from backend.benchmarks.scenarios import build_benchmark_scenario
 
 
 RUNTIME_TASK_TICKS = (20, 40)
+PRESSURE_CALIBRATION_BATTERY_BUDGET = 150
+PRESSURE_CALIBRATION_DEADLINE_FLOOR = 120
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +75,18 @@ def build_adaptive_calibration_scenario(case_id: str) -> Scenario:
         for index, task in enumerate(scenario.tasks):
             task.releaseTime = 48 + index % 3
         scenario.dynamic.triggerTime = 72
+    elif case.case_id == "adaptive-pressure-r8-t45":
+        for robot in scenario.robots:
+            robot.battery = PRESSURE_CALIBRATION_BATTERY_BUDGET
+            robot.batteryCapacity = (
+                PRESSURE_CALIBRATION_BATTERY_BUDGET
+            )
+        for task in scenario.tasks:
+            if task.deadline is not None:
+                task.deadline = max(
+                    task.deadline,
+                    PRESSURE_CALIBRATION_DEADLINE_FLOOR,
+                )
     elif case.case_id == "adaptive-transition-r4-t6":
         release_times = {
             "D1": 0,

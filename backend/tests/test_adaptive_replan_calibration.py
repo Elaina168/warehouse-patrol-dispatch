@@ -41,6 +41,8 @@ from backend.benchmarks.adaptive_runner import (
 )
 from backend.benchmarks import adaptive_scenarios as adaptive_scenarios_module
 from backend.benchmarks.adaptive_scenarios import (
+    PRESSURE_CALIBRATION_BATTERY_BUDGET,
+    PRESSURE_CALIBRATION_DEADLINE_FLOOR,
     RUNTIME_TASK_TICKS,
     adaptive_calibration_cases,
     build_adaptive_calibration_scenario,
@@ -326,11 +328,90 @@ def test_low_load_case_has_no_released_task_at_t0() -> None:
     assert scenario.dynamic.triggerTime == 72
 
 
-def test_pressure_case_preserves_seeded_release_schedule() -> None:
-    scenario = build_adaptive_calibration_scenario("adaptive-pressure-r8-t45")
+def test_pressure_case_normalizes_resources_without_changing_workload() -> None:
+    source = build_benchmark_scenario("density-r8-t43")
+    source_before = source.model_dump(mode="json")
+    scenario = build_adaptive_calibration_scenario(
+        "adaptive-pressure-r8-t45"
+    )
+
+    assert PRESSURE_CALIBRATION_BATTERY_BUDGET == 150
+    assert PRESSURE_CALIBRATION_DEADLINE_FLOOR == 120
+    assert [
+        robot.model_dump(mode="json")
+        for robot in scenario.robots
+    ] == [
+        robot.model_copy(
+            update={
+                "battery": PRESSURE_CALIBRATION_BATTERY_BUDGET,
+                "batteryCapacity": (
+                    PRESSURE_CALIBRATION_BATTERY_BUDGET
+                ),
+            }
+        ).model_dump(mode="json")
+        for robot in source.robots
+    ]
+    assert [
+        task.model_dump(mode="json")
+        for task in scenario.tasks
+    ] == [
+        task.model_copy(
+            update={
+                "deadline": max(
+                    task.deadline,
+                    PRESSURE_CALIBRATION_DEADLINE_FLOOR,
+                )
+                if task.deadline is not None
+                else None
+            }
+        ).model_dump(mode="json")
+        for task in source.tasks
+    ]
+    assert scenario.dynamic.model_dump(mode="json") == (
+        source.dynamic.model_dump(mode="json")
+    )
+    assert scenario.width == source.width
+    assert scenario.height == source.height
+    assert scenario.obstacles == source.obstacles
+    assert scenario.zones == source.zones
+    assert all(
+        task.deadline is not None
+        and task.deadline
+        >= PRESSURE_CALIBRATION_DEADLINE_FLOOR
+        for task in scenario.tasks
+    )
+    assert [task.releaseTime for task in scenario.tasks[:7]] == [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        0,
+    ]
     assert len(scenario.tasks) == 40
     assert len(scenario.dynamic.tasks) == 3
-    assert [task.releaseTime for task in scenario.tasks[:7]] == [0, 1, 2, 3, 4, 5, 0]
+    assert build_benchmark_scenario(
+        "density-r8-t43"
+    ).model_dump(mode="json") == source_before
+
+
+def test_pressure_normalization_does_not_change_other_calibration_cases() -> None:
+    low_load_before = build_adaptive_calibration_scenario(
+        "adaptive-low-load-r4-t17"
+    ).model_dump(mode="json")
+    transition_before = build_adaptive_calibration_scenario(
+        "adaptive-transition-r4-t6"
+    ).model_dump(mode="json")
+
+    build_adaptive_calibration_scenario("adaptive-pressure-r8-t45")
+
+    assert build_adaptive_calibration_scenario(
+        "adaptive-low-load-r4-t17"
+    ).model_dump(mode="json") == low_load_before
+    assert build_adaptive_calibration_scenario(
+        "adaptive-transition-r4-t6"
+    ).model_dump(mode="json") == transition_before
 
 
 def test_transition_case_has_two_current_and_two_future_tasks() -> None:
