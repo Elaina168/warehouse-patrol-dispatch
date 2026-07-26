@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from threading import RLock
@@ -33,10 +33,15 @@ from backend.app.inventory import (
     initial_shelf_statuses,
     reserve_shelf_task,
 )
+from backend.app.planning_diagnostics import PlanningDiagnostics
 from backend.app.replan_window import (
+    DEFAULT_ADAPTIVE_REPLAN_POLICY,
     REPLAN_TIME_SAMPLE_WINDOW,
+    AdaptiveReplanPolicy,
+    ReplanObservation,
     ReplanWindowDecision,
     decide_replan_window,
+    recent_replan_latency_median,
     update_latency_slow_state,
 )
 from backend.app.schemas import (
@@ -125,6 +130,12 @@ class DispatchSession:
     safety_hold_times: dict[str, set[int]] = field(default_factory=dict)
     active_charging_visits: dict[str, ChargingVisit] = field(default_factory=dict)
     enforce_execution_safety: bool = True
+    adaptive_replan_policy: AdaptiveReplanPolicy = DEFAULT_ADAPTIVE_REPLAN_POLICY
+    replan_observer: Callable[[ReplanObservation], None] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     last_result: DispatchResult | None = None
     lock: RLock = field(default_factory=RLock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
@@ -168,6 +179,8 @@ def create_session(
     request: CreateSessionRequest,
     *,
     enforce_execution_safety: bool = True,
+    adaptive_replan_policy: AdaptiveReplanPolicy = DEFAULT_ADAPTIVE_REPLAN_POLICY,
+    replan_observer: Callable[[ReplanObservation], None] | None = None,
 ) -> SessionResult:
     _require_initial_task_capacity(request.scenario)
     diagnostics = validate_scenario(request.scenario, request.options)
@@ -190,6 +203,8 @@ def create_session(
         robot_travelled_distance={robot.id: 0 for robot in request.scenario.robots},
         robot_battery_levels={robot.id: robot.battery for robot in request.scenario.robots},
         enforce_execution_safety=enforce_execution_safety,
+        adaptive_replan_policy=adaptive_replan_policy,
+        replan_observer=replan_observer,
     )
     _initialize_shelf_inventory(session)
     initial_result = _build_result(session)
@@ -723,7 +738,14 @@ def _build_result(session: DispatchSession) -> SessionResult:
     if result is None:
         scenario, options, task_lookup = _build_effective_dispatch_input(session)
         _release_invalid_task_locks_for_replan(session, scenario, options)
-        replan_window_decision = _session_replan_window_decision(session)
+        evaluation = _session_replan_window_evaluation(session)
+        samples_before = tuple(session.recent_replan_times_ms)
+        slow_before = session.adaptive_latency_slow
+        planning_diagnostics = (
+            PlanningDiagnostics()
+            if session.replan_observer is not None
+            else None
+        )
         result = _restore_absolute_result(
             run_dispatch(
                 scenario,
@@ -733,15 +755,25 @@ def _build_result(session: DispatchSession) -> SessionResult:
                 include_dynamic_events=_include_scenario_dynamic_events(session),
                 apply_dynamic_constraints_at_start=True,
                 task_limit_per_robot=1,
-                replan_window_decision=replan_window_decision,
+                replan_window_decision=evaluation.decision,
                 active_charging_visits=_relative_active_charging_visits(session),
+                planning_diagnostics=planning_diagnostics,
             ),
             task_lookup,
             session.current_time,
             session,
         )
-        _record_replan_window_decision(session, replan_window_decision)
+        _record_replan_window_decision(session, evaluation.decision)
         _record_replan_latency(session, result.metrics.replanTimeMs)
+        if planning_diagnostics is not None:
+            _notify_replan_observer(
+                session,
+                evaluation,
+                samples_before,
+                slow_before,
+                result.metrics.replanTimeMs,
+                planning_diagnostics,
+            )
         _update_task_robot_preferences(session, result)
 
         session.last_result = result
@@ -788,7 +820,8 @@ def _ensure_planning_started(session: DispatchSession) -> None:
     if session.planning_started:
         return
     session.planning_started = True
-    _invalidate_plan(session)
+    if _should_delay_initial_planning(session):
+        _invalidate_plan(session)
 
 
 def _should_delay_initial_planning(session: DispatchSession) -> bool:
@@ -1183,7 +1216,17 @@ def _rolling_window_trigger_time(session: DispatchSession, task: Task) -> int:
     return max(0, release_time - _session_replan_window_decision(session).window)
 
 
-def _session_replan_window_decision(session: DispatchSession) -> ReplanWindowDecision:
+@dataclass(frozen=True, slots=True)
+class _SessionReplanEvaluation:
+    decision: ReplanWindowDecision
+    released_task_count: int
+    future_task_count: int
+    active_robot_count: int
+
+
+def _session_replan_window_evaluation(
+    session: DispatchSession,
+) -> _SessionReplanEvaluation:
     tasks = [
         task
         for task in _all_tasks(session)
@@ -1203,14 +1246,31 @@ def _session_replan_window_decision(session: DispatchSession) -> ReplanWindowDec
         active_dynamic_failed,
         session.runtime_failed_robot_ids,
     )
-    return decide_replan_window(
+    future_task_count = len(tasks) - released_task_count
+    active_robot_count = (
+        len(session.scenario.robots) - len(unavailable_robot_ids)
+    )
+    decision = decide_replan_window(
         configured_window=session.options.assignmentReplanWindow,
         adaptive=session.options.adaptiveReplanWindow,
         released_task_count=released_task_count,
-        future_task_count=len(tasks) - released_task_count,
-        active_robot_count=len(session.scenario.robots) - len(unavailable_robot_ids),
+        future_task_count=future_task_count,
+        active_robot_count=active_robot_count,
         latency_slow=session.adaptive_latency_slow,
+        policy=session.adaptive_replan_policy,
     )
+    return _SessionReplanEvaluation(
+        decision=decision,
+        released_task_count=released_task_count,
+        future_task_count=future_task_count,
+        active_robot_count=active_robot_count,
+    )
+
+
+def _session_replan_window_decision(
+    session: DispatchSession,
+) -> ReplanWindowDecision:
+    return _session_replan_window_evaluation(session).decision
 
 
 def _record_replan_window_decision(
@@ -1243,6 +1303,64 @@ def _record_replan_latency(
     session.adaptive_latency_slow = update_latency_slow_state(
         session.recent_replan_times_ms,
         session.adaptive_latency_slow,
+        policy=session.adaptive_replan_policy,
+    )
+
+
+def _notify_replan_observer(
+    session: DispatchSession,
+    evaluation: _SessionReplanEvaluation,
+    samples_before: tuple[float, ...],
+    slow_before: bool,
+    replan_time_ms: float,
+    diagnostics: PlanningDiagnostics,
+) -> None:
+    observer = session.replan_observer
+    if observer is None:
+        return
+    observer(
+        ReplanObservation(
+            time=session.current_time,
+            configured_window=(
+                session.options.assignmentReplanWindow
+            ),
+            effective_window=evaluation.decision.window,
+            reason=evaluation.decision.reason,
+            released_task_count=evaluation.released_task_count,
+            future_task_count=evaluation.future_task_count,
+            active_robot_count=evaluation.active_robot_count,
+            task_pressure_ratio=(
+                evaluation.released_task_count
+                / max(1, evaluation.active_robot_count)
+            ),
+            latency_samples_before_ms=samples_before,
+            latency_median_before_ms=recent_replan_latency_median(
+                samples_before
+            ),
+            latency_slow_before=slow_before,
+            replan_time_ms=replan_time_ms,
+            latency_slow_after=session.adaptive_latency_slow,
+            path_candidate_count=diagnostics.path_candidate_count,
+            selected_path_candidate_index=(
+                diagnostics.selected_path_candidate_index
+            ),
+            failed_path_candidate_count=(
+                diagnostics.failed_path_candidate_count
+            ),
+            timed_astar_call_count=diagnostics.timed_astar_call_count,
+            timed_astar_expanded_state_count=(
+                diagnostics.timed_astar_expanded_state_count
+            ),
+            max_timed_astar_expanded_state_count=(
+                diagnostics.max_timed_astar_expanded_state_count
+            ),
+            timed_astar_exhausted_search_count=(
+                diagnostics.timed_astar_exhausted_search_count
+            ),
+            timed_astar_goal_fully_reserved_reject_count=(
+                diagnostics.timed_astar_goal_fully_reserved_reject_count
+            ),
+        )
     )
 
 

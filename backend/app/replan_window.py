@@ -41,6 +41,31 @@ DEFAULT_ADAPTIVE_REPLAN_POLICY = AdaptiveReplanPolicy(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class ReplanObservation:
+    time: int
+    configured_window: int
+    effective_window: int
+    reason: str
+    released_task_count: int
+    future_task_count: int
+    active_robot_count: int
+    task_pressure_ratio: float
+    latency_samples_before_ms: tuple[float, ...]
+    latency_median_before_ms: float | None
+    latency_slow_before: bool
+    replan_time_ms: float
+    latency_slow_after: bool
+    path_candidate_count: int
+    selected_path_candidate_index: int | None
+    failed_path_candidate_count: int
+    timed_astar_call_count: int
+    timed_astar_expanded_state_count: int
+    max_timed_astar_expanded_state_count: int
+    timed_astar_exhausted_search_count: int
+    timed_astar_goal_fully_reserved_reject_count: int
+
+
 def recent_replan_latency_median(
     samples_ms: Sequence[float],
 ) -> float | None:
