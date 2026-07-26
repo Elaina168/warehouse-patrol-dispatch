@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from threading import Event, Lock, RLock
+from threading import Event, Lock, RLock, Semaphore, local
 
 import pytest
 from fastapi import HTTPException
@@ -13,6 +13,7 @@ from backend.tests.helpers import scenario_payload
 
 
 WAIT_TIMEOUT_SECONDS = 5
+_lock_role = local()
 
 
 def _create_session() -> str:
@@ -43,6 +44,14 @@ def _status(callable_) -> int:
 
 def _wait(event: Event, description: str) -> None:
     assert event.wait(WAIT_TIMEOUT_SECONDS), f"等待超时：{description}"
+
+
+def _run_with_lock_role(role: str, callable_, *args):
+    _lock_role.value = role
+    try:
+        return callable_(*args)
+    finally:
+        del _lock_role.value
 
 
 @contextmanager
@@ -82,6 +91,60 @@ class ObservedRLock:
             self.blocking_wait_started,
             f"{self.expected_blockers} 个工作线程尝试获取会话锁",
         )
+
+
+class RoleControlledRLock:
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._state_lock = Lock()
+        self._wait_counts: dict[str, int] = {}
+        self._wait_events: dict[tuple[str, int], Event] = {}
+        self._permits: dict[str, Semaphore] = {}
+        self._acquisition_state = local()
+        self.delete_holds_lock = Event()
+        self.allow_delete_release = Event()
+
+    def acquire(self, blocking: bool = True) -> bool:
+        if not blocking:
+            return self._lock.acquire(blocking=False)
+        if self._lock.acquire(blocking=False):
+            return True
+
+        role = _lock_role.value
+        with self._state_lock:
+            wait_count = self._wait_counts.get(role, 0) + 1
+            self._wait_counts[role] = wait_count
+            wait_event = self._wait_events.setdefault((role, wait_count), Event())
+            permit = self._permits.setdefault(role, Semaphore(0))
+        wait_event.set()
+        assert permit.acquire(timeout=WAIT_TIMEOUT_SECONDS), f"等待超时：允许 {role} 获取会话锁"
+        acquired = self._lock.acquire(timeout=WAIT_TIMEOUT_SECONDS)
+        assert acquired, f"等待超时：{role} 获取会话锁"
+        self._acquisition_state.hold_delete_release = role == "delete" and wait_count == 1
+        return True
+
+    def release(self) -> None:
+        if getattr(self._acquisition_state, "hold_delete_release", False):
+            self.delete_holds_lock.set()
+            _wait(self.allow_delete_release, "允许 delete 释放会话锁")
+            self._acquisition_state.hold_delete_release = False
+        self._lock.release()
+
+    def wait_for_blocker(self, role: str, wait_count: int) -> None:
+        with self._state_lock:
+            wait_event = self._wait_events.setdefault((role, wait_count), Event())
+        _wait(wait_event, f"{role} 第 {wait_count} 次等待会话锁")
+
+    def allow(self, role: str) -> None:
+        with self._state_lock:
+            permit = self._permits.setdefault(role, Semaphore(0))
+        permit.release()
+
+    def unblock_all(self) -> None:
+        self.allow_delete_release.set()
+        for role in ("delete", "publish"):
+            for _ in range(4):
+                self.allow(role)
 
 
 def _observed_session_lock(session_id: str, expected_blockers: int) -> ObservedRLock:
@@ -387,6 +450,90 @@ def test_capacity_publish_rechecks_identity_capacity_and_ttl(monkeypatch) -> Non
         assert sessions_module._sessions[session_id] is replacement
         assert sessions_module._sessions["incoming"] is incoming
         assert "expired" not in sessions_module._sessions
+
+
+def test_publish_never_clears_closing_owned_by_concurrent_delete(monkeypatch) -> None:
+    session_id = _create_session()
+    monkeypatch.setattr(sessions_module, "MAX_SESSIONS", 1)
+    controlled_lock = RoleControlledRLock()
+    with sessions_module._sessions_lock:
+        original = sessions_module._sessions[session_id]
+        original.lock = controlled_lock
+    incoming = sessions_module.DispatchSession(
+        session_id="incoming",
+        scenario=original.scenario.model_copy(deep=True),
+        options=original.options.model_copy(deep=True),
+    )
+
+    publish_retry_entered = Event()
+    allow_publish_retry = Event()
+    observed_retry_closing: list[bool] = []
+    publish_cleanup_count = 0
+    real_cleanup = sessions_module._cleanup_sessions_locked
+
+    def observed_cleanup(now=None):
+        nonlocal publish_cleanup_count
+        real_cleanup(now)
+        if getattr(_lock_role, "value", None) != "publish":
+            return
+        publish_cleanup_count += 1
+        if publish_cleanup_count == 2:
+            observed_retry_closing.append(original.closing)
+            publish_retry_entered.set()
+            _wait(allow_publish_retry, "允许 publisher 完成首次等待后的重试")
+
+    monkeypatch.setattr(sessions_module, "_cleanup_sessions_locked", observed_cleanup)
+    controlled_lock.acquire()
+    initial_lock_held = True
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        deletion = pool.submit(
+            _run_with_lock_role,
+            "delete",
+            sessions_module.delete_session,
+            session_id,
+        )
+        controlled_lock.wait_for_blocker("delete", 1)
+
+        with pytest.raises(HTTPException) as error:
+            sessions_module.get_session(session_id)
+        assert error.value.status_code == 404
+
+        publishing = pool.submit(
+            _run_with_lock_role,
+            "publish",
+            sessions_module._publish_session,
+            incoming,
+        )
+        controlled_lock.wait_for_blocker("publish", 1)
+        controlled_lock.release()
+        initial_lock_held = False
+        controlled_lock.allow("publish")
+        assert publish_retry_entered.wait(WAIT_TIMEOUT_SECONDS), (
+            "等待超时：publisher 进入首次等待后的重试；"
+            f"future={publishing.exception() if publishing.done() else 'running'}"
+        )
+
+        controlled_lock.allow("delete")
+        _wait(controlled_lock.delete_holds_lock, "delete 持有会话锁")
+        allow_publish_retry.set()
+        controlled_lock.wait_for_blocker("publish", 2)
+        controlled_lock.allow_delete_release.set()
+
+        assert deletion.result(timeout=WAIT_TIMEOUT_SECONDS).deleted is True
+        controlled_lock.allow("publish")
+        publishing.result(timeout=WAIT_TIMEOUT_SECONDS)
+    finally:
+        allow_publish_retry.set()
+        controlled_lock.unblock_all()
+        if initial_lock_held:
+            controlled_lock.release()
+        pool.shutdown(wait=True)
+
+    assert observed_retry_closing == [True]
+    with sessions_module._sessions_lock:
+        assert session_id not in sessions_module._sessions
+        assert sessions_module._sessions["incoming"] is incoming
 
 
 def test_ttl_cleanup_skips_busy_expired_session_until_next_cleanup() -> None:

@@ -16,7 +16,7 @@ def test_latency_state_requires_three_samples(samples: list[float]) -> None:
 
 
 def test_latency_state_uses_only_latest_five_sample_median() -> None:
-    samples = [1000, 10, 60, 70, 80, 90]
+    samples = [0, 0, 50, 60, 100, 100]
 
     assert update_latency_slow_state(samples, False) is True
 

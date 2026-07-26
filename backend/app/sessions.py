@@ -637,6 +637,7 @@ def _cleanup_sessions(now: float | None = None) -> None:
 def _publish_session(session: DispatchSession) -> None:
     while True:
         waited_session: DispatchSession | None = None
+        owns_waited_session_closing = False
         with _sessions_lock:
             _cleanup_sessions_locked()
             if len(_sessions) < MAX_SESSIONS:
@@ -661,6 +662,7 @@ def _publish_session(session: DispatchSession) -> None:
                     candidate = candidates[0]
                     candidate.closing = True
                     waited_session = candidate
+                    owns_waited_session_closing = True
                 else:
                     waited_session = min(
                         _sessions.values(),
@@ -669,9 +671,10 @@ def _publish_session(session: DispatchSession) -> None:
         if waited_session is not None:
             waited_session.lock.acquire()
             waited_session.lock.release()
-            with _sessions_lock:
-                if _sessions.get(waited_session.session_id) is waited_session:
-                    waited_session.closing = False
+            if owns_waited_session_closing:
+                with _sessions_lock:
+                    if _sessions.get(waited_session.session_id) is waited_session:
+                        waited_session.closing = False
 
 
 def _build_session_summary(session: DispatchSession) -> SessionSummary:
