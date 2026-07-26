@@ -1,4 +1,7 @@
+import csv
+import json
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 
@@ -11,9 +14,23 @@ from backend.app.schemas import Scenario
 from backend.app.sessions import list_sessions
 from backend.app.validation import validate_scenario
 from backend.benchmarks import adaptive_runner as adaptive_runner_module
+from backend.benchmarks import adaptive_reporting as adaptive_reporting_module
+from backend.benchmarks import (
+    adaptive_replan_calibration as cli_module,
+)
+from backend.benchmarks.adaptive_reporting import (
+    REPLAN_OBSERVATION_FIELD_NAMES,
+    RUN_FIELD_NAMES,
+    VARIANT_SUMMARY_FIELD_NAMES,
+    write_final_report,
+    write_partial_report,
+)
+from backend.benchmarks.adaptive_replan_calibration import main, parse_args
 from backend.benchmarks.adaptive_results import (
+    AdaptiveCalibrationReport,
     AdaptiveCalibrationRun,
     AdaptiveReplanRecord,
+    nearest_rank,
 )
 from backend.benchmarks.adaptive_runner import (
     execute_adaptive_calibration_case,
@@ -819,3 +836,326 @@ def test_adaptive_batch_propagates_infrastructure_failure(monkeypatch) -> None:
             repetitions=1,
             timeout_seconds=5,
         )
+
+
+def test_adaptive_percentiles_use_nearest_rank() -> None:
+    values = [10, 20, 30, 40]
+    assert nearest_rank(values, 0.50) == 20
+    assert nearest_rank(values, 0.75) == 30
+    assert nearest_rank(values, 0.95) == 40
+    assert nearest_rank([], 0.50) is None
+
+
+def test_variant_replan_summary_weights_each_run_once() -> None:
+    first = _completed_run(
+        case_id="adaptive-low-load-r4-t17",
+        variant_id="fixed-24",
+        run_index=1,
+        replan_times=[10, 20, 30],
+    )
+    second = _completed_run(
+        case_id="adaptive-low-load-r4-t17",
+        variant_id="fixed-24",
+        run_index=2,
+        replan_times=[100],
+    )
+    report = AdaptiveCalibrationReport.create({}, [first, second])
+    summary = report.variant_summaries[0]
+    assert summary.median_run_replan_time_ms == 60
+    assert summary.p95_run_replan_time_ms == 100
+
+
+def test_candidate_envelope_uses_only_stable_fixed_24_observations() -> None:
+    runs = []
+    for index, case in enumerate(adaptive_calibration_cases(), start=1):
+        runs.append(
+            _completed_run(
+                case_id=case.case_id,
+                variant_id="fixed-24",
+                run_index=1,
+                replan_times=[10 * index, 20 * index, 30 * index],
+                pressure_ratios=[0.5 * index, 1.0 * index, 1.5 * index],
+                correctness_stable=True,
+            )
+        )
+    runs.append(
+        _completed_run(
+            case_id=adaptive_calibration_cases()[0].case_id,
+            variant_id="adaptive-current-24",
+            run_index=1,
+            replan_times=[999, 999, 999],
+            pressure_ratios=[99, 99, 99],
+            correctness_stable=True,
+        )
+    )
+    runs.append(
+        _completed_run(
+            case_id=adaptive_calibration_cases()[0].case_id,
+            variant_id="fixed-24",
+            run_index=2,
+            replan_times=[888, 888, 888],
+            pressure_ratios=[88, 88, 88],
+            correctness_stable=False,
+        )
+    )
+    report = AdaptiveCalibrationReport.create({}, runs)
+    assert report.candidate_envelope_available is True
+    assert report.observation_distribution.latency_ms.sample_count == 9
+    assert report.observation_distribution.latency_ms.p95 == 90
+    assert report.candidate_envelope is not None
+    assert report.candidate_envelope.slow_exit_threshold_ms.minimum == (
+        report.observation_distribution.latency_ms.p50
+    )
+    assert report.candidate_envelope.slow_enter_threshold_ms.maximum == (
+        report.observation_distribution.latency_ms.p95
+    )
+
+
+def test_candidate_envelope_is_unavailable_when_one_case_has_fewer_than_three_samples() -> None:
+    cases = adaptive_calibration_cases()
+    runs = [
+        _completed_run(
+            case_id=case.case_id,
+            variant_id="fixed-24",
+            run_index=1,
+            replan_times=(
+                [10, 20, 30]
+                if case.case_id != cases[-1].case_id
+                else [10, 20]
+            ),
+            pressure_ratios=(
+                [1, 2, 3]
+                if case.case_id != cases[-1].case_id
+                else [1, 2]
+            ),
+            correctness_stable=True,
+        )
+        for case in cases
+    ]
+    report = AdaptiveCalibrationReport.create({}, runs)
+    assert report.candidate_envelope_available is False
+    assert report.candidate_envelope is None
+    assert report.observation_distribution.latency_ms.sample_count == 8
+
+
+def test_candidate_distribution_is_explicitly_empty_without_stable_fixed_24() -> None:
+    run = _completed_run(
+        case_id="adaptive-low-load-r4-t17",
+        variant_id="fixed-24",
+        run_index=1,
+        replan_times=[10, 20, 30],
+        correctness_stable=False,
+    )
+    report = AdaptiveCalibrationReport.create({}, [run])
+    latency = report.observation_distribution.latency_ms
+    pressure = report.observation_distribution.task_pressure_ratio
+    assert (latency.p50, latency.p75, latency.p95) == (
+        None,
+        None,
+        None,
+    )
+    assert (pressure.p50, pressure.p75, pressure.p95) == (
+        None,
+        None,
+        None,
+    )
+    assert latency.sample_count == 0
+    assert pressure.sample_count == 0
+    assert report.candidate_envelope_available is False
+    assert report.candidate_envelope is None
+
+
+def test_adaptive_report_writes_utf8_json_and_three_csv_files(tmp_path) -> None:
+    run = _completed_run(
+        case_id="adaptive-low-load-r4-t17",
+        variant_id="fixed-24",
+        run_index=1,
+        replan_times=[10, 20, 30],
+        pressure_ratios=[0.5, 1, 1.5],
+    )
+    report = AdaptiveCalibrationReport.create({"repetitions": 1}, [run])
+    write_final_report(tmp_path, report)
+
+    payload = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
+    assert payload["schemaVersion"] == 1
+    assert payload["runs"][0]["caseId"] == "adaptive-low-load-r4-t17"
+    assert payload["runs"][0]["replanObservations"][0]["reason"] == "固定窗口"
+    expected_headers = {
+        "runs.csv": RUN_FIELD_NAMES,
+        "replan-observations.csv": REPLAN_OBSERVATION_FIELD_NAMES,
+        "variant-summaries.csv": VARIANT_SUMMARY_FIELD_NAMES,
+    }
+    for file_name, expected_header in expected_headers.items():
+        with (tmp_path / file_name).open(encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            assert tuple(reader.fieldnames or ()) == expected_header
+            assert list(reader)
+
+
+def test_adaptive_partial_is_replaced_and_removed_after_final(tmp_path) -> None:
+    first = _completed_run("adaptive-low-load-r4-t17", "fixed-24", 1)
+    second = _completed_run("adaptive-low-load-r4-t17", "fixed-24", 2)
+    write_partial_report(tmp_path, AdaptiveCalibrationReport.create({}, [first]))
+    write_partial_report(tmp_path, AdaptiveCalibrationReport.create({}, [first, second]))
+    partial_path = tmp_path / "results.partial.json"
+    payload = json.loads(partial_path.read_text(encoding="utf-8"))
+    assert [item["runIndex"] for item in payload["runs"]] == [1, 2]
+    assert not list(tmp_path.glob("*.tmp"))
+    write_final_report(
+        tmp_path,
+        AdaptiveCalibrationReport.create({}, [first, second]),
+    )
+    assert partial_path.exists() is False
+
+
+def test_adaptive_final_write_failure_keeps_partial(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    run = _completed_run(
+        "adaptive-low-load-r4-t17",
+        "fixed-24",
+        1,
+    )
+    report = AdaptiveCalibrationReport.create({}, [run])
+    write_partial_report(tmp_path, report)
+
+    def fail_csv(*args, **kwargs):
+        raise OSError("csv failed")
+
+    monkeypatch.setattr(
+        adaptive_reporting_module,
+        "_write_csv",
+        fail_csv,
+    )
+    with pytest.raises(OSError, match="csv failed"):
+        write_final_report(tmp_path, report)
+    assert (tmp_path / "results.partial.json").exists()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--cases", ","],
+        ["--cases", "unknown"],
+        ["--variants", ","],
+        ["--variants", "unknown"],
+        ["--repetitions", "0"],
+        ["--timeout-seconds", "0"],
+        ["--timeout-seconds", "nan"],
+        ["--timeout-seconds", "inf"],
+    ],
+)
+def test_adaptive_cli_rejects_invalid_config_before_output(tmp_path, args) -> None:
+    assert main([*args, "--output-dir", str(tmp_path)]) != 0
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_adaptive_cli_parses_trimmed_case_and_variant_lists() -> None:
+    args = parse_args(
+        [
+            "--cases",
+            " adaptive-low-load-r4-t17, adaptive-transition-r4-t6 ",
+            "--variants",
+            " fixed-4, adaptive-current-24 ",
+        ]
+    )
+    assert args.cases == (
+        "adaptive-low-load-r4-t17",
+        "adaptive-transition-r4-t6",
+    )
+    assert args.variants == ("fixed-4", "adaptive-current-24")
+
+
+def test_adaptive_cli_same_second_directories_do_not_overwrite(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class FixedDateTime:
+        @classmethod
+        def now(cls, tz):
+            assert tz is timezone.utc
+            return datetime(2026, 7, 26, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(cli_module, "datetime", FixedDateTime)
+    first = cli_module._create_result_directory(str(tmp_path))
+    second = cli_module._create_result_directory(str(tmp_path))
+    assert first.name == "20260726T000000Z"
+    assert second.name == "20260726T000000Z-2"
+
+
+def test_adaptive_cli_success_writes_exact_config(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    result_path = (tmp_path / "20260726T000000Z").resolve()
+    result_path.mkdir()
+    completed = _completed_run(
+        "adaptive-low-load-r4-t17",
+        "fixed-24",
+        1,
+    )
+
+    def fake_run(
+        cases,
+        variants,
+        repetitions,
+        timeout_seconds,
+        on_result=None,
+    ):
+        assert [case.case_id for case in cases] == [
+            "adaptive-low-load-r4-t17"
+        ]
+        assert [variant.variant_id for variant in variants] == ["fixed-24"]
+        assert repetitions == 1
+        assert timeout_seconds == 30
+        runs = [completed]
+        if on_result is not None:
+            on_result(list(runs))
+        return runs
+
+    monkeypatch.setattr(
+        cli_module,
+        "_create_result_directory",
+        lambda output_dir: result_path,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_adaptive_calibration_cases",
+        fake_run,
+    )
+
+    assert main(
+        [
+            "--cases",
+            "adaptive-low-load-r4-t17",
+            "--variants",
+            "fixed-24",
+            "--repetitions",
+            "1",
+            "--output-dir",
+            str(tmp_path),
+        ]
+    ) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == str(result_path)
+    assert captured.err == ""
+
+    payload = json.loads(
+        (result_path / "results.json").read_text(encoding="utf-8")
+    )
+    assert payload["config"] == {
+        "caseIds": ["adaptive-low-load-r4-t17"],
+        "variantIds": ["fixed-24"],
+        "repetitions": 1,
+        "timeoutSeconds": 30,
+        "tickTarget": 120,
+        "runtimeTaskTicks": [20, 40],
+        "outputDir": str(result_path),
+        "defaultPolicy": {
+            "slowEnterThresholdMs": 60,
+            "slowExitThresholdMs": 40,
+            "taskPressureMultiplier": 2,
+        },
+    }
