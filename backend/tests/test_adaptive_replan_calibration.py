@@ -42,7 +42,7 @@ from backend.benchmarks.adaptive_runner import (
 from backend.benchmarks import adaptive_scenarios as adaptive_scenarios_module
 from backend.benchmarks.adaptive_scenarios import (
     PRESSURE_CALIBRATION_BATTERY_BUDGET,
-    PRESSURE_CALIBRATION_DEADLINE_FLOOR,
+    PRESSURE_CALIBRATION_DEADLINE,
     RUNTIME_TASK_TICKS,
     adaptive_calibration_cases,
     build_adaptive_calibration_scenario,
@@ -336,7 +336,7 @@ def test_pressure_case_normalizes_resources_without_changing_workload() -> None:
     )
 
     assert PRESSURE_CALIBRATION_BATTERY_BUDGET == 150
-    assert PRESSURE_CALIBRATION_DEADLINE_FLOOR == 120
+    assert PRESSURE_CALIBRATION_DEADLINE == 120
     assert [
         robot.model_dump(mode="json")
         for robot in scenario.robots
@@ -357,9 +357,8 @@ def test_pressure_case_normalizes_resources_without_changing_workload() -> None:
     ] == [
         task.model_copy(
             update={
-                "deadline": max(
-                    task.deadline,
-                    PRESSURE_CALIBRATION_DEADLINE_FLOOR,
+                "deadline": (
+                    PRESSURE_CALIBRATION_DEADLINE
                 )
                 if task.deadline is not None
                 else None
@@ -375,9 +374,7 @@ def test_pressure_case_normalizes_resources_without_changing_workload() -> None:
     assert scenario.obstacles == source.obstacles
     assert scenario.zones == source.zones
     assert all(
-        task.deadline is not None
-        and task.deadline
-        >= PRESSURE_CALIBRATION_DEADLINE_FLOOR
+        task.deadline == PRESSURE_CALIBRATION_DEADLINE
         for task in scenario.tasks
     )
     assert [task.releaseTime for task in scenario.tasks[:7]] == [
@@ -620,6 +617,30 @@ def test_adaptive_calibration_executes_real_online_flow() -> None:
         and record.effective_window == 24
         for record in run.replan_observations
     )
+
+
+def test_pressure_calibration_completes_by_tick_target() -> None:
+    run = execute_adaptive_calibration_case(
+        "adaptive-pressure-r8-t45",
+        "fixed-24",
+        1,
+    )
+
+    assert run.outcome == "completed"
+    assert run.tick_target == 120
+    assert run.released_task_count == 45
+    assert run.covered_task_count == 45
+    assert run.completed_task_count == 45
+    assert run.coverage_rate_percent == 100
+    assert run.actual_completion_rate_percent == 100
+    assert run.correctness_stable is True
+    assert run.predicted_conflict_count == 0
+    assert run.active_conflict_count == 0
+    assert run.safety_intervention_count == 0
+    assert run.deadline_miss_count == 0
+    assert run.failure_count == 0
+    assert run.total_distance is not None
+    assert run.total_distance > 0
 
 
 def test_adaptive_run_uses_terminal_metric_snapshot_distance(

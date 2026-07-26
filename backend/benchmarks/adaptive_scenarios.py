@@ -6,7 +6,7 @@ from backend.benchmarks.scenarios import build_benchmark_scenario
 
 RUNTIME_TASK_TICKS = (20, 40)
 PRESSURE_CALIBRATION_BATTERY_BUDGET = 150
-PRESSURE_CALIBRATION_DEADLINE_FLOOR = 120
+PRESSURE_CALIBRATION_DEADLINE = 120
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,9 +83,8 @@ def build_adaptive_calibration_scenario(case_id: str) -> Scenario:
             )
         for task in scenario.tasks:
             if task.deadline is not None:
-                task.deadline = max(
-                    task.deadline,
-                    PRESSURE_CALIBRATION_DEADLINE_FLOOR,
+                task.deadline = (
+                    PRESSURE_CALIBRATION_DEADLINE
                 )
     elif case.case_id == "adaptive-transition-r4-t6":
         release_times = {
