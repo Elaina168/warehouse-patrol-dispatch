@@ -125,6 +125,11 @@ def execute_adaptive_calibration_case(
         previous.effective_window != current.effective_window
         for previous, current in zip(records, records[1:])
     )
+    if not session.metricsHistory:
+        raise RuntimeError(
+            "自适应窗口校准完成但缺少指标历史"
+        )
+    final_snapshot = session.metricsHistory[-1]
     metrics = session.result.metrics
     released_task_count = sum(
         state.releaseTime <= session.currentTime
@@ -133,11 +138,7 @@ def execute_adaptive_calibration_case(
     covered_task_count = sum(
         state.status != "unassigned" for state in session.taskStates
     )
-    active_conflict_count = (
-        session.metricsHistory[-1].activeConflictCount
-        if session.metricsHistory
-        else 0
-    )
+    active_conflict_count = final_snapshot.activeConflictCount
     correctness_stable = (
         covered_task_count == case.task_count
         and active_conflict_count == 0
@@ -175,7 +176,7 @@ def execute_adaptive_calibration_case(
         ),
         deadline_miss_count=metrics.deadlineMissCount,
         failure_count=metrics.failureCount,
-        total_distance=metrics.totalDistance,
+        total_distance=final_snapshot.travelledDistance,
         makespan=metrics.makespan,
         wall_clock_ms=wall_clock_ms,
         replan_count=len(records),

@@ -608,6 +608,8 @@ def test_adaptive_calibration_executes_real_online_flow() -> None:
     assert run.released_task_count == 6
     assert run.covered_task_count == 6
     assert run.active_conflict_count == 0
+    assert run.total_distance is not None
+    assert run.total_distance > 0
     assert run.replan_count == len(run.replan_observations)
     assert run.replan_count >= 3
     assert {
@@ -618,6 +620,83 @@ def test_adaptive_calibration_executes_real_online_flow() -> None:
         and record.effective_window == 24
         for record in run.replan_observations
     )
+
+
+def test_adaptive_run_uses_terminal_metric_snapshot_distance(
+    monkeypatch,
+) -> None:
+    real_tick_session = adaptive_runner_module.tick_session
+
+    def tick_with_distance_sentinel(session_id, request):
+        result = real_tick_session(session_id, request)
+        if request.currentTime != 120:
+            return result
+        terminal_snapshot = result.metricsHistory[-1].model_copy(
+            update={"travelledDistance": 777}
+        )
+        plan_metrics = result.result.metrics.model_copy(
+            update={"totalDistance": 0}
+        )
+        return result.model_copy(
+            update={
+                "metricsHistory": [
+                    *result.metricsHistory[:-1],
+                    terminal_snapshot,
+                ],
+                "result": result.result.model_copy(
+                    update={"metrics": plan_metrics}
+                ),
+            }
+        )
+
+    monkeypatch.setattr(
+        adaptive_runner_module,
+        "tick_session",
+        tick_with_distance_sentinel,
+    )
+
+    run = execute_adaptive_calibration_case(
+        "adaptive-transition-r4-t6",
+        "fixed-24",
+        1,
+    )
+
+    assert run.total_distance == 777
+
+
+def test_adaptive_run_rejects_missing_metric_history_and_cleans_session(
+    monkeypatch,
+) -> None:
+    session_ids_before = {
+        item.sessionId for item in list_sessions()
+    }
+    real_tick_session = adaptive_runner_module.tick_session
+
+    def tick_without_terminal_history(session_id, request):
+        result = real_tick_session(session_id, request)
+        if request.currentTime == 120:
+            return result.model_copy(update={"metricsHistory": []})
+        return result
+
+    monkeypatch.setattr(
+        adaptive_runner_module,
+        "tick_session",
+        tick_without_terminal_history,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="^自适应窗口校准完成但缺少指标历史$",
+    ):
+        execute_adaptive_calibration_case(
+            "adaptive-transition-r4-t6",
+            "fixed-24",
+            1,
+        )
+
+    assert {
+        item.sessionId for item in list_sessions()
+    } == session_ids_before
 
 
 def test_adaptive_worker_enforces_safety_and_exact_online_sequence(
