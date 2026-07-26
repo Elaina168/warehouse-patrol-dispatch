@@ -109,7 +109,7 @@ emergency
 
 离线自适应窗口校准中的墙钟耗时只用于同一机器、无并发重型任务时的人工比较。报告中的候选范围是供后续单独审批决策使用的证据，不会自动写回生产配置；在另行批准并验证生产改动前，`60/40ms`、最近 `5` 个样本且至少 `3` 个样本、`2×` 压力规则均保持不变。该校准不证明跨机器阈值可移植性，也不证明完整 MAPF 或任意输入下的全规划时域零冲突。
 
-2026-07-26 默认 60-run 同机复核中，低负载与过渡案例的全部变体均稳定，但压力案例的全部变体均出现相同的任务覆盖、截止时间和失败问题；因此报告没有产生候选 envelope，当前证据不能区分出可批准的生产阈值改动。该结果按 completed-but-unstable 原样保留，生产策略未改。
+2026-07-26 修复前的默认 60-run 同机复核中，低负载与过渡案例的全部变体均稳定，但压力案例的全部变体均出现相同的任务覆盖、截止时间和失败问题；因此报告没有产生候选 envelope。该 completed-but-unstable 结果作为历史诊断原样保留。校准 fixture 修复后的 fresh 60-run 全部 completed 且 stable，并产生了非空同机候选范围；它仍没有自动修改生产策略。
 
 ## 锁定任务
 
@@ -217,6 +217,10 @@ emergency
 - averageLateness
 - failureCount
 - replanTimeMs
+
+`DispatchResult.metrics.totalDistance` 表示当前调度计划中各机器人路径长度之和，会随重规划替换当前计划，不能当作在线会话从开始到结束的累计行驶距离。`MetricSnapshot.travelledDistance` 才表示会话执行到该 tick 时基于实际路径历史累计的移动距离。
+
+离线自适应窗口校准的 run 级 `totalDistance` 只读取终止时最后一条 `MetricSnapshot.travelledDistance`。若会话结束时 `metricsHistory` 为空，runner 必须将该运行记为 `error` 并完成会话清理；不得读取当前计划的 `DispatchResult.metrics.totalDistance`，也不得以 `0` 回退并把运行标为 `completed`。
 
 未分配任务会计入 `failureCount`，并写入事件日志，避免调度失败被静默忽略。
 

@@ -452,10 +452,10 @@ $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 & 'C:\nvm4w\nodejs\npm.cmd' run check
 ```
 
-以下命令必须在同一个 PowerShell 会话中按顺序运行，以便保留 PID baseline 和捕获的精确结果路径。功能 smoke 使用每个“案例 × 变体”一次，共 12 条运行：
+以下压力 smoke 命令必须在同一个 PowerShell 会话中按顺序运行，以便保留 PID baseline 和捕获的精确结果路径。它只运行 `adaptive-pressure-r8-t45` 的四个变体各一次；旧结果目录不得复用为 fresh 证据：
 
 ```powershell
-$smokeWorkerPidsBefore = @(
+$benchmarkWorkerPidsBefore = @(
   Get-CimInstance Win32_Process |
     Where-Object {
       $_.Name -eq 'python.exe' -and
@@ -463,29 +463,111 @@ $smokeWorkerPidsBefore = @(
     } |
     Select-Object -ExpandProperty ProcessId
 )
-$smokeResultPath = (
-  & 'C:\nvm4w\nodejs\npm.cmd' run benchmark:adaptive-replan -- --repetitions 1 --timeout-seconds 30 --output-dir output/adaptive-replan-calibration-smoke |
+$pressureSmokePath = (
+  & 'C:\nvm4w\nodejs\npm.cmd' run benchmark:adaptive-replan -- `
+    --cases adaptive-pressure-r8-t45 `
+    --repetitions 1 `
+    --timeout-seconds 30 `
+    --output-dir output/adaptive-calibration-evidence-fix-smoke |
     Select-Object -Last 1
 ).Trim()
 if ($LASTEXITCODE -ne 0) {
-  throw "自适应窗口校准 smoke 失败，退出码: $LASTEXITCODE"
+  throw "压力校准 smoke 失败，退出码: $LASTEXITCODE"
 }
-if (-not (Test-Path -LiteralPath $smokeResultPath -PathType Container)) {
-  throw "校准 smoke 结果目录不存在: $smokeResultPath"
+if (-not (
+  Test-Path -LiteralPath $pressureSmokePath -PathType Container
+)) {
+  throw "压力校准 smoke 结果目录不存在: $pressureSmokePath"
 }
-$smokeResultPath
+$pressureSmokePath
 
-$newSmokeWorkers = Get-CimInstance Win32_Process |
+$smokeCheck = @'
+import csv
+import json
+import sys
+from pathlib import Path
+
+result_path = Path(sys.argv[1])
+payload = json.loads(
+    (result_path / "results.json").read_text(encoding="utf-8")
+)
+runs = payload["runs"]
+assert payload["schemaVersion"] == 1
+assert len(runs) == 4
+assert len(payload["variantSummaries"]) == 4
+assert {run["variantId"] for run in runs} == {
+    "fixed-4",
+    "fixed-24",
+    "fixed-48",
+    "adaptive-current-24",
+}
+for run in runs:
+    assert run["caseId"] == "adaptive-pressure-r8-t45"
+    assert run["outcome"] == "completed"
+    assert run["correctnessStable"] is True
+    assert run["releasedTaskCount"] == 45
+    assert run["coveredTaskCount"] == 45
+    assert run["completedTaskCount"] == 45
+    assert run["coverageRatePercent"] == 100
+    assert run["actualCompletionRatePercent"] == 100
+    assert run["predictedConflictCount"] == 0
+    assert run["activeConflictCount"] == 0
+    assert run["safetyInterventionCount"] == 0
+    assert run["deadlineMissCount"] == 0
+    assert run["failureCount"] == 0
+    assert run["totalDistance"] > 0
+assert not (result_path / "results.partial.json").exists()
+assert not list(result_path.glob("*.tmp"))
+for file_name in (
+    "runs.csv",
+    "replan-observations.csv",
+    "variant-summaries.csv",
+):
+    assert (result_path / file_name).read_bytes()[:3] == bytes(
+        (239, 187, 191)
+    )
+with (result_path / "runs.csv").open(
+    encoding="utf-8-sig",
+    newline="",
+) as handle:
+    rows = list(csv.DictReader(handle))
+assert len(rows) == 4
+assert all(float(row["totalDistance"]) > 0 for row in rows)
+print(
+    json.dumps(
+        {
+            "runs": len(runs),
+            "stable": sum(
+                run["correctnessStable"] for run in runs
+            ),
+            "completedTasks": [
+                run["completedTaskCount"] for run in runs
+            ],
+            "totalDistances": [
+                run["totalDistance"] for run in runs
+            ],
+        },
+        ensure_ascii=False,
+    )
+)
+'@
+$smokeCheck |
+  .\.venv\Scripts\python.exe - $pressureSmokePath
+if ($LASTEXITCODE -ne 0) {
+  throw "压力校准 smoke artifact 核对失败"
+}
+
+$newBenchmarkWorkers = Get-CimInstance Win32_Process |
   Where-Object {
     $_.Name -eq 'python.exe' -and
     $_.CommandLine -like '*multiprocessing.spawn*' -and
-    $_.ProcessId -notin $smokeWorkerPidsBefore
+    $_.ProcessId -notin $benchmarkWorkerPidsBefore
   }
-if ($newSmokeWorkers) {
-  $newSmokeWorkers |
+if ($newBenchmarkWorkers) {
+  $newBenchmarkWorkers |
     Select-Object ProcessId,CommandLine |
     Format-Table -AutoSize
-  throw "检测到 smoke 校准遗留的基准 spawn worker"
+  throw "检测到压力校准 smoke 遗留的 spawn worker"
 }
 ```
 
@@ -565,6 +647,9 @@ assert len(observation_rows) == sum(
 )
 assert all(run["caseId"] in known_cases for run in runs)
 assert all(run["variantId"] in known_variants for run in runs)
+assert all(run["outcome"] == "completed" for run in runs)
+assert all(run["correctnessStable"] is True for run in runs)
+assert all(run["totalDistance"] > 0 for run in runs)
 assert {
     path.name for path in result_path.iterdir()
 } == expected_final_files
@@ -575,6 +660,24 @@ assert not any(
 assert (result_path / "results.json").read_bytes()[:3] != bytes(
     (239, 187, 191)
 )
+
+pressure_runs = [
+    run
+    for run in runs
+    if run["caseId"] == "adaptive-pressure-r8-t45"
+]
+assert len(pressure_runs) == 20
+for run in pressure_runs:
+    assert run["releasedTaskCount"] == 45
+    assert run["coveredTaskCount"] == 45
+    assert run["completedTaskCount"] == 45
+    assert run["coverageRatePercent"] == 100
+    assert run["actualCompletionRatePercent"] == 100
+    assert run["predictedConflictCount"] == 0
+    assert run["activeConflictCount"] == 0
+    assert run["safetyInterventionCount"] == 0
+    assert run["deadlineMissCount"] == 0
+    assert run["failureCount"] == 0
 
 fixed_24_counts = Counter()
 for run in runs:
@@ -596,6 +699,8 @@ assert (
 assert (payload["candidateEnvelope"] is not None) is (
     expected_envelope_available
 )
+assert payload["candidateEnvelopeAvailable"] is True
+assert payload["candidateEnvelope"] is not None
 
 for file_name in (
     "runs.csv",
@@ -612,6 +717,7 @@ stable_completed_run_count = sum(
     and run["correctnessStable"]
     for run in runs
 )
+assert stable_completed_run_count == 60
 timeout_or_error = [
     {
         "caseId": run["caseId"],
@@ -642,30 +748,25 @@ unstable = [
     if run["outcome"] == "completed"
     and not run["correctnessStable"]
 ]
+assert not timeout_or_error
+assert not unstable
 print(
     json.dumps(
         {
             "runs": len(runs),
+            "stable": stable_completed_run_count,
             "observations": len(observation_rows),
             "summaries": len(summary_rows),
             "outcomes": dict(outcomes),
-            "stableCompletedRunCount": stable_completed_run_count,
-            "timeoutOrErrorRuns": timeout_or_error,
-            "candidateEnvelopeAvailable": (
-                payload["candidateEnvelopeAvailable"]
-            ),
+            "pressureDistanceRange": [
+                min(run["totalDistance"] for run in pressure_runs),
+                max(run["totalDistance"] for run in pressure_runs),
+            ],
             "candidateEnvelope": payload["candidateEnvelope"],
-            "eligibleFixed24ObservationCounts": {
-                case_id: fixed_24_counts[case_id]
-                for case_id in sorted(known_cases)
-            },
-            "unstableCompletedRuns": unstable,
         },
         ensure_ascii=False,
     )
 )
-if timeout_or_error:
-    raise SystemExit(2)
 '@
 $artifactCheck |
   .\.venv\Scripts\python.exe - $calibrationResultPath
@@ -687,44 +788,34 @@ if ($newBenchmarkWorkers) {
 }
 ```
 
-最终目录必须精确包含 `results.json`、`runs.csv`、`replan-observations.csv` 和 `variant-summaries.csv`，且不再包含 `results.partial.json` 或 `*.tmp`。脚本输出中 `replan-observations.csv` 行数必须等于 JSON 中全部 `replanCount` 之和；这些观测只能来自真实 `run_dispatch`，缓存响应和被动 tick 不应产生记录。
+最终目录必须精确包含 `results.json`、`runs.csv`、`replan-observations.csv` 和 `variant-summaries.csv`，且不再包含 `results.partial.json` 或 `*.tmp`。脚本还必须确认 60 条运行全部 completed+stable、所有 `totalDistance` 为正、20 条压力运行均完成 45/45、candidate envelope 非空。`replan-observations.csv` 行数必须等于 JSON 中全部 `replanCount` 之和；这些观测只能来自真实 `run_dispatch`，缓存响应和被动 tick 不应产生记录。
 
 `outcome = "timeout"` 或 `"error"` 时，按原始 `caseId`、`variantId`、`runIndex`、错误类型和错误文本报告，停止正式验收排查，不能抬高超时或隐去记录。`outcome = "completed"` 但 `correctnessStable = false` 时仍继续完成批次，并逐条记录 `caseId`、`variantId`、`runIndex`、`predictedConflictCount`、`activeConflictCount`、`deadlineMissCount`、`failureCount`、`safetyInterventionCount` 和 `actualCompletionRatePercent`；不能删除不稳定运行或弱化正确性条件。墙钟和候选范围只作同机人工证据，不是自动推荐。
 
-2026-07-26 的默认复核实际得到 60 completed、40 stable、20 completed-but-unstable、0 timeout、0 error、1,310 条真实重规划观测和 12 条汇总；三份 CSV 编码、JSON/CSV 行数、partial/tmp 清理和 worker 清理均通过。20 条不稳定记录精确来自 `adaptive-pressure-r8-t45` 的四个变体各 runIndex 1–5，均为预测/活动冲突 `0/0`、超期 `1`、失败 `2`、安全介入 `0`、实际完成率 `95.6%`。该案例没有 stable completed `fixed-24` 观测，因此候选 envelope 为不可用和 `null`；完整逐条证据与人工结论见 `docs/experiments.md` 的“2026-07-26 默认 60-run 人工复核”。
+2026-07-26 修复前的默认复核实际得到 60 completed、40 stable、20 completed-but-unstable、0 timeout、0 error、1,310 条真实重规划观测和 12 条汇总；三份 CSV 编码、JSON/CSV 行数、partial/tmp 清理和 worker 清理均通过。20 条不稳定记录精确来自 `adaptive-pressure-r8-t45` 的四个变体各 runIndex 1–5，均为预测/活动冲突 `0/0`、超期 `1`、失败 `2`、安全介入 `0`、实际完成率 `95.6%`。该案例没有 stable completed `fixed-24` 观测，因此候选 envelope 为不可用和 `null`；这组结果保留为修复前历史诊断。
+
+修复后的 fresh 默认结果位于 `output/adaptive-replan-calibration/20260726T142229Z`：60 completed、60 stable、1,330 条真实重规划观测、12 条汇总，压力运行全部 45/45，累计距离范围 `[671, 671]`，candidate envelope 非空。完整对象与人工结论见 `docs/experiments.md` 的“2026-07-26 修复后默认 60-run 人工复核”；没有应用任何生产阈值。
 
 完成 artifact 与 worker 检查后运行 Git hygiene：
 
 ```powershell
 git diff --check
 git status --short
-git diff --name-only 14c52d2..HEAD
+git diff --name-only d3b5c61
 ```
 
-`git diff --name-only 14c52d2..HEAD` 的 expected tracked scope 为：
+`git diff --name-only d3b5c61` 的 expected tracked scope 为：
 
 ```text
 AGENTS.md
-backend/app/replan_window.py
-backend/app/sessions.py
-backend/benchmarks/adaptive_replan_calibration.py
-backend/benchmarks/adaptive_reporting.py
-backend/benchmarks/adaptive_results.py
 backend/benchmarks/adaptive_runner.py
 backend/benchmarks/adaptive_scenarios.py
-backend/benchmarks/adaptive_variants.py
-backend/benchmarks/process_isolation.py
-backend/benchmarks/runner.py
 backend/tests/test_adaptive_replan_calibration.py
-backend/tests/test_algorithm_benchmark.py
-backend/tests/test_benchmark_process_isolation.py
-backend/tests/test_replan_window.py
-backend/tests/test_sessions.py
 docs/algorithm.md
 docs/experiments.md
-docs/superpowers/plans/2026-07-26-adaptive-replan-calibration.md
+docs/superpowers/plans/2026-07-26-adaptive-calibration-evidence-fix.md
+docs/superpowers/specs/2026-07-26-adaptive-calibration-evidence-fix-design.md
 docs/testing-guide.md
-package.json
 ```
 
 生成的 `output/`、`.superpowers/`、依赖 junction、ACL 目录和缓存必须保持未跟踪、未暂存、未提交。

@@ -310,7 +310,7 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 
 候选范围只是同机证据，供后续单独批准的生产策略决策人工复核，不是自动推荐，也不会修改当前 `60/40ms`、最近 5 个样本且至少 3 个样本、`2×` 压力规则。`timeout`、`error` 和 completed-but-unstable 运行必须按原始记录报告；不得提高 30 秒超时、删除不稳定记录或弱化正确性条件来美化结论。该流程不证明跨机器阈值可移植性、完整 MAPF 能力或任意输入下的全规划时域零冲突。
 
-### 2026-07-26 默认 60-run 人工复核
+### 2026-07-26 修复前默认 60-run 人工复核
 
 本次同机、无并发重型命令的结果目录为 `output/adaptive-replan-calibration/20260726T103029Z`。该目录是未跟踪的本地证据，不进入 Git。交叉核对结果：
 
@@ -345,7 +345,21 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 | `adaptive-pressure-r8-t45` | `adaptive-current-24` | 4 | 0 | 0 | 1 | 2 | 0 | 95.6 |
 | `adaptive-pressure-r8-t45` | `adaptive-current-24` | 5 | 0 | 0 | 1 | 2 | 0 | 95.6 |
 
-人工结论：低负载和过渡案例共 40 条运行均稳定，且自适应变体确实记录到扩大、保持和收缩窗口；压力案例中四个变体的五次重复均以相同正确性指标不稳定，说明这组证据不能把问题归因于某一个窗口，也不能据此推荐新的慢状态或压力阈值。当前应保留生产 `60/40ms`、最近 5 个样本且至少 3 个样本及 `2×` 压力规则，并在单独工作中先分析压力案例的两个失败任务和一次超期，再决定是否需要新一轮校准或算法调整。
+修复前人工结论：低负载和过渡案例共 40 条运行均稳定，且自适应变体确实记录到扩大、保持和收缩窗口；压力案例中四个变体的五次重复均以相同正确性指标不稳定，说明这组历史证据不能把问题归因于某一个窗口，也不能据此推荐新的慢状态或压力阈值。
+
+### 2026-07-26 修复后默认 60-run 人工复核
+
+压力案例的修复只发生在校准用的 deep copy：所有机器人使用 `battery=150`、`batteryCapacity=150`，所有非空 base-task deadline 统一为 T=120；源 `density-r8-t43` 和其他案例未被改写。校准 run 级 `totalDistance` 改为终止时 `MetricSnapshot.travelledDistance`，缺少指标历史时直接记录错误，不再静默回退到零。
+
+fresh 同机、无并发重型命令的结果目录为 `output/adaptive-replan-calibration/20260726T142229Z`。该目录是未跟踪的本地证据，不进入 Git。Step 7 打印对象精确为：
+
+```json
+{"runs":60,"stable":60,"observations":1330,"summaries":12,"outcomes":{"completed":60},"pressureDistanceRange":[671,671],"candidateEnvelope":{"slowExitThresholdMs":{"min":13.78,"max":40.43},"slowEnterThresholdMs":{"min":40.43,"max":93.29},"taskPressureMultiplier":{"min":1.75,"max":3.38}}}
+```
+
+交叉核对确认 60 条 run 全部 `completed` 且 `correctnessStable = true`，1,330 条 `replan-observations.csv` 记录等于全部 `replanCount` 之和，`variant-summaries.csv` 为 12 行。20 条压力 run 均完成 45/45 已释放任务，预测/活动冲突、安全介入、超期和失败均为 0，累计距离范围为 `[671, 671]`。三份 CSV 的 UTF-8 BOM、`results.partial.json`/`*.tmp` 清理及校准后 worker 残留检查均通过。
+
+本次 candidate envelope 是同机人工复核证据，不是自动推荐；没有应用任何阈值。生产继续使用 `60/40ms`、最近 5 个样本且至少 3 个样本和 `2×` 压力规则。
 
 ## 后续实验方向
 
