@@ -63,7 +63,7 @@ def _cleanup_isolated_resources(
         try:
             process.join(_PROCESS_STOP_TIMEOUT_SECONDS)
         except Exception:
-            record_resource_error("等待子进程停止失败")
+            record_resource_error("等待子进程停止失败", fatal=True)
 
     stopped = process is None
     if process is not None:
