@@ -1,7 +1,9 @@
 import csv
 import json
+import re
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -881,6 +883,26 @@ def test_candidate_envelope_uses_only_stable_fixed_24_observations() -> None:
     runs.append(
         _completed_run(
             case_id=adaptive_calibration_cases()[0].case_id,
+            variant_id="fixed-4",
+            run_index=1,
+            replan_times=[777, 777, 777],
+            pressure_ratios=[77, 77, 77],
+            correctness_stable=True,
+        )
+    )
+    runs.append(
+        _completed_run(
+            case_id=adaptive_calibration_cases()[0].case_id,
+            variant_id="fixed-48",
+            run_index=1,
+            replan_times=[666, 666, 666],
+            pressure_ratios=[66, 66, 66],
+            correctness_stable=True,
+        )
+    )
+    runs.append(
+        _completed_run(
+            case_id=adaptive_calibration_cases()[0].case_id,
             variant_id="adaptive-current-24",
             run_index=1,
             replan_times=[999, 999, 999],
@@ -898,17 +920,59 @@ def test_candidate_envelope_uses_only_stable_fixed_24_observations() -> None:
             correctness_stable=False,
         )
     )
+    case = adaptive_calibration_cases()[0]
+    variant = next(
+        item
+        for item in adaptive_calibration_variants()
+        if item.variant_id == "fixed-24"
+    )
+    timeout_observations = _completed_run(
+        case.case_id,
+        variant.variant_id,
+        3,
+        replan_times=[555, 555, 555],
+        pressure_ratios=[55, 55, 55],
+    ).replan_observations
+    error_observations = _completed_run(
+        case.case_id,
+        variant.variant_id,
+        4,
+        replan_times=[444, 444, 444],
+        pressure_ratios=[44, 44, 44],
+    ).replan_observations
+    runs.append(
+        replace(
+            AdaptiveCalibrationRun.timeout(case, variant, 3, 1),
+            replan_observations=timeout_observations,
+        )
+    )
+    runs.append(
+        replace(
+            AdaptiveCalibrationRun.error(
+                case,
+                variant,
+                4,
+                "RuntimeError",
+                "failed",
+                1,
+            ),
+            replan_observations=error_observations,
+        )
+    )
     report = AdaptiveCalibrationReport.create({}, runs)
     assert report.candidate_envelope_available is True
     assert report.observation_distribution.latency_ms.sample_count == 9
+    assert report.observation_distribution.latency_ms.p50 == 30
+    assert report.observation_distribution.latency_ms.p75 == 60
     assert report.observation_distribution.latency_ms.p95 == 90
+    pressure = report.observation_distribution.task_pressure_ratio
+    assert (pressure.p50, pressure.p75, pressure.p95) == (1.5, 3, 4.5)
     assert report.candidate_envelope is not None
-    assert report.candidate_envelope.slow_exit_threshold_ms.minimum == (
-        report.observation_distribution.latency_ms.p50
-    )
-    assert report.candidate_envelope.slow_enter_threshold_ms.maximum == (
-        report.observation_distribution.latency_ms.p95
-    )
+    assert report.candidate_envelope.to_record() == {
+        "slowExitThresholdMs": {"min": 30, "max": 60},
+        "slowEnterThresholdMs": {"min": 60, "max": 90},
+        "taskPressureMultiplier": {"min": 1.5, "max": 3},
+    }
 
 
 def test_candidate_envelope_is_unavailable_when_one_case_has_fewer_than_three_samples() -> None:
@@ -1006,9 +1070,33 @@ def test_adaptive_partial_is_replaced_and_removed_after_final(tmp_path) -> None:
         AdaptiveCalibrationReport.create({}, [first, second]),
     )
     assert partial_path.exists() is False
+    assert not [
+        path
+        for path in tmp_path.iterdir()
+        if path.suffix in {".tmp", ".backup"}
+    ]
+
+    write_partial_report(
+        tmp_path,
+        AdaptiveCalibrationReport.create({}, [first]),
+    )
+    write_final_report(
+        tmp_path,
+        AdaptiveCalibrationReport.create({}, [first]),
+    )
+    payload = json.loads(
+        (tmp_path / "results.json").read_text(encoding="utf-8")
+    )
+    assert [item["runIndex"] for item in payload["runs"]] == [1]
+    assert partial_path.exists() is False
+    assert not [
+        path
+        for path in tmp_path.iterdir()
+        if path.suffix in {".tmp", ".backup"}
+    ]
 
 
-def test_adaptive_final_write_failure_keeps_partial(
+def test_adaptive_final_staging_failure_creates_no_final_files(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -1019,18 +1107,140 @@ def test_adaptive_final_write_failure_keeps_partial(
     )
     report = AdaptiveCalibrationReport.create({}, [run])
     write_partial_report(tmp_path, report)
+    partial_path = tmp_path / "results.partial.json"
+    partial_content = partial_path.read_bytes()
 
-    def fail_csv(*args, **kwargs):
+    def fail_csv(*_args, **_kwargs):
         raise OSError("csv failed")
 
     monkeypatch.setattr(
-        adaptive_reporting_module,
-        "_write_csv",
+        adaptive_reporting_module.csv,
+        "DictWriter",
+        fail_csv,
+    )
+    expected_target = (tmp_path / "runs.csv").resolve()
+    with pytest.raises(
+        OSError,
+        match=re.escape(str(expected_target)),
+    ):
+        write_final_report(tmp_path, report)
+    assert partial_path.read_bytes() == partial_content
+    assert not any(
+        (tmp_path / file_name).exists()
+        for file_name in (
+            "results.json",
+            "runs.csv",
+            "replan-observations.csv",
+            "variant-summaries.csv",
+        )
+    )
+    assert not [
+        path
+        for path in tmp_path.iterdir()
+        if path.suffix in {".tmp", ".backup"}
+    ]
+
+
+def test_adaptive_final_staging_failure_preserves_existing_bundle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    run = _completed_run(
+        "adaptive-low-load-r4-t17",
+        "fixed-24",
+        1,
+    )
+    report = AdaptiveCalibrationReport.create({}, [run])
+    write_partial_report(tmp_path, report)
+    partial_path = tmp_path / "results.partial.json"
+    partial_content = partial_path.read_bytes()
+    original_files = {
+        "results.json": b"old results",
+        "runs.csv": b"old runs",
+        "replan-observations.csv": b"old observations",
+        "variant-summaries.csv": b"old summaries",
+    }
+    for file_name, content in original_files.items():
+        (tmp_path / file_name).write_bytes(content)
+
+    def fail_csv(*_args, **_kwargs):
+        raise OSError("csv failed")
+
+    monkeypatch.setattr(
+        adaptive_reporting_module.csv,
+        "DictWriter",
         fail_csv,
     )
     with pytest.raises(OSError, match="csv failed"):
         write_final_report(tmp_path, report)
-    assert (tmp_path / "results.partial.json").exists()
+
+    assert partial_path.read_bytes() == partial_content
+    assert {
+        file_name: (tmp_path / file_name).read_bytes()
+        for file_name in original_files
+    } == original_files
+    assert not [
+        path
+        for path in tmp_path.iterdir()
+        if path.suffix in {".tmp", ".backup"}
+    ]
+
+
+def test_adaptive_final_publish_failure_rolls_back_existing_bundle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    run = _completed_run(
+        "adaptive-low-load-r4-t17",
+        "fixed-24",
+        1,
+    )
+    report = AdaptiveCalibrationReport.create({}, [run])
+    write_partial_report(tmp_path, report)
+    partial_path = tmp_path / "results.partial.json"
+    partial_content = partial_path.read_bytes()
+    original_files = {
+        "results.json": b"old results",
+        "runs.csv": b"old runs",
+        "replan-observations.csv": b"old observations",
+        "variant-summaries.csv": b"old summaries",
+    }
+    for file_name, content in original_files.items():
+        (tmp_path / file_name).write_bytes(content)
+
+    real_replace = Path.replace
+    failed = False
+
+    def fail_second_csv_publish(source, target):
+        nonlocal failed
+        target_path = Path(target)
+        if (
+            not failed
+            and source.suffix == ".tmp"
+            and target_path.name == "replan-observations.csv"
+        ):
+            failed = True
+            raise OSError("replace failed")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_second_csv_publish)
+    expected_target = (tmp_path / "replan-observations.csv").resolve()
+    with pytest.raises(OSError) as exc_info:
+        write_final_report(tmp_path, report)
+
+    assert failed is True
+    assert "replace failed" in str(exc_info.value)
+    assert str(expected_target) in str(exc_info.value)
+    assert partial_path.read_bytes() == partial_content
+    assert {
+        file_name: (tmp_path / file_name).read_bytes()
+        for file_name in original_files
+    } == original_files
+    assert not [
+        path
+        for path in tmp_path.iterdir()
+        if path.suffix in {".tmp", ".backup"}
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1041,9 +1251,12 @@ def test_adaptive_final_write_failure_keeps_partial(
         ["--variants", ","],
         ["--variants", "unknown"],
         ["--repetitions", "0"],
+        ["--repetitions", "-1"],
         ["--timeout-seconds", "0"],
+        ["--timeout-seconds", "-1"],
         ["--timeout-seconds", "nan"],
         ["--timeout-seconds", "inf"],
+        ["--timeout-seconds", "-inf"],
     ],
 )
 def test_adaptive_cli_rejects_invalid_config_before_output(tmp_path, args) -> None:
@@ -1159,3 +1372,96 @@ def test_adaptive_cli_success_writes_exact_config(
             "taskPressureMultiplier": 2,
         },
     }
+
+
+def test_adaptive_cli_writes_final_report_for_ordinary_error_run(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    result_path = (tmp_path / "20260726T000000Z").resolve()
+    result_path.mkdir()
+    case = adaptive_calibration_cases()[0]
+    variant = adaptive_calibration_variants()[0]
+    error_run = AdaptiveCalibrationRun.error(
+        case,
+        variant,
+        1,
+        "RuntimeError",
+        "ordinary failed",
+        12,
+    )
+
+    def fake_run(
+        cases,
+        variants,
+        repetitions,
+        timeout_seconds,
+        on_result=None,
+    ):
+        runs = [error_run]
+        if on_result is not None:
+            on_result(list(runs))
+        return runs
+
+    monkeypatch.setattr(
+        cli_module,
+        "_create_result_directory",
+        lambda output_dir: result_path,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_adaptive_calibration_cases",
+        fake_run,
+    )
+
+    assert main(["--output-dir", str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == str(result_path)
+    assert captured.err == ""
+    payload = json.loads(
+        (result_path / "results.json").read_text(encoding="utf-8")
+    )
+    assert payload["runs"][0]["outcome"] == "error"
+    assert payload["runs"][0]["errorType"] == "RuntimeError"
+    assert payload["runs"][0]["errorMessage"] == "ordinary failed"
+    assert (result_path / "results.partial.json").exists() is False
+
+
+def test_adaptive_cli_infrastructure_failure_writes_no_false_final(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    result_path = (tmp_path / "20260726T000000Z").resolve()
+    result_path.mkdir()
+
+    def fail(*_args, **_kwargs):
+        raise BenchmarkInfrastructureError("worker cleanup failed")
+
+    monkeypatch.setattr(
+        cli_module,
+        "_create_result_directory",
+        lambda output_dir: result_path,
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_adaptive_calibration_cases",
+        fail,
+    )
+
+    assert main(["--output-dir", str(tmp_path)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip() == (
+        "自适应窗口校准失败: worker cleanup failed"
+    )
+    assert not any(
+        (result_path / file_name).exists()
+        for file_name in (
+            "results.json",
+            "runs.csv",
+            "replan-observations.csv",
+            "variant-summaries.csv",
+        )
+    )
