@@ -279,6 +279,74 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 
 在线、超时和异常记录不伪造规划工作量；未评价时 `planningDiagnosticsEvaluated = false`，其余字段为 `null`。扩展状态数是确定性工作量指标，墙钟中位数和 P95 仍只用于同机人工比较。
 
+## 离线自适应窗口校准
+
+自适应窗口校准是独立命令行取证流程，不新增实验 API，也不允许 HTTP 调用方传入内部 `AdaptiveReplanPolicy`。在项目根目录运行默认完整校准：
+
+```powershell
+& 'C:\nvm4w\nodejs\npm.cmd' run benchmark:adaptive-replan
+```
+
+默认参数为 `--repetitions 5`、`--timeout-seconds 30` 和 `--output-dir output/adaptive-replan-calibration`。案例、变体和默认运行规模精确为：
+
+- 三个案例：`adaptive-low-load-r4-t17`、`adaptive-pressure-r8-t45`、`adaptive-transition-r4-t6`。
+- 四个变体：`fixed-4`、`fixed-24`、`fixed-48`、`adaptive-current-24`。
+- 每个“案例 × 变体”重复 5 次，因此默认共 `3 × 4 × 5 = 60` 条运行记录和 12 条变体汇总。
+
+命令在输出根目录下创建 UTC 时间戳子目录。成功完成后保留四个最终文件：
+
+1. `results.json`
+2. `runs.csv`
+3. `replan-observations.csv`
+4. `variant-summaries.csv`
+
+每条子进程结果完成时会原子更新 `results.partial.json`；四个最终文件全部成功写入后删除 partial 文件。最终 `results.json.schemaVersion = 1`，JSON 使用 UTF-8 无 BOM，三份 CSV 使用 UTF-8 BOM。`replan-observations.csv` 只展开真实 `run_dispatch` 产生的观测，其行数应等于 JSON 中所有运行的 `replanCount` 之和。
+
+候选范围只使用 `variantId = "fixed-24"`、`outcome = "completed"` 且 `correctnessStable = true` 的观测。三个默认案例各自都至少贡献 3 条合格观测时，`candidateEnvelopeAvailable` 才为 `true` 且 `candidateEnvelope` 才非空；否则必须报告不可用和 `null`，不能用其他变体或不稳定运行补足。范围按合格观测的 nearest-rank 分位数构造：
+
+- 慢状态退出候选：重规划耗时 P50 到 P75。
+- 慢状态进入候选：重规划耗时 P75 到 P95。
+- 任务压力倍数候选：任务压力比 P50 到 P75。
+
+候选范围只是同机证据，供后续单独批准的生产策略决策人工复核，不是自动推荐，也不会修改当前 `60/40ms`、最近 5 个样本且至少 3 个样本、`2×` 压力规则。`timeout`、`error` 和 completed-but-unstable 运行必须按原始记录报告；不得提高 30 秒超时、删除不稳定记录或弱化正确性条件来美化结论。该流程不证明跨机器阈值可移植性、完整 MAPF 能力或任意输入下的全规划时域零冲突。
+
+### 2026-07-26 默认 60-run 人工复核
+
+本次同机、无并发重型命令的结果目录为 `output/adaptive-replan-calibration/20260726T103029Z`。该目录是未跟踪的本地证据，不进入 Git。交叉核对结果：
+
+- `60` 条 run 全部为 `completed`，其中 `40` 条 stable、`20` 条 completed-but-unstable，`timeout = 0`、`error = 0`。
+- `runs.csv` 为 60 行，`replan-observations.csv` 为 1,310 行并等于全部 `replanCount` 之和，`variant-summaries.csv` 为 12 行。
+- 四个 final 文件存在，`results.partial.json` 与 `*.tmp` 不存在；JSON 为 UTF-8 无 BOM，三份 CSV 为 UTF-8 BOM；校准前后均无新增 `multiprocessing.spawn` worker。
+- stable completed `fixed-24` 合格观测数为：`adaptive-low-load-r4-t17 = 100`、`adaptive-pressure-r8-t45 = 0`、`adaptive-transition-r4-t6 = 30`。因此 `candidateEnvelopeAvailable = false`、`candidateEnvelope = null`，没有可报告的候选 envelope。
+- 仅对现有合格观测计算的分布为：重规划耗时 P50/P75/P95 = `1.23/2.25/4.07ms`，任务压力比 P50/P75/P95 = `0.25/1.0/2.75`，样本数均为 130。由于压力案例没有合格 `fixed-24` 观测，这些分位数不能替代不可用的 candidate envelope。
+
+全部 20 条 completed-but-unstable 记录如下；字段值来自 `results.json`，没有删除或合并运行：
+
+| `caseId` | `variantId` | `runIndex` | `predictedConflictCount` | `activeConflictCount` | `deadlineMissCount` | `failureCount` | `safetyInterventionCount` | `actualCompletionRatePercent` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `adaptive-pressure-r8-t45` | `fixed-4` | 1 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-4` | 2 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-4` | 3 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-4` | 4 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-4` | 5 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-24` | 1 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-24` | 2 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-24` | 3 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-24` | 4 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-24` | 5 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-48` | 1 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-48` | 2 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-48` | 3 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-48` | 4 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `fixed-48` | 5 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `adaptive-current-24` | 1 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `adaptive-current-24` | 2 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `adaptive-current-24` | 3 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `adaptive-current-24` | 4 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+| `adaptive-pressure-r8-t45` | `adaptive-current-24` | 5 | 0 | 0 | 1 | 2 | 0 | 95.6 |
+
+人工结论：低负载和过渡案例共 40 条运行均稳定，且自适应变体确实记录到扩大、保持和收缩窗口；压力案例中四个变体的五次重复均以相同正确性指标不稳定，说明这组证据不能把问题归因于某一个窗口，也不能据此推荐新的慢状态或压力阈值。当前应保留生产 `60/40ms`、最近 5 个样本且至少 3 个样本及 `2×` 压力规则，并在单独工作中先分析压力案例的两个失败任务和一次超期，再决定是否需要新一轮校准或算法调整。
+
 ## 后续实验方向
 
 后续可以继续增加：

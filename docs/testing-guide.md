@@ -439,6 +439,47 @@ http://127.0.0.1:8011/health
 4. 以 UTF-8 打开两份 CSV，确认表头和记录可读；不要只凭自动汇总生成报告结论，也不要把预测零冲突写成完整 MAPF 保证。
 5. 运行 `git status --short`，确认 `output/` 基准证据未跟踪且未暂存，不提交结果目录。
 
+### 6.2 离线自适应窗口校准人工复核
+
+该流程比较固定 `4T`、`24T`、`48T` 与当前自适应 `24T`，只记录真实在线重规划。它用于同机候选范围取证，不自动修改生产 `60/40ms`、最近 5 个样本且至少 3 个样本或 `2×` 压力规则，也不证明完整 MAPF 或跨机器阈值。
+
+先运行聚焦回归和完整项目检查，二者都结束后再运行校准；不要让 `npm run check`、其他基准、浏览器压力流程或其他重型命令与校准并发：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest backend\tests\test_replan_window.py backend\tests\test_sessions.py backend\tests\test_benchmark_process_isolation.py backend\tests\test_algorithm_benchmark.py backend\tests\test_adaptive_replan_calibration.py -q
+chcp 65001
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+& 'C:\nvm4w\nodejs\npm.cmd' run check
+```
+
+功能 smoke 使用每个“案例 × 变体”一次，共 12 条运行：
+
+```powershell
+& 'C:\nvm4w\nodejs\npm.cmd' run benchmark:adaptive-replan -- --repetitions 1 --timeout-seconds 30 --output-dir output/adaptive-replan-calibration-smoke
+```
+
+默认完整校准使用每组五次，共 60 条运行；正式取证不得提高 30 秒超时：
+
+```powershell
+& 'C:\nvm4w\nodejs\npm.cmd' run benchmark:adaptive-replan -- --repetitions 5 --timeout-seconds 30 --output-dir output/adaptive-replan-calibration
+```
+
+运行前记录命令行包含 `multiprocessing.spawn` 的 `python.exe` 进程 ID；运行后再次查询，并确认没有本次新增的残留 worker。命令最后一行是精确结果目录，后续检查必须使用这一路径，不要按时间戳猜测。
+
+最终目录应包含 `results.json`、`runs.csv`、`replan-observations.csv` 和 `variant-summaries.csv`，且不再包含 `results.partial.json`。人工交叉检查：
+
+1. `results.json.schemaVersion` 精确为 `1`。
+2. 完整校准的 JSON `runs` 与 `runs.csv` 都为 60 条，`variant-summaries.csv` 为 12 条。
+3. `replan-observations.csv` 行数等于 JSON 中全部 `replanCount` 之和；这些观测只能来自真实 `run_dispatch`，缓存响应和被动 tick 不应产生记录。
+4. 所有 `caseId` 只属于 `adaptive-low-load-r4-t17`、`adaptive-pressure-r8-t45`、`adaptive-transition-r4-t6`，所有 `variantId` 只属于 `fixed-4`、`fixed-24`、`fixed-48`、`adaptive-current-24`。
+5. `results.json` 能以 UTF-8 无 BOM 读取；三份 CSV 的前三个字节必须是 UTF-8 BOM `EF BB BF`，并能以 `utf-8-sig` 正常读取表头和数据。
+6. 只有 stable completed `fixed-24` 观测可进入候选范围；三个默认案例各至少有 3 条合格观测时，`candidateEnvelopeAvailable` 才应为 `true` 且 `candidateEnvelope` 非空，否则两者必须分别为 `false` 和 `null`。
+7. 运行后无新增 `multiprocessing.spawn` worker，结果目录无 `*.tmp`，`output/` 保持未跟踪且不暂存。
+
+`outcome = "timeout"` 或 `"error"` 时，按原始 `caseId`、`variantId`、`runIndex`、错误类型和错误文本报告，停止正式验收排查，不能抬高超时或隐去记录。`outcome = "completed"` 但 `correctnessStable = false` 时仍继续完成批次，并逐条记录 `caseId`、`variantId`、`runIndex`、`predictedConflictCount`、`activeConflictCount`、`deadlineMissCount`、`failureCount`、`safetyInterventionCount` 和 `actualCompletionRatePercent`；不能删除不稳定运行或弱化正确性条件。墙钟和候选范围只作同机人工证据，不是自动推荐。
+
+2026-07-26 的默认复核实际得到 60 completed、40 stable、20 completed-but-unstable、0 timeout、0 error、1,310 条真实重规划观测和 12 条汇总；三份 CSV 编码、JSON/CSV 行数、partial/tmp 清理和 worker 清理均通过。20 条不稳定记录精确来自 `adaptive-pressure-r8-t45` 的四个变体各 runIndex 1–5，均为预测/活动冲突 `0/0`、超期 `1`、失败 `2`、安全介入 `0`、实际完成率 `95.6%`。该案例没有 stable completed `fixed-24` 观测，因此候选 envelope 为不可用和 `null`；完整逐条证据与人工结论见 `docs/experiments.md` 的“2026-07-26 默认 60-run 人工复核”。
+
 ## 7. 指标解释
 
 常用指标：
