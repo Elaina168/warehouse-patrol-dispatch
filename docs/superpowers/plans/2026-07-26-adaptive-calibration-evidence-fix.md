@@ -4,7 +4,7 @@
 
 **Goal:** Remove battery/deadline confounders from the adaptive pressure calibration case and report authoritative cumulative online travel distance without changing production dispatch behavior or policy thresholds.
 
-**Architecture:** Normalize only the deep-copied `adaptive-pressure-r8-t45` calibration input while leaving `density-r8-t43` unchanged. Read cumulative distance and active conflicts from the terminal `MetricSnapshot`, fail completed runs that have no metric history, then regenerate and document smoke and 60-run evidence using the existing schema-v1 reporter.
+**Architecture:** Normalize only the deep-copied `adaptive-pressure-r8-t45` calibration input while leaving `density-r8-t43` unchanged. Give every non-null base task the common calibration deadline T=120 so the legal scheduling horizon matches the fixed observation endpoint. Read cumulative distance and active conflicts from the terminal `MetricSnapshot`, fail completed runs that have no metric history, then regenerate and document smoke and 60-run evidence using the existing schema-v1 reporter.
 
 **Tech Stack:** Python 3.13, FastAPI/Pydantic v2 models, pytest, online session APIs, Windows `multiprocessing` spawn/Pipe isolation, JSON/CSV reports, Node/npm command entry.
 
@@ -16,6 +16,7 @@
 - Do not change HTTP routes, Pydantic API fields, frontend types, OpenAPI models, beam score, candidate order, A*, task locks, preemption, charging, recovery, or execution-safety rules.
 - Keep the report schema at version 1. Do not add or rename case IDs, variant IDs, JSON fields, or CSV fields.
 - Keep `correctnessStable` unchanged: full coverage, zero active conflicts, zero deadline misses, and zero failures.
+- Keep all three calibration case `tick_target` values at 120. In `adaptive-pressure-r8-t45`, every non-null base-task deadline must equal 120; dynamic and runtime task deadlines remain unchanged.
 - Calibration sessions must keep `enforce_execution_safety=True`.
 - Do not add a frontend panel or experiment API.
 - Do not add real-wall-clock assertions to pytest.
@@ -35,7 +36,7 @@
 - `backend/benchmarks/adaptive_runner.py`
   - Selects the terminal metric snapshot and maps cumulative online distance into `AdaptiveCalibrationRun`.
 - `backend/tests/test_adaptive_replan_calibration.py`
-  - Protects exact scenario transformation, source immutability, authoritative distance selection, missing-history failure, and real online distance.
+  - Protects exact scenario transformation, source immutability, full pressure completion by T=120, authoritative distance selection, missing-history failure, and real online distance.
 - `AGENTS.md`
   - Records the repaired evidence boundary and next decision gate.
 - `docs/algorithm.md`
@@ -480,7 +481,215 @@ git commit -m "fix: report cumulative adaptive distance"
 
 ---
 
-### Task 3: Verify and Publish Repaired Calibration Evidence
+## Approved Amendment After the Initial Pressure Smoke
+
+The first four-variant smoke after Tasks 1 and 2 completed only 44/45 tasks in every variant. The sole unfinished task was `D33`: its source deadline remained T=122, its legal completion time was T=121, and at T=120 R8 was still one cell short of the dropoff. All failure, deadline, conflict, and safety counters were zero, so this was an observation-horizon mismatch rather than a planner failure or battery shortage.
+
+User-approved ruling:
+
+- keep every calibration case `tick_target = 120`;
+- do not special-case `D33`;
+- do not raise battery beyond 150;
+- replace the pressure-case deadline floor with one common calibration deadline T=120 for every non-null base task;
+- preserve dynamic tasks and the T=20/T=40 runtime tasks exactly;
+- add a real online fixed-24 regression proving 45/45 completion by T=120 before rerunning evidence.
+
+This amendment supersedes only Task 1's `max(originalDeadline, 120)` rule and the `PRESSURE_CALIBRATION_DEADLINE_FLOOR` name. All other completed Task 1/2 behavior and review conclusions remain binding.
+
+---
+
+### Task 3: Align Pressure Deadlines with the Observation Horizon
+
+**Files:**
+- Modify: `backend/benchmarks/adaptive_scenarios.py`
+- Test: `backend/tests/test_adaptive_replan_calibration.py`
+
+**Interfaces:**
+- Consumes:
+  - approved pressure battery normalization from Task 1
+  - cumulative-distance mapping from Task 2
+  - `execute_adaptive_calibration_case(case_id, variant_id, run_index)`
+- Produces:
+  - `PRESSURE_CALIBRATION_DEADLINE = 120`
+  - every non-null pressure base-task deadline equal to 120
+  - real fixed-24 pressure completion evidence at the existing T=120 target
+
+- [ ] **Step 1: Change the exact transformation expectation before production code**
+
+In `test_pressure_case_normalizes_resources_without_changing_workload`, replace the expected base-task deadline update:
+
+```python
+                "deadline": max(
+                    task.deadline,
+                    PRESSURE_CALIBRATION_DEADLINE_FLOOR,
+                )
+                if task.deadline is not None
+                else None
+```
+
+with:
+
+```python
+                "deadline": (
+                    PRESSURE_CALIBRATION_DEADLINE_FLOOR
+                    if task.deadline is not None
+                    else None
+                )
+```
+
+Replace the floor assertion:
+
+```python
+    assert all(
+        task.deadline is not None
+        and task.deadline
+        >= PRESSURE_CALIBRATION_DEADLINE_FLOOR
+        for task in scenario.tasks
+    )
+```
+
+with:
+
+```python
+    assert all(
+        task.deadline == PRESSURE_CALIBRATION_DEADLINE_FLOOR
+        for task in scenario.tasks
+    )
+```
+
+- [ ] **Step 2: Add a real pressure-horizon completion regression**
+
+Add after `test_adaptive_calibration_executes_real_online_flow`:
+
+```python
+def test_pressure_calibration_completes_by_tick_target() -> None:
+    run = execute_adaptive_calibration_case(
+        "adaptive-pressure-r8-t45",
+        "fixed-24",
+        1,
+    )
+
+    assert run.outcome == "completed"
+    assert run.tick_target == 120
+    assert run.released_task_count == 45
+    assert run.covered_task_count == 45
+    assert run.completed_task_count == 45
+    assert run.coverage_rate_percent == 100
+    assert run.actual_completion_rate_percent == 100
+    assert run.correctness_stable is True
+    assert run.predicted_conflict_count == 0
+    assert run.active_conflict_count == 0
+    assert run.safety_intervention_count == 0
+    assert run.deadline_miss_count == 0
+    assert run.failure_count == 0
+    assert run.total_distance is not None
+    assert run.total_distance > 0
+```
+
+This test must fail against Task 1's floor rule because the run stops with `completed_task_count == 44` at T=120.
+
+- [ ] **Step 3: Run the two regressions and verify RED**
+
+Run:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  backend\tests\test_adaptive_replan_calibration.py `
+  -q `
+  -k "pressure_case_normalizes_resources or pressure_calibration_completes_by_tick_target"
+```
+
+Expected: two failures. The transformation still preserves deadlines above 120, and the real pressure run still completes only 44/45 tasks.
+
+- [ ] **Step 4: Apply the common pressure deadline**
+
+In the pressure branch of `build_adaptive_calibration_scenario`, replace:
+
+```python
+        for task in scenario.tasks:
+            if task.deadline is not None:
+                task.deadline = max(
+                    task.deadline,
+                    PRESSURE_CALIBRATION_DEADLINE_FLOOR,
+                )
+```
+
+with:
+
+```python
+        for task in scenario.tasks:
+            if task.deadline is not None:
+                task.deadline = (
+                    PRESSURE_CALIBRATION_DEADLINE_FLOOR
+                )
+```
+
+Do not change dynamic tasks, runtime tasks, releases, priorities, task IDs, targets, map content, or `tick_target`.
+
+- [ ] **Step 5: Run focused GREEN**
+
+Run:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  backend\tests\test_adaptive_replan_calibration.py `
+  -q `
+  -k "pressure_case_normalizes_resources or pressure_calibration_completes_by_tick_target"
+```
+
+Expected: both selected tests pass, including real 45/45 completion at T=120.
+
+- [ ] **Step 6: Rename the internal constant as a green refactor**
+
+Rename:
+
+```python
+PRESSURE_CALIBRATION_DEADLINE_FLOOR = 120
+```
+
+to:
+
+```python
+PRESSURE_CALIBRATION_DEADLINE = 120
+```
+
+Update the exact import and all pressure-deadline references in `backend/tests/test_adaptive_replan_calibration.py`. Do not retain a compatibility alias; the identifier is internal and the old floor semantics are no longer valid.
+
+Run:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  backend\tests\test_adaptive_replan_calibration.py `
+  -q `
+  -k "pressure_case_normalizes_resources or pressure_calibration_completes_by_tick_target"
+```
+
+Expected: both selected tests remain green after the rename.
+
+- [ ] **Step 7: Run the complete calibration module**
+
+Run:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  backend\tests\test_adaptive_replan_calibration.py -q
+```
+
+Expected: all tests pass.
+
+- [ ] **Step 8: Commit Task 3**
+
+```powershell
+git add -- `
+  backend/benchmarks/adaptive_scenarios.py `
+  backend/tests/test_adaptive_replan_calibration.py
+git diff --cached --check
+git commit -m "fix: align adaptive pressure deadlines"
+```
+
+---
+
+### Task 4: Verify and Publish Repaired Calibration Evidence
 
 **Files:**
 - Modify: `AGENTS.md`
@@ -847,7 +1056,7 @@ git status --short
 git diff --name-only d3b5c61
 ```
 
-The final command compares the base commit with both committed Task 1/2 work and the still-uncommitted Task 3 documentation. Expected tracked scope after Task 3 is limited to:
+The final command compares the base commit with committed Task 1/2/3 work and the still-uncommitted Task 4 documentation. Expected tracked scope after Task 4 is limited to:
 
 ```text
 AGENTS.md
@@ -863,7 +1072,7 @@ docs/testing-guide.md
 
 Generated `output/`, `.superpowers/`, `.venv`, `frontend/node_modules`, build output, and caches must remain ignored or untracked.
 
-- [ ] **Step 10: Commit Task 3**
+- [ ] **Step 10: Commit Task 4**
 
 ```powershell
 git add -- `
@@ -895,7 +1104,7 @@ Treat as blocking:
 - generated reports, dependency junctions, or caches are committed;
 - process residue or unbounded waiting appears.
 
-After any final-review fix, rerun Task 3 Steps 1–9 before claiming completion.
+After any final-review fix, rerun Task 4 Steps 1–9 before claiming completion.
 
 ---
 
@@ -903,7 +1112,7 @@ After any final-review fix, rerun Task 3 Steps 1–9 before claiming completion.
 
 - [ ] Pressure normalization applies only to the deep-copied `adaptive-pressure-r8-t45`.
 - [ ] Every pressure robot has `battery=150` and `batteryCapacity=150`.
-- [ ] Every non-null pressure base-task deadline is at least T=120.
+- [ ] Every non-null pressure base-task deadline is exactly T=120.
 - [ ] Source `density-r8-t43`, other calibration cases, dynamic blocks, releases, runtime tasks, and case/variant IDs remain unchanged.
 - [ ] Terminal `MetricSnapshot.travelledDistance` is the only source of calibration `totalDistance`.
 - [ ] Empty metric history produces an error and session cleanup.

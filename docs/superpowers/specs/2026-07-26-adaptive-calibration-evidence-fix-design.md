@@ -21,6 +21,26 @@
 
 第二个证据问题位于距离口径。校准运行当前读取最终 `DispatchResult.metrics.totalDistance`。会话在 T=120 已无活动分配时，该字段为 0；同一响应的最后一个 `MetricSnapshot.travelledDistance` 为实际累计值，压力复现中为 556。现有 60 次报告的 `totalDistance` 因此全部错误地记录为 0。
 
+### 1.1 T=120 smoke 后的设计修订
+
+初版归一化实现后，四个压力变体各运行一次，均得到：
+
+- 45 个任务全部 released、covered，但只完成 44 个；
+- `deadlineMissCount`、`failureCount`、预测/活动冲突和安全介入均为 0；
+- `totalDistance = 664`；
+- 唯一未完成任务为 `D33`，其原 deadline 为 T=122；
+- `D33` 的合法计划完成时刻为 T=121，T=120 时 R8 位于 `[15,10]`，距离 dropoff `[16,10]` 仍差一格。
+
+因此，`deadline = max(originalDeadline, 120)` 仍保留了晚于观察终点的 deadline，使规划器可以合法地把任务排到 T=121；同时 `correctnessStable` 只检查 coverage、活动冲突、超期和失败，不检查完成数，所以该结果仍被标记为 stable。显式 45/45 artifact 门禁正确拦截了这组证据。
+
+只读单变量对照进一步确认：
+
+- 把电量和容量从 150 提高到 160 不改变结果，排除剩余电量不足；
+- 只特判 `D33` 的 deadline 虽能完成 45/45，但不能成为通用规则；
+- 将压力案例所有非空基础 deadline 统一为 T=120 时，一次确定性 `fixed-24` 对照在 T=120 完成 45/45，且超期、失败、冲突和安全介入仍全部为 0。
+
+经用户确认，本设计修订为“统一校准截止时间”，不再保留晚于 T=120 的基础 deadline。该对照只证明修订方向，四变体 smoke 和默认 60-run 仍必须重新通过。
+
 ## 2. 目标
 
 本次修复只解决以下两项：
@@ -52,7 +72,7 @@
 
 ```python
 PRESSURE_CALIBRATION_BATTERY_BUDGET = 150
-PRESSURE_CALIBRATION_DEADLINE_FLOOR = 120
+PRESSURE_CALIBRATION_DEADLINE = 120
 ```
 
 ### 4.2 电量
@@ -71,7 +91,7 @@ batteryCapacity = 150
 只处理压力案例 `scenario.tasks` 中已有非空 deadline 的 40 个基础任务：
 
 ```text
-deadline = max(originalDeadline, 120)
+deadline = 120
 ```
 
 以下内容保持原值：
@@ -81,7 +101,7 @@ deadline = max(originalDeadline, 120)
 - T=20、T=40 插入的两个运行时任务及其 `currentTime + 40` deadline；
 - `tickTarget = 120`。
 
-该规则保留任务间原有较晚 deadline，只消除早于校准观察终点的基础 deadline 干扰。
+该规则把基础任务截止时间统一到校准观察终点，既消除过早 deadline，也避免规划器依据晚于观察终点的 deadline 合法地把任务排到 T=121。它只修改校准深拷贝，不修改原始 `density-r8-t43`。
 
 ### 4.4 必须保持的压力特征
 
@@ -132,11 +152,12 @@ JSON 中的逐运行记录和 `runs.csv` 继续使用现有 `totalDistance` 字�
 新增或加强测试，证明：
 
 - 压力案例所有机器人精确为 `battery=150`、`batteryCapacity=150`；
-- 压力案例所有非空基础 deadline 均不早于 120；
+- 压力案例所有非空基础 deadline 均精确为 120；
 - release、任务 ID、任务数量、动态封锁、动态任务和运行时任务规则不变；
 - `build_benchmark_scenario("density-r8-t43")` 在构造校准场景前后完全一致；
 - 低负载和过渡案例不受归一化影响；
 - 重复构造仍得到完全一致的 JSON。
+- 真实 `fixed-24` 压力在线流在 T=120 达到 45/45 完成，且超期、失败、活动冲突和安全介入均为 0。
 
 ### 6.2 距离测试
 
