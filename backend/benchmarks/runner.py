@@ -1,6 +1,3 @@
-import multiprocessing
-import pickle
-import sys
 import traceback
 from collections.abc import Callable
 from dataclasses import replace
@@ -10,6 +7,11 @@ from backend.app.dispatch import run_dispatch
 from backend.app.planning_diagnostics import PlanningDiagnostics
 from backend.app.schemas import CreateSessionRequest, SessionTickRequest
 from backend.app.sessions import create_session, delete_session, tick_session
+from backend.benchmarks.process_isolation import (
+    BenchmarkInfrastructureError,
+    run_isolated_process,
+    sanitize_error_text,
+)
 from backend.benchmarks.results import BenchmarkRun, percent
 from backend.benchmarks.scenarios import (
     BenchmarkCase,
@@ -17,12 +19,6 @@ from backend.benchmarks.scenarios import (
     benchmark_options,
     build_benchmark_scenario,
 )
-
-_PROCESS_STOP_TIMEOUT_SECONDS = 1.0
-
-
-class BenchmarkInfrastructureError(RuntimeError):
-    """父进程无法可靠管理基准子进程时抛出。"""
 
 
 def execute_benchmark_case(case_id: str, run_index: int) -> BenchmarkRun:
@@ -34,197 +30,36 @@ def execute_benchmark_case(case_id: str, run_index: int) -> BenchmarkRun:
     return _execute_online(case, run_index)
 
 
-def _sanitize_error_text(text: str) -> str:
-    return text.replace("\r", "").replace("\n", "")[:500]
-
-
-def _write_traceback(traceback_text: str) -> None:
-    sys.stderr.write(traceback_text)
-    sys.stderr.flush()
-
-
-def _cleanup_isolated_resources(
-    process,
-    connections: tuple[object | None, ...],
-    *,
-    process_started: bool,
-    force_stop: bool,
-) -> None:
-    resource_errors: list[str] = []
-    fatal_resource_errors: list[str] = []
-
-    def record_resource_error(label: str, *, fatal: bool = False) -> None:
-        traceback_text = traceback.format_exc()
-        _write_traceback(traceback_text)
-        detail = f"{label}: {traceback_text.splitlines()[-1]}"
-        resource_errors.append(detail)
-        if fatal:
-            fatal_resource_errors.append(detail)
-
-    def process_is_alive() -> bool | None:
-        try:
-            return process.is_alive()
-        except Exception:
-            record_resource_error("检查子进程状态失败")
-            return None
-
-    def bounded_join() -> None:
-        try:
-            process.join(_PROCESS_STOP_TIMEOUT_SECONDS)
-        except Exception:
-            record_resource_error("等待子进程停止失败")
-
-    stopped = process is None
-    if process is not None:
-        if not process_started:
-            stopped = True
-        else:
-            alive = process_is_alive()
-            stopped = alive is False
-            if alive is True and not force_stop:
-                bounded_join()
-                alive = process_is_alive()
-                stopped = alive is False
-            if not stopped:
-                try:
-                    process.terminate()
-                except Exception:
-                    record_resource_error("终止子进程失败")
-                bounded_join()
-                alive = process_is_alive()
-                stopped = alive is False
-            if not stopped:
-                try:
-                    process.kill()
-                except Exception:
-                    record_resource_error("强制终止子进程失败")
-                bounded_join()
-                alive = process_is_alive()
-                stopped = alive is False
-
-        if stopped:
-            try:
-                process.close()
-            except Exception:
-                record_resource_error("关闭子进程资源失败", fatal=True)
-
-    for connection in connections:
-        if connection is None:
-            continue
-        try:
-            connection.close()
-        except Exception:
-            record_resource_error("关闭进程通信端点失败", fatal=True)
-
-    if process is not None and not stopped:
-        details = "; ".join(resource_errors)
-        suffix = f": {details}" if details else ""
-        raise BenchmarkInfrastructureError(f"无法确认基准子进程已停止{suffix}")
-    if fatal_resource_errors:
-        raise BenchmarkInfrastructureError(
-            "基准子进程资源清理失败: " + "; ".join(fatal_resource_errors)
-        )
-
-
-def _guarded_worker_entry(
-    result_connection,
-    worker_callable: Callable[[str, int], BenchmarkRun],
-    case_id: str,
-    run_index: int,
-) -> None:
-    try:
-        result_connection.send(("completed", worker_callable(case_id, run_index)))
-    except Exception as exc:
-        traceback_text = traceback.format_exc()
-        _write_traceback(traceback_text)
-        result_connection.send(
-            (
-                "error",
-                _sanitize_error_text(type(exc).__name__),
-                _sanitize_error_text(str(exc)),
-            )
-        )
-    finally:
-        result_connection.close()
-
-
 def run_isolated_case(
     case: BenchmarkCase,
     run_index: int,
     timeout_seconds: float,
     worker_callable: Callable[[str, int], BenchmarkRun] = execute_benchmark_case,
 ) -> BenchmarkRun:
-    started_at = perf_counter()
-    parent_connection = None
-    child_connection = None
-    process = None
-    process_started = False
-    run: BenchmarkRun | None = None
-    parent_error: tuple[str, str, str] | None = None
-    try:
-        pickle.dumps(worker_callable)
-        context = multiprocessing.get_context("spawn")
-        parent_connection, child_connection = context.Pipe(duplex=False)
-        process = context.Process(
-            target=_guarded_worker_entry,
-            args=(child_connection, worker_callable, case.case_id, run_index),
-        )
-        process.start()
-        process_started = True
-        child_connection.close()
-        child_connection = None
-        payload_available = parent_connection.poll(timeout_seconds)
-        wall_clock_ms = round((perf_counter() - started_at) * 1000, 2)
-        if not payload_available:
-            run = BenchmarkRun.timeout(case, run_index, wall_clock_ms)
-        else:
-            payload = parent_connection.recv()
-            if not isinstance(payload, tuple) or not payload:
-                raise ValueError("子进程返回了无效的基准结果载荷")
-            if payload[0] == "error" and len(payload) == 3:
-                run = BenchmarkRun.error(
-                    case,
-                    run_index,
-                    payload[1],
-                    _sanitize_error_text(payload[2]),
-                    wall_clock_ms,
-                )
-            elif payload[0] == "completed" and len(payload) == 2:
-                run = replace(payload[1], wall_clock_ms=wall_clock_ms)
-            else:
-                raise ValueError("子进程返回了未知的基准结果载荷")
-    except Exception as exc:
-        parent_error = (type(exc).__name__, str(exc), traceback.format_exc())
-
-    try:
-        _cleanup_isolated_resources(
-            process,
-            (parent_connection, child_connection),
-            process_started=process_started,
-            force_stop=run is None or run.outcome == "timeout",
-        )
-    except BenchmarkInfrastructureError:
-        if parent_error is not None:
-            _write_traceback(parent_error[2])
-        raise
-    if parent_error is not None:
-        _write_traceback(parent_error[2])
+    execution = run_isolated_process(
+        worker_callable,
+        (case.case_id, run_index),
+        timeout_seconds,
+    )
+    if execution.outcome == "timeout":
+        return BenchmarkRun.timeout(case, run_index, execution.wall_clock_ms)
+    if execution.outcome == "error":
         return BenchmarkRun.error(
             case,
             run_index,
-            parent_error[0],
-            _sanitize_error_text(parent_error[1]),
-            round((perf_counter() - started_at) * 1000, 2),
+            execution.error_type or "ChildProcessError",
+            execution.error_message or "子进程未返回错误信息",
+            execution.wall_clock_ms,
         )
-    if run is None:
+    if not isinstance(execution.value, BenchmarkRun):
         return BenchmarkRun.error(
             case,
             run_index,
             "ChildProcessError",
-            "子进程未返回基准结果",
-            round((perf_counter() - started_at) * 1000, 2),
+            "子进程返回了无效的基准结果载荷",
+            execution.wall_clock_ms,
         )
-    return run
+    return replace(execution.value, wall_clock_ms=execution.wall_clock_ms)
 
 
 def run_benchmark_cases(
@@ -242,13 +77,12 @@ def run_benchmark_cases(
             except BenchmarkInfrastructureError:
                 raise
             except Exception as exc:
-                traceback_text = traceback.format_exc()
-                _write_traceback(traceback_text)
+                traceback.print_exc()
                 run = BenchmarkRun.error(
                     case,
                     run_index,
                     type(exc).__name__,
-                    _sanitize_error_text(str(exc)),
+                    sanitize_error_text(str(exc)),
                     round((perf_counter() - started_at) * 1000, 2),
                 )
             runs.append(run)
