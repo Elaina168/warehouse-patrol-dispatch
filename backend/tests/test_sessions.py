@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -4954,9 +4955,24 @@ def test_replan_sample_changes_only_the_next_window_decision(monkeypatch) -> Non
     assert second["result"]["replanWindowReason"] == decisions[-1].reason
 
 
-def test_replan_observer_records_initial_and_runtime_replan_only() -> None:
+def test_replan_observer_records_initial_and_runtime_replan_only(
+    monkeypatch,
+) -> None:
     scenario = Scenario.model_validate(scenario_payload())
     observations: list[ReplanObservation] = []
+    dispatch_count = 0
+    real_run_dispatch = sessions_module.run_dispatch
+
+    def counted_run_dispatch(*args, **kwargs):
+        nonlocal dispatch_count
+        dispatch_count += 1
+        return real_run_dispatch(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sessions_module,
+        "run_dispatch",
+        counted_run_dispatch,
+    )
     created = sessions_module.create_session(
         CreateSessionRequest(
             scenario=scenario,
@@ -4971,6 +4987,7 @@ def test_replan_observer_records_initial_and_runtime_replan_only() -> None:
     )
     session_id = created.sessionId
     try:
+        assert dispatch_count == 1
         assert [item.time for item in observations] == [0]
 
         sessions_module.get_session(session_id)
@@ -4978,6 +4995,7 @@ def test_replan_observer_records_initial_and_runtime_replan_only() -> None:
             session_id,
             sessions_module.SessionTickRequest(currentTime=1),
         )
+        assert dispatch_count == 1
         assert [item.time for item in observations] == [0]
 
         sessions_module.add_task(
@@ -4997,6 +5015,53 @@ def test_replan_observer_records_initial_and_runtime_replan_only() -> None:
         assert [item.time for item in observations] == [0, 1]
     finally:
         sessions_module.delete_session(session_id)
+
+
+def test_delayed_demo_observer_records_first_dispatch_on_initial_tick(
+    monkeypatch,
+) -> None:
+    scenario = Scenario.model_validate(
+        frontend_demo_scenario("integrated-demo")
+    )
+    observations: list[ReplanObservation] = []
+    dispatch_count = 0
+    real_run_dispatch = sessions_module.run_dispatch
+
+    def counted_run_dispatch(*args, **kwargs):
+        nonlocal dispatch_count
+        dispatch_count += 1
+        return real_run_dispatch(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sessions_module,
+        "run_dispatch",
+        counted_run_dispatch,
+    )
+    created = sessions_module.create_session(
+        CreateSessionRequest(
+            scenario=scenario,
+            options=DispatchOptions(
+                avoidConflicts=True,
+                includeDynamic=True,
+            ),
+        ),
+        replan_observer=observations.append,
+    )
+    try:
+        assert dispatch_count == 0
+        assert observations == []
+        assert created.result.assignments == []
+
+        ticked = sessions_module.tick_session(
+            created.sessionId,
+            sessions_module.SessionTickRequest(currentTime=1),
+        )
+
+        assert dispatch_count == 1
+        assert [item.time for item in observations] == [0]
+        assert ticked.result.assignments
+    finally:
+        sessions_module.delete_session(created.sessionId)
 
 
 def test_replan_observation_contains_decision_inputs_and_planning_work() -> None:
@@ -5038,10 +5103,78 @@ def test_replan_observation_contains_decision_inputs_and_planning_work() -> None
 
 def test_session_uses_injected_policy_without_changing_http_contract() -> None:
     scenario = Scenario.model_validate(scenario_payload())
+    request = CreateSessionRequest(
+        scenario=scenario,
+        options=DispatchOptions(
+            avoidConflicts=True,
+            includeDynamic=False,
+            assignmentReplanWindow=24,
+            adaptiveReplanWindow=True,
+        ),
+    )
     policy = AdaptiveReplanPolicy(
         slow_enter_threshold_ms=30,
         slow_exit_threshold_ms=20,
         task_pressure_multiplier=1,
+    )
+    default_created = sessions_module.create_session(
+        request,
+        adaptive_replan_policy=DEFAULT_ADAPTIVE_REPLAN_POLICY,
+    )
+    injected_created = sessions_module.create_session(
+        request,
+        adaptive_replan_policy=policy,
+    )
+    try:
+        assert (
+            default_created.result.effectiveAssignmentReplanWindow
+            == 24
+        )
+        assert (
+            injected_created.result.effectiveAssignmentReplanWindow
+            == 12
+        )
+        with sessions_module._locked_session(
+            injected_created.sessionId,
+            touch_access=False,
+        ) as session:
+            assert session.adaptive_replan_policy == policy
+    finally:
+        sessions_module.delete_session(default_created.sessionId)
+        sessions_module.delete_session(injected_created.sessionId)
+
+
+def test_injected_policy_controls_observed_latency_hysteresis(
+    monkeypatch,
+) -> None:
+    scenario = Scenario.model_validate(scenario_payload())
+    policy = AdaptiveReplanPolicy(
+        slow_enter_threshold_ms=30,
+        slow_exit_threshold_ms=20,
+        task_pressure_multiplier=100,
+    )
+    observations: list[ReplanObservation] = []
+    replan_times_ms = iter(
+        [35.0, 35.0, 35.0, 15.0, 15.0, 15.0]
+    )
+    real_run_dispatch = sessions_module.run_dispatch
+
+    def controlled_run_dispatch(*args, **kwargs):
+        result = real_run_dispatch(*args, **kwargs)
+        return result.model_copy(
+            update={
+                "metrics": result.metrics.model_copy(
+                    update={
+                        "replanTimeMs": next(replan_times_ms),
+                    }
+                )
+            }
+        )
+
+    monkeypatch.setattr(
+        sessions_module,
+        "run_dispatch",
+        controlled_run_dispatch,
     )
     created = sessions_module.create_session(
         CreateSessionRequest(
@@ -5054,10 +5187,119 @@ def test_session_uses_injected_policy_without_changing_http_contract() -> None:
             ),
         ),
         adaptive_replan_policy=policy,
+        replan_observer=observations.append,
     )
     try:
-        with sessions_module._locked_session(created.sessionId, touch_access=False) as session:
-            assert session.adaptive_replan_policy == policy
+        for index in range(1, 6):
+            sessions_module.add_task(
+                created.sessionId,
+                AddTaskRequest(
+                    task=Task(
+                        id=f"LATENCY-{index}",
+                        type="emergency",
+                        title=f"LATENCY-{index}",
+                        priority=5,
+                        releaseTime=0,
+                        deadline=100,
+                        target=scenario.zones.inspection[0],
+                    )
+                ),
+            )
+
+        assert len(observations) == 6
+        assert observations[0].latency_samples_before_ms == ()
+        assert observations[0].latency_median_before_ms is None
+        assert observations[0].latency_slow_before is False
+        assert observations[0].latency_slow_after is False
+        assert observations[0].effective_window == 24
+
+        assert observations[2].latency_samples_before_ms == (
+            35.0,
+            35.0,
+        )
+        assert observations[2].latency_median_before_ms == 35.0
+        assert observations[2].latency_slow_before is False
+        assert observations[2].latency_slow_after is True
+        assert observations[2].effective_window == 24
+
+        assert observations[3].latency_samples_before_ms == (
+            35.0,
+            35.0,
+            35.0,
+        )
+        assert observations[3].latency_median_before_ms == 35.0
+        assert observations[3].latency_slow_before is True
+        assert observations[3].latency_slow_after is True
+        assert observations[3].effective_window == 12
+
+        assert observations[5].latency_samples_before_ms == (
+            35.0,
+            35.0,
+            35.0,
+            15.0,
+            15.0,
+        )
+        assert observations[5].latency_median_before_ms == 35.0
+        assert observations[5].latency_slow_before is True
+        assert observations[5].latency_slow_after is False
+        assert observations[5].effective_window == 12
+    finally:
+        sessions_module.delete_session(created.sessionId)
+
+
+def test_replan_observer_maps_all_planning_diagnostics_fields(
+    monkeypatch,
+) -> None:
+    diagnostics = SimpleNamespace(
+        path_candidate_count=11,
+        selected_path_candidate_index=7,
+        failed_path_candidate_count=3,
+        timed_astar_call_count=13,
+        timed_astar_expanded_state_count=101,
+        max_timed_astar_expanded_state_count=31,
+        timed_astar_exhausted_search_count=2,
+        timed_astar_goal_fully_reserved_reject_count=5,
+    )
+    real_run_dispatch = sessions_module.run_dispatch
+
+    def run_without_diagnostics(*args, **kwargs):
+        kwargs.pop("planning_diagnostics")
+        return real_run_dispatch(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sessions_module,
+        "PlanningDiagnostics",
+        lambda: diagnostics,
+    )
+    monkeypatch.setattr(
+        sessions_module,
+        "run_dispatch",
+        run_without_diagnostics,
+    )
+    observations: list[ReplanObservation] = []
+    created = sessions_module.create_session(
+        CreateSessionRequest(
+            scenario=Scenario.model_validate(scenario_payload()),
+            options=DispatchOptions(
+                avoidConflicts=True,
+                includeDynamic=False,
+            ),
+        ),
+        replan_observer=observations.append,
+    )
+    try:
+        observation = observations[0]
+        assert observation.path_candidate_count == 11
+        assert observation.selected_path_candidate_index == 7
+        assert observation.failed_path_candidate_count == 3
+        assert observation.timed_astar_call_count == 13
+        assert observation.timed_astar_expanded_state_count == 101
+        assert observation.max_timed_astar_expanded_state_count == 31
+        assert observation.timed_astar_exhausted_search_count == 2
+        assert (
+            observation.timed_astar_goal_fully_reserved_reject_count
+            == 5
+        )
     finally:
         sessions_module.delete_session(created.sessionId)
 
@@ -5124,14 +5366,49 @@ def test_reset_preserves_internal_policy_and_observer_but_clears_latency_state()
     )
     try:
         before = len(observations)
+        with sessions_module._locked_session(
+            created.sessionId,
+            touch_access=False,
+        ) as session:
+            session.recent_replan_times_ms = [99.0, 98.0, 97.0]
+            session.adaptive_latency_slow = True
         sessions_module.reset_session(created.sessionId)
         with sessions_module._locked_session(created.sessionId, touch_access=False) as session:
+            reset_observation = observations[-1]
             assert session.adaptive_replan_policy == policy
             assert session.replan_observer is observer
-            assert session.recent_replan_times_ms
             assert len(observations) == before + 1
+            assert reset_observation.latency_samples_before_ms == ()
+            assert reset_observation.latency_median_before_ms is None
+            assert reset_observation.latency_slow_before is False
+            assert session.recent_replan_times_ms == [
+                reset_observation.replan_time_ms
+            ]
     finally:
         sessions_module.delete_session(created.sessionId)
+
+
+def test_replan_observer_exception_propagates_without_publishing_session() -> None:
+    before_session_ids = set(sessions_module._sessions)
+    observer_error = RuntimeError("replan observer failed")
+
+    def failing_observer(_observation: ReplanObservation) -> None:
+        raise observer_error
+
+    with pytest.raises(RuntimeError, match="replan observer failed") as raised:
+        sessions_module.create_session(
+            CreateSessionRequest(
+                scenario=Scenario.model_validate(scenario_payload()),
+                options=DispatchOptions(
+                    avoidConflicts=True,
+                    includeDynamic=False,
+                ),
+            ),
+            replan_observer=failing_observer,
+        )
+
+    assert raised.value is observer_error
+    assert set(sessions_module._sessions) == before_session_ids
 
 
 def test_session_task_state_recovers_after_runtime_robot_restore() -> None:
