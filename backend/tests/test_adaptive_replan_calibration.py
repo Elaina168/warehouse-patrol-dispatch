@@ -3,9 +3,14 @@ from dataclasses import replace
 import pytest
 
 from backend.app.dispatch import astar, task_waypoints
-from backend.app.replan_window import ReplanObservation
+from backend.app.replan_window import (
+    DEFAULT_ADAPTIVE_REPLAN_POLICY,
+    ReplanObservation,
+)
 from backend.app.schemas import Scenario
+from backend.app.sessions import list_sessions
 from backend.app.validation import validate_scenario
+from backend.benchmarks import adaptive_runner as adaptive_runner_module
 from backend.benchmarks.adaptive_results import (
     AdaptiveCalibrationRun,
     AdaptiveReplanRecord,
@@ -31,6 +36,32 @@ from backend.benchmarks.scenarios import (
     benchmark_cases,
     build_benchmark_scenario,
 )
+
+
+def _public_robot_positions(
+    session,
+) -> dict[str, tuple[int, int]]:
+    return {
+        state.robotId: state.position
+        for state in session.robotStates
+    }
+
+
+def _assert_public_robot_snapshots_are_collision_free(
+    snapshots: list[dict[str, tuple[int, int]]],
+) -> None:
+    assert snapshots
+    for positions in snapshots:
+        assert len(positions) == len(set(positions.values()))
+    for previous, current in zip(snapshots, snapshots[1:]):
+        assert set(previous) == set(current)
+        robot_ids = sorted(previous)
+        for first_index, first_robot_id in enumerate(robot_ids):
+            for second_robot_id in robot_ids[first_index + 1:]:
+                assert not (
+                    previous[first_robot_id] == current[second_robot_id]
+                    and previous[second_robot_id] == current[first_robot_id]
+                )
 
 
 def _observation(time: int, window: int, reason: str = "固定窗口") -> ReplanObservation:
@@ -487,6 +518,137 @@ def test_adaptive_calibration_executes_real_online_flow() -> None:
         and record.effective_window == 24
         for record in run.replan_observations
     )
+
+
+def test_adaptive_worker_enforces_safety_and_exact_online_sequence(
+    monkeypatch,
+) -> None:
+    session_ids_before = {
+        item.sessionId for item in list_sessions()
+    }
+    calls: list[tuple[str, int]] = []
+    snapshots: list[dict[str, tuple[int, int]]] = []
+    create_kwargs: list[dict[str, object]] = []
+    real_create_session = adaptive_runner_module.create_session
+    real_tick_session = adaptive_runner_module.tick_session
+    real_add_task = adaptive_runner_module.add_task
+
+    def record(
+        call: tuple[str, int],
+        result,
+    ):
+        calls.append(call)
+        snapshots.append(_public_robot_positions(result))
+        return result
+
+    def observed_create_session(request, **kwargs):
+        create_kwargs.append(kwargs)
+        result = real_create_session(request, **kwargs)
+        return record(("create", result.currentTime), result)
+
+    def observed_tick_session(session_id, request):
+        result = real_tick_session(session_id, request)
+        assert result.currentTime == request.currentTime
+        return record(("tick", request.currentTime), result)
+
+    def observed_add_task(session_id, request):
+        result = real_add_task(session_id, request)
+        return record(("add", request.task.releaseTime), result)
+
+    monkeypatch.setattr(
+        adaptive_runner_module,
+        "create_session",
+        observed_create_session,
+    )
+    monkeypatch.setattr(
+        adaptive_runner_module,
+        "tick_session",
+        observed_tick_session,
+    )
+    monkeypatch.setattr(
+        adaptive_runner_module,
+        "add_task",
+        observed_add_task,
+    )
+
+    run = execute_adaptive_calibration_case(
+        "adaptive-transition-r4-t6",
+        "fixed-24",
+        1,
+    )
+
+    expected_calls = [("create", 0)]
+    for current_time in range(1, 121):
+        expected_calls.append(("tick", current_time))
+        if current_time in (20, 40):
+            expected_calls.append(("add", current_time))
+    assert calls == expected_calls
+    assert len(snapshots) == len(expected_calls)
+    _assert_public_robot_snapshots_are_collision_free(snapshots)
+    assert len(create_kwargs) == 1
+    assert create_kwargs[0]["enforce_execution_safety"] is True
+    assert (
+        create_kwargs[0]["adaptive_replan_policy"]
+        is DEFAULT_ADAPTIVE_REPLAN_POLICY
+    )
+    assert run.tick_target == 120
+    assert {
+        item.sessionId for item in list_sessions()
+    } == session_ids_before
+
+
+@pytest.mark.parametrize("failure_point", ["tick", "add"])
+def test_adaptive_worker_cleans_session_when_online_operation_raises(
+    monkeypatch,
+    failure_point: str,
+) -> None:
+    session_ids_before = {
+        item.sessionId for item in list_sessions()
+    }
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError(f"{failure_point} failed")
+
+    monkeypatch.setattr(
+        adaptive_runner_module,
+        f"{failure_point}_session" if failure_point == "tick" else "add_task",
+        fail,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=f"{failure_point} failed",
+    ):
+        execute_adaptive_calibration_case(
+            "adaptive-transition-r4-t6",
+            "fixed-24",
+            1,
+        )
+
+    assert {
+        item.sessionId for item in list_sessions()
+    } == session_ids_before
+
+
+@pytest.mark.parametrize(
+    "snapshots",
+    [
+        [
+            {"R1": (0, 0), "R2": (2, 0)},
+            {"R1": (1, 0), "R2": (1, 0)},
+        ],
+        [
+            {"R1": (0, 0), "R2": (1, 0)},
+            {"R1": (1, 0), "R2": (0, 0)},
+        ],
+    ],
+    ids=["vertex", "reverse-edge"],
+)
+def test_public_robot_snapshot_safety_rejects_controlled_conflicts(
+    snapshots,
+) -> None:
+    with pytest.raises(AssertionError):
+        _assert_public_robot_snapshots_are_collision_free(snapshots)
 
 
 def test_adaptive_calibration_current_variant_uses_adaptive_reasons() -> None:

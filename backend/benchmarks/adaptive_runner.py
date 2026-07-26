@@ -62,6 +62,7 @@ def execute_adaptive_calibration_case(
                 scenario=scenario,
                 options=variant.options(),
             ),
+            enforce_execution_safety=True,
             adaptive_replan_policy=DEFAULT_ADAPTIVE_REPLAN_POLICY,
             replan_observer=observations.append,
         )
