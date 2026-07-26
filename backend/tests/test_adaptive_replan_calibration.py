@@ -656,7 +656,7 @@ def test_adaptive_run_uses_terminal_metric_snapshot_distance(
             update={"travelledDistance": 777}
         )
         plan_metrics = result.result.metrics.model_copy(
-            update={"totalDistance": 0}
+            update={"totalDistance": 888}
         )
         return result.model_copy(
             update={

@@ -626,18 +626,99 @@ expected_final_files = {
     "replan-observations.csv",
     "variant-summaries.csv",
 }
+expected_headers = {
+    "runs.csv": (
+        "caseId", "variantId", "runIndex", "robotCount", "taskCount",
+        "tickTarget", "outcome", "errorType", "errorMessage",
+        "correctnessStable", "releasedTaskCount", "coveredTaskCount",
+        "completedTaskCount", "coverageRatePercent",
+        "actualCompletionRatePercent", "predictedConflictCount",
+        "activeConflictCount", "safetyInterventionCount",
+        "safetyStallReached", "maxConsecutiveSafetyInterventionCount",
+        "deadlineMissCount", "failureCount", "totalDistance", "makespan",
+        "wallClockMs", "replanCount", "windowChangeCount",
+    ),
+    "replan-observations.csv": (
+        "caseId", "variantId", "runIndex", "observationIndex", "time",
+        "configuredWindow", "effectiveWindow", "reason", "releasedTaskCount",
+        "futureTaskCount", "activeRobotCount", "taskPressureRatio",
+        "latencySamplesBeforeMs", "latencyMedianBeforeMs",
+        "latencySlowBefore", "replanTimeMs", "latencySlowAfter",
+        "pathCandidateCount", "selectedPathCandidateIndex",
+        "failedPathCandidateCount", "timedAStarCallCount",
+        "timedAStarExpandedStateCount", "maxTimedAStarExpandedStateCount",
+        "timedAStarExhaustedSearchCount",
+        "timedAStarGoalFullyReservedRejectCount",
+    ),
+    "variant-summaries.csv": (
+        "caseId", "variantId", "runCount", "completedRunCount",
+        "timeoutCount", "errorCount", "stableRunCount",
+        "stableRunRatePercent", "medianWallClockMs", "p95WallClockMs",
+        "medianRunReplanTimeMs", "p95RunReplanTimeMs", "medianReplanCount",
+        "medianWindowChangeCount", "medianCoverageRatePercent",
+        "medianActualCompletionRatePercent", "maxSafetyInterventionCount",
+        "maxConsecutiveSafetyInterventionCount", "windowReasonCounts",
+    ),
+}
 
-def csv_rows(file_name):
+def read_csv(file_name):
     with (result_path / file_name).open(
         encoding="utf-8-sig",
         newline="",
     ) as handle:
-        return list(csv.DictReader(handle))
+        reader = csv.DictReader(handle)
+        return tuple(reader.fieldnames or ()), list(reader)
+
+def csv_cell(value):
+    if value is None:
+        return ""
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)
+
+def expected_csv_rows(records, field_names):
+    return [
+        {field_name: csv_cell(record[field_name]) for field_name in field_names}
+        for record in records
+    ]
+
+def assert_csv_matches(file_name, expected_records):
+    field_names = expected_headers[file_name]
+    actual_header, actual_rows = read_csv(file_name)
+    assert actual_header == field_names, (
+        f"{file_name} header mismatch: {actual_header!r} != {field_names!r}"
+    )
+    expected_rows = expected_csv_rows(expected_records, field_names)
+    assert len(actual_rows) == len(expected_rows), (
+        f"{file_name} row count mismatch: "
+        f"{len(actual_rows)} != {len(expected_rows)}"
+    )
+    for row_index, (actual_row, expected_row) in enumerate(
+        zip(actual_rows, expected_rows)
+    ):
+        for field_name in field_names:
+            assert actual_row[field_name] == expected_row[field_name], (
+                f"{file_name} row {row_index} field {field_name} mismatch: "
+                f"{actual_row[field_name]!r} != {expected_row[field_name]!r}"
+            )
 
 runs = payload["runs"]
-run_rows = csv_rows("runs.csv")
-observation_rows = csv_rows("replan-observations.csv")
-summary_rows = csv_rows("variant-summaries.csv")
+run_records = [
+    {field_name: run[field_name] for field_name in expected_headers["runs.csv"]}
+    for run in runs
+]
+observation_records = [
+    observation
+    for run in runs
+    for observation in run["replanObservations"]
+]
+summary_records = payload["variantSummaries"]
+assert_csv_matches("runs.csv", run_records)
+assert_csv_matches("replan-observations.csv", observation_records)
+assert_csv_matches("variant-summaries.csv", summary_records)
+_, run_rows = read_csv("runs.csv")
+_, observation_rows = read_csv("replan-observations.csv")
+_, summary_rows = read_csv("variant-summaries.csv")
 assert payload["schemaVersion"] == 1
 assert len(runs) == 60
 assert len(run_rows) == 60
@@ -794,7 +875,7 @@ if ($newBenchmarkWorkers) {
 
 2026-07-26 修复前的默认复核实际得到 60 completed、40 stable、20 completed-but-unstable、0 timeout、0 error、1,310 条真实重规划观测和 12 条汇总；三份 CSV 编码、JSON/CSV 行数、partial/tmp 清理和 worker 清理均通过。20 条不稳定记录精确来自 `adaptive-pressure-r8-t45` 的四个变体各 runIndex 1–5，均为预测/活动冲突 `0/0`、超期 `1`、失败 `2`、安全介入 `0`、实际完成率 `95.6%`。该案例没有 stable completed `fixed-24` 观测，因此候选 envelope 为不可用和 `null`；这组结果保留为修复前历史诊断。
 
-修复后的 fresh 默认结果位于 `output/adaptive-replan-calibration/20260726T142229Z`：60 completed、60 stable、1,330 条真实重规划观测、12 条汇总，压力运行全部 45/45，累计距离范围 `[671, 671]`，candidate envelope 非空。完整对象与人工结论见 `docs/experiments.md` 的“2026-07-26 修复后默认 60-run 人工复核”；没有应用任何生产阈值。
+修复后的 fresh 默认结果位于 `output/adaptive-replan-calibration/20260726T150547Z`：60 completed、60 stable、1,330 条真实重规划观测、12 条汇总，压力运行全部 45/45，累计距离范围 `[671, 671]`，candidate envelope 非空。完整对象与人工结论见 `docs/experiments.md` 的“2026-07-26 修复后默认 60-run 人工复核”；没有应用任何生产阈值。
 
 完成 artifact 与 worker 检查后运行 Git hygiene：
 

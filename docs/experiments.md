@@ -351,10 +351,10 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 
 压力案例的修复只发生在校准用的 deep copy：所有机器人使用 `battery=150`、`batteryCapacity=150`，所有非空 base-task deadline 统一为 T=120；源 `density-r8-t43` 和其他案例未被改写。校准 run 级 `totalDistance` 改为终止时 `MetricSnapshot.travelledDistance`，缺少指标历史时直接记录错误，不再静默回退到零。
 
-fresh 同机、无并发重型命令的结果目录为 `output/adaptive-replan-calibration/20260726T142229Z`。该目录是未跟踪的本地证据，不进入 Git。Step 7 打印对象精确为：
+fresh 同机、无并发重型命令的结果目录为 `output/adaptive-replan-calibration/20260726T150547Z`。该目录是未跟踪的本地证据，不进入 Git。Step 7 打印对象精确为：
 
 ```json
-{"runs":60,"stable":60,"observations":1330,"summaries":12,"outcomes":{"completed":60},"pressureDistanceRange":[671,671],"candidateEnvelope":{"slowExitThresholdMs":{"min":13.78,"max":40.43},"slowEnterThresholdMs":{"min":40.43,"max":93.29},"taskPressureMultiplier":{"min":1.75,"max":3.38}}}
+{"runs": 60, "stable": 60, "observations": 1330, "summaries": 12, "outcomes": {"completed": 60}, "pressureDistanceRange": [671, 671], "candidateEnvelope": {"slowExitThresholdMs": {"min": 9.71, "max": 31.05}, "slowEnterThresholdMs": {"min": 31.05, "max": 69.47}, "taskPressureMultiplier": {"min": 1.75, "max": 3.38}}}
 ```
 
 交叉核对确认 60 条 run 全部 `completed` 且 `correctnessStable = true`，1,330 条 `replan-observations.csv` 记录等于全部 `replanCount` 之和，`variant-summaries.csv` 为 12 行。20 条压力 run 均完成 45/45 已释放任务，预测/活动冲突、安全介入、超期和失败均为 0，累计距离范围为 `[671, 671]`。三份 CSV 的 UTF-8 BOM、`results.partial.json`/`*.tmp` 清理及校准后 worker 残留检查均通过。
