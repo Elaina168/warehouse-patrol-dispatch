@@ -83,14 +83,6 @@ def test_timed_detour_battery_rejects_path_beyond_available_movement_units() -> 
             },
             "robots": [
                 {
-                    "id": "R1",
-                    "name": "R1",
-                    "start": [1, 0],
-                    "battery": 100,
-                    "load": 1,
-                    "capabilities": ["emergency"],
-                },
-                {
                     "id": "R2",
                     "name": "R2",
                     "start": [0, 0],
@@ -101,14 +93,6 @@ def test_timed_detour_battery_rejects_path_beyond_available_movement_units() -> 
                 },
             ],
             "tasks": [
-                {
-                    "id": "E1",
-                    "type": "emergency",
-                    "title": "高优先级原地处置",
-                    "priority": 5,
-                    "serviceTime": 5,
-                    "target": [1, 0],
-                },
                 {
                     "id": "T1",
                     "type": "inspection",
@@ -125,36 +109,76 @@ def test_timed_detour_battery_rejects_path_beyond_available_movement_units() -> 
             },
         }
     )
-    options = DispatchOptions(avoidConflicts=True, includeDynamic=False)
-
-    result = dispatch_module.run_dispatch(scenario, options)
-    path = result.paths["R2"]
-    task_succeeded = "T1" not in result.failureReasons
-
-    assert not (
-        path == [(0, 0), (0, 1), (1, 1), (2, 1), (2, 0)]
-        and task_succeeded
+    max_time = scenario.width * scenario.height * 4
+    reservations = dispatch_module.Reservations(
+        vertices={
+            f"1,0@{time_index}"
+            for time_index in range(1, max_time + 1)
+        },
     )
-    if task_succeeded:
-        movement_units = sum(
-            previous != current
-            for previous, current in zip(path, path[1:])
-        )
-        assert movement_units <= 2
+    forced_detour = dispatch_module.astar_timed(
+        scenario,
+        (0, 0),
+        (2, 0),
+        0,
+        reservations,
+    )
+    assert forced_detour == [
+        (0, 0),
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (2, 0),
+    ]
+
+    path, failed = dispatch_module.plan_robot_path(
+        scenario,
+        scenario.robots[0],
+        scenario.robots[0].start,
+        [scenario.tasks[0]],
+        scenario.robots[0].moveTicks,
+        True,
+        reservations,
+        [],
+    )
+
+    assert failed is True
+    assert path == [(0, 0)]
 
 
 def test_parking_battery_rejects_post_task_move_after_battery_is_exhausted() -> None:
-    scenario = Scenario.model_validate(
+    scenario = _timed_diagnostics_scenario()
+    task_path = [(0, 0), (1, 0)]
+    reservations = dispatch_module.Reservations(
+        vertices={"1,0@2"},
+    )
+
+    parked_path, failed = dispatch_module.append_parking_step(
+        scenario,
+        task_path,
+        0,
+        1,
+        reservations,
+        [],
+        horizon_padding=2,
+    )
+
+    assert failed is True
+    assert parked_path == task_path
+
+
+def _idle_parking_energy_scenario() -> Scenario:
+    return Scenario.model_validate(
         {
-            "id": "parking-battery",
-            "name": "parking-battery",
-            "description": "任务后停车移动也必须受剩余电量约束。",
-            "width": 5,
+            "id": "idle-parking-energy",
+            "name": "idle-parking-energy",
+            "description": "零电量闲置机器人必须原地保留，活动机器人改走绕行路线。",
+            "width": 4,
             "height": 2,
             "obstacles": [],
             "zones": {
                 "warehouse": [],
-                "inspection": [[0, 0], [1, 0]],
+                "inspection": [[0, 0]],
                 "delivery": [],
                 "charging": [],
             },
@@ -162,73 +186,82 @@ def test_parking_battery_rejects_post_task_move_after_battery_is_exhausted() -> 
                 {
                     "id": "R1",
                     "name": "R1",
-                    "start": [4, 0],
+                    "start": [3, 0],
                     "battery": 100,
+                    "batteryCapacity": 100,
                     "load": 1,
                     "capabilities": ["inspection"],
                 },
                 {
                     "id": "R2",
                     "name": "R2",
-                    "start": [0, 1],
-                    "battery": 2,
-                    "batteryCapacity": 2,
+                    "start": [2, 0],
+                    "battery": 0,
+                    "batteryCapacity": 10,
                     "load": 1,
-                    "capabilities": ["inspection"],
+                    "capabilities": ["emergency"],
                 },
             ],
             "tasks": [
                 {
                     "id": "T1",
                     "type": "inspection",
-                    "title": "预留后续通道",
-                    "priority": 2,
+                    "title": "绕过闲置机器人",
+                    "priority": 3,
                     "targets": [[0, 0]],
-                },
-                {
-                    "id": "T2",
-                    "type": "inspection",
-                    "title": "耗尽电量后停车",
-                    "priority": 1,
-                    "targets": [[1, 0]],
-                },
+                }
             ],
             "dynamic": {
-                "triggerTime": 0,
+                "triggerTime": 99,
                 "blockedCells": [],
                 "failedRobots": [],
                 "tasks": [],
             },
         }
     )
-    tasks = {task.id: task for task in scenario.tasks}
-    assignments = [
-        Assignment(robotId="R1", tasks=[tasks["T1"]]),
-        Assignment(robotId="R2", tasks=[tasks["T2"]]),
-    ]
+
+
+def test_idle_parking_keeps_zero_battery_robot_at_origin_when_active_path_reserves_start() -> None:
+    scenario = _idle_parking_energy_scenario()
+    assignment = Assignment(robotId="R1", tasks=[scenario.tasks[0]])
 
     candidate = build_paths_for_order(
         scenario,
         scenario.robots,
-        assignments,
+        [assignment],
         True,
         [],
         [],
         scenario.robots,
     )
-    path = candidate.paths["R2"]
-    robot_succeeded = "R2 存在不可达任务" not in candidate.failures
 
-    assert not (
-        path == [(0, 1), (0, 0), (1, 0), (1, 1), (1, 0), (2, 0)]
-        and robot_succeeded
+    assert candidate.paths["R2"] == [(2, 0)]
+    conflicts = dispatch_module.detect_conflicts(candidate.paths)
+    assert [(conflict.time, conflict.type, conflict.cell) for conflict in conflicts] == [
+        (1, "vertex", (2, 0))
+    ]
+
+
+def test_direct_dispatch_routes_active_robot_around_zero_battery_idle_robot() -> None:
+    scenario = _idle_parking_energy_scenario()
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=False),
     )
-    if robot_succeeded:
-        movement_units = sum(
-            previous != current
-            for previous, current in zip(path, path[1:])
-        )
-        assert movement_units <= 2, (path, candidate.failures)
+
+    assert result.paths["R2"] == [(2, 0)]
+    assert result.paths["R1"] == [
+        (3, 0),
+        (3, 1),
+        (2, 1),
+        (1, 1),
+        (0, 1),
+        (0, 0),
+    ]
+    assert result.conflicts == []
+    assert result.failureReasons == {}
+    assert result.metrics.failureCount == 0
 
 
 def _timed_diagnostics_scenario() -> Scenario:
@@ -251,6 +284,77 @@ def _timed_diagnostics_scenario() -> Scenario:
             },
         }
     )
+
+
+def test_idle_parking_helper_keeps_zero_battery_robot_at_start() -> None:
+    scenario = _timed_diagnostics_scenario()
+    reservations = dispatch_module.Reservations(
+        vertices={"0,0@1"},
+    )
+
+    path = dispatch_module.plan_idle_robot_parking_path(
+        scenario=scenario,
+        start=(0, 0),
+        battery=0,
+        move_ticks=1,
+        reservations=reservations,
+        extra_blocked=[],
+        horizon_padding=2,
+    )
+
+    assert path == [(0, 0)]
+
+
+def test_idle_parking_helper_allows_one_move_with_one_battery_unit() -> None:
+    scenario = _timed_diagnostics_scenario()
+    reservations = dispatch_module.Reservations(
+        vertices={"0,0@1"},
+    )
+
+    path = dispatch_module.plan_idle_robot_parking_path(
+        scenario=scenario,
+        start=(0, 0),
+        battery=1,
+        move_ticks=1,
+        reservations=reservations,
+        extra_blocked=[],
+        horizon_padding=2,
+    )
+
+    assert path == [(0, 0), (1, 0)]
+
+
+def test_idle_parking_helper_rejects_move_without_return_to_charge_reserve() -> None:
+    scenario = _timed_diagnostics_scenario()
+    scenario = scenario.model_copy(
+        update={
+            "zones": scenario.zones.model_copy(
+                update={"charging": [(0, 0)]}
+            )
+        }
+    )
+    max_time = scenario.width * scenario.height * 4
+    reservations = dispatch_module.Reservations(
+        vertices={
+            "1,0@1",
+            *{
+                f"0,0@{time_index}"
+                for time_index in range(1, max_time + 1)
+            },
+        },
+    )
+
+    path = dispatch_module.plan_idle_robot_parking_path(
+        scenario=scenario,
+        start=(1, 0),
+        battery=1,
+        move_ticks=1,
+        reservations=reservations,
+        extra_blocked=[],
+        horizon_padding=2,
+    )
+
+    assert path == [(1, 0)]
 
 
 def test_timed_astar_diagnostics_records_success_without_changing_path() -> None:

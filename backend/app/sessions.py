@@ -145,6 +145,11 @@ class DispatchSession:
 
 _sessions: dict[str, DispatchSession] = {}
 _sessions_lock = RLock()
+_SESSION_CANDIDATE_COORDINATION_FIELDS = {
+    "lock",
+    "replan_observer",
+    "closing",
+}
 
 
 @contextmanager
@@ -324,26 +329,6 @@ def add_blocked_cell(session_id: str, request: AddBlockRequest) -> SessionResult
             and current_time >= session.scenario.dynamic.triggerTime
             and cell in session.scenario.dynamic.blockedCells
         )
-        if not is_active_dynamic_block_request:
-            occupancy_session = (
-                _preview_session_at_time(session, current_time)
-                if current_time > session.current_time
-                else session
-            )
-            occupying_robot_id = (
-                next(
-                    (
-                        robot.id
-                        for robot in occupancy_session.scenario.robots
-                        if occupancy_session.robot_positions.get(robot.id, robot.start) == cell
-                    ),
-                    None,
-                )
-                if occupancy_session.current_time == current_time
-                else None
-            )
-            if occupying_robot_id is not None:
-                raise HTTPException(status_code=409, detail=f"封锁单元被机器人占用：{occupying_robot_id} ({cell[0]}, {cell[1]})")
         transaction_observations: list[ReplanObservation] = []
         transaction_session = session
         if current_time > session.current_time:
@@ -548,7 +533,7 @@ def _runtime_request_time(
 def _clone_session_for_preview(session: DispatchSession) -> DispatchSession:
     preview = copy.copy(session)
     for item in dataclasses.fields(DispatchSession):
-        if item.name in {"lock", "replan_observer"}:
+        if item.name in _SESSION_CANDIDATE_COORDINATION_FIELDS:
             continue
         setattr(preview, item.name, copy.deepcopy(getattr(session, item.name)))
     preview.lock = RLock()
@@ -573,12 +558,12 @@ def _commit_session_candidate(
     committed_values = {
         item.name: copy.deepcopy(getattr(candidate, item.name))
         for item in dataclasses.fields(DispatchSession)
-        if item.name not in {"lock", "replan_observer"}
+        if item.name not in _SESSION_CANDIDATE_COORDINATION_FIELDS
     }
     previous_values = {
         item.name: copy.deepcopy(getattr(session, item.name))
         for item in dataclasses.fields(DispatchSession)
-        if item.name not in {"lock", "replan_observer"}
+        if item.name not in _SESSION_CANDIDATE_COORDINATION_FIELDS
     }
     observer = session.replan_observer
     try:
@@ -896,7 +881,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
         robot_states = _build_robot_states(session, result)
         task_states = _build_task_states(session, result)
         newly_completed_task_ids = _sync_completed_task_states(session, task_states)
-        if session.current_time != 0 or not newly_completed_task_ids:
+        if not newly_completed_task_ids:
             break
         _invalidate_plan(session)
 

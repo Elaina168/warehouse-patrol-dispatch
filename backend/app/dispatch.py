@@ -903,6 +903,7 @@ def append_parking_step(
 def plan_idle_robot_parking_path(
     scenario: Scenario,
     start: Cell,
+    battery: int,
     move_ticks: int,
     reservations: Reservations,
     extra_blocked: list[Cell],
@@ -932,8 +933,32 @@ def plan_idle_robot_parking_path(
             move_ticks,
             candidate_diagnostics=candidate_diagnostics,
         )
-        if path and can_hold_cell(candidate, len(path), reservations, horizon_padding):
-            return path
+        if not path or not can_hold_cell(
+            candidate,
+            len(path),
+            reservations,
+            horizon_padding,
+        ):
+            continue
+        _, remaining_battery, joined = _join_energy_checked_segment(
+            [start],
+            path,
+            battery,
+        )
+        if not joined:
+            continue
+        if scenario.zones.charging:
+            nearest_station = nearest_charge_station(
+                scenario,
+                path[-1],
+                blocked_cells,
+            )
+            if (
+                nearest_station is None
+                or remaining_battery < nearest_station[1]
+            ):
+                continue
+        return path
     return [start]
 
 
@@ -1060,6 +1085,7 @@ def build_paths_for_order(
             path = plan_idle_robot_parking_path(
                 scenario,
                 robot.start,
+                robot.battery,
                 robot.moveTicks,
                 reservations,
                 extra_blocked,

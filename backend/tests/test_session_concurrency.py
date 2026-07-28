@@ -536,6 +536,65 @@ def test_publish_never_clears_closing_owned_by_concurrent_delete(monkeypatch) ->
         assert sessions_module._sessions["incoming"] is incoming
 
 
+def test_future_block_candidate_never_reopens_session_during_concurrent_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = _create_session()
+    observed_lock = _observed_session_lock(session_id, expected_blockers=1)
+    with sessions_module._sessions_lock:
+        session = sessions_module._sessions[session_id]
+
+    commit_entered = Event()
+    allow_commit = Event()
+    observed_closing: list[bool] = []
+    observed_request_statuses: list[int] = []
+    real_commit = sessions_module._commit_session_candidate
+
+    def paused_commit(authoritative, candidate, observations):
+        commit_entered.set()
+        _wait(allow_commit, "允许 future block 提交候选")
+        real_commit(authoritative, candidate, observations)
+        observed_closing.append(authoritative.closing)
+        observed_request_statuses.append(
+            _status(lambda: sessions_module.get_session(session_id))
+        )
+
+    monkeypatch.setattr(
+        sessions_module,
+        "_commit_session_candidate",
+        paused_commit,
+    )
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        future_block = pool.submit(
+            sessions_module.add_blocked_cell,
+            session_id,
+            sessions_module.AddBlockRequest(
+                cell=(1, 1),
+                currentTime=2,
+            ),
+        )
+        _wait(commit_entered, "future block 构造待提交候选")
+        deletion = pool.submit(sessions_module.delete_session, session_id)
+        observed_lock.wait_for_blockers()
+        with sessions_module._sessions_lock:
+            assert session.closing is True
+        allow_commit.set()
+
+        block_result = future_block.result(timeout=WAIT_TIMEOUT_SECONDS)
+        delete_result = deletion.result(timeout=WAIT_TIMEOUT_SECONDS)
+    finally:
+        allow_commit.set()
+        pool.shutdown(wait=True)
+
+    assert block_result.currentTime == 2
+    assert delete_result.deleted is True
+    assert observed_closing == [True]
+    assert observed_request_statuses == [404]
+    with sessions_module._sessions_lock:
+        assert session_id not in sessions_module._sessions
+
+
 def test_ttl_cleanup_skips_busy_expired_session_until_next_cleanup() -> None:
     session_id = _create_session()
     with sessions_module._sessions_lock:

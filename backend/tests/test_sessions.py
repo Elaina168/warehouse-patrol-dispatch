@@ -245,6 +245,101 @@ def test_zero_battery_cached_path_is_held_before_history_write() -> None:
     assert any("电量不足" in event.text for event in session.event_notes)
 
 
+def _idle_parking_energy_session_scenario() -> dict[str, Any]:
+    return {
+        "id": "idle-parking-energy-session",
+        "name": "idle-parking-energy-session",
+        "description": "活动机器人必须绕过零电量闲置机器人并持续推进。",
+        "width": 4,
+        "height": 2,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [],
+            "inspection": [[0, 0]],
+            "delivery": [],
+            "charging": [],
+        },
+        "robots": [
+            {
+                "id": "R1",
+                "name": "R1",
+                "start": [3, 0],
+                "battery": 100,
+                "batteryCapacity": 100,
+                "load": 1,
+                "capabilities": ["inspection"],
+            },
+            {
+                "id": "R2",
+                "name": "R2",
+                "start": [2, 0],
+                "battery": 0,
+                "batteryCapacity": 10,
+                "load": 1,
+                "capabilities": ["emergency"],
+            },
+        ],
+        "tasks": [
+            {
+                "id": "T1",
+                "type": "inspection",
+                "title": "绕过闲置机器人",
+                "priority": 3,
+                "targets": [[0, 0]],
+            }
+        ],
+        "dynamic": {
+            "triggerTime": 99,
+            "blockedCells": [],
+            "failedRobots": [],
+            "tasks": [],
+        },
+    }
+
+
+def test_zero_battery_idle_robot_does_not_stall_active_task_across_session_ticks() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _idle_parking_energy_session_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    payload = created.json()
+    for current_time in range(1, 7):
+        response = client.post(
+            f"/api/sessions/{session_id}/tick",
+            json={"currentTime": current_time},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["currentTime"] == current_time
+        idle_state = next(
+            state for state in payload["robotStates"] if state["robotId"] == "R2"
+        )
+        assert idle_state["position"] == [2, 0]
+        assert idle_state["battery"] == 0
+        assert payload["safetyIntervention"] is None
+
+    active_state = next(
+        state for state in payload["robotStates"] if state["robotId"] == "R1"
+    )
+    task_state = next(
+        state for state in payload["taskStates"] if state["taskId"] == "T1"
+    )
+    assert active_state["position"] == [0, 0]
+    assert task_state["status"] == "completed"
+    assert payload["result"]["conflicts"] == []
+    assert not any(
+        "电量安全门拦截" in event["text"]
+        for event in payload["result"]["eventLog"]
+    )
+
+
 def _forced_safety_gate_scenario() -> dict[str, Any]:
     return {
         "id": "forced-safety-gate",
@@ -897,7 +992,9 @@ def test_runtime_operation_applies_when_safety_hold_reaches_exact_tick(
         assert "R1" not in payload["result"]["unavailableRobotIds"]
 
 
-def test_second_future_block_occupancy_rejection_is_transactional(monkeypatch) -> None:
+def test_future_block_occupancy_rejection_uses_one_candidate_and_is_transactional(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     client = TestClient(app)
     observations: list[ReplanObservation] = []
     observer = observations.append
@@ -917,20 +1014,20 @@ def test_second_future_block_occupancy_rejection_is_transactional(monkeypatch) -
         if item.name not in {"last_accessed_at", "lock", "replan_observer"}
     }
     observation_count = len(observations)
-    real_preview = sessions_module._preview_session_at_time
+    advanced_session_ids: list[int] = []
+    real_advance_runtime_event = sessions_module._advance_runtime_event
 
-    def preview_without_occupancy(session, target_time):
-        preview = real_preview(session, target_time)
-        preview.robot_positions = {
-            robot.id: robot.start
-            for robot in preview.scenario.robots
-        }
-        return preview
+    def observed_advance_runtime_event(
+        candidate: sessions_module.DispatchSession,
+        current_time: int,
+    ) -> bool:
+        advanced_session_ids.append(id(candidate))
+        return real_advance_runtime_event(candidate, current_time)
 
     monkeypatch.setattr(
         sessions_module,
-        "_preview_session_at_time",
-        preview_without_occupancy,
+        "_advance_runtime_event",
+        observed_advance_runtime_event,
     )
 
     response = client.post(
@@ -942,6 +1039,8 @@ def test_second_future_block_occupancy_rejection_is_transactional(monkeypatch) -
     assert response.json()["detail"] == "封锁单元被机器人占用：R2 (1, 0)"
     assert sessions_module._sessions[session_id] is session
     assert session.replan_observer is observer
+    assert len(advanced_session_ids) == 1
+    assert advanced_session_ids[0] != id(session)
     assert len(observations) == observation_count
     for field_name, before_value in authoritative_before.items():
         assert getattr(session, field_name) == before_value
@@ -988,6 +1087,46 @@ def test_successful_future_block_notifies_observer_after_candidate_commit() -> N
     assert all(is_committed for _, is_committed in observed_committed_blocks)
 
 
+def test_successful_future_block_advances_one_detached_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    advanced_session_ids: list[int] = []
+    real_advance_runtime_event = sessions_module._advance_runtime_event
+
+    def observed_advance_runtime_event(
+        session: sessions_module.DispatchSession,
+        current_time: int,
+    ) -> bool:
+        advanced_session_ids.append(id(session))
+        return real_advance_runtime_event(session, current_time)
+
+    monkeypatch.setattr(
+        sessions_module,
+        "_advance_runtime_event",
+        observed_advance_runtime_event,
+    )
+    created = sessions_module.create_session(
+        CreateSessionRequest(
+            scenario=Scenario.model_validate(
+                _future_block_replan_transaction_scenario()
+            ),
+            options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        )
+    )
+    authoritative = sessions_module._sessions[created.sessionId]
+
+    result = sessions_module.add_blocked_cell(
+        created.sessionId,
+        sessions_module.AddBlockRequest(cell=(0, 0), currentTime=2),
+    )
+
+    assert result.currentTime == 2
+    assert result.runtimeEventCount == 1
+    assert (0, 0) in authoritative.runtime_blocked_cells
+    assert len(advanced_session_ids) == 1
+    assert advanced_session_ids[0] != id(authoritative)
+
+
 def test_failed_future_block_observer_rolls_back_committed_candidate() -> None:
     session_id_holder: dict[str, str] = {}
     observer_error = RuntimeError("future block observer failed")
@@ -999,6 +1138,7 @@ def test_failed_future_block_observer_rolls_back_committed_candidate() -> None:
         committed_session = sessions_module._sessions[session_id]
         assert committed_session.current_time == 2
         assert (0, 0) in committed_session.runtime_blocked_cells
+        committed_session.closing = True
         raise observer_error
 
     created = sessions_module.create_session(
@@ -1017,7 +1157,12 @@ def test_failed_future_block_observer_rolls_back_committed_candidate() -> None:
     authoritative_before = {
         item.name: copy.deepcopy(getattr(session, item.name))
         for item in dataclasses.fields(sessions_module.DispatchSession)
-        if item.name not in {"last_accessed_at", "lock", "replan_observer"}
+        if item.name not in {
+            "last_accessed_at",
+            "lock",
+            "replan_observer",
+            "closing",
+        }
     }
 
     with pytest.raises(RuntimeError, match="future block observer failed") as raised:
@@ -1030,8 +1175,28 @@ def test_failed_future_block_observer_rolls_back_committed_candidate() -> None:
     assert sessions_module._sessions[created.sessionId] is session
     assert session.lock is original_lock
     assert session.replan_observer is original_observer
+    assert session.closing is True
     for field_name, before_value in authoritative_before.items():
         assert getattr(session, field_name) == before_value
+
+
+def test_candidate_commit_preserves_registry_owned_closing_state() -> None:
+    created = sessions_module.create_session(
+        CreateSessionRequest(
+            scenario=Scenario.model_validate(
+                _future_block_replan_transaction_scenario()
+            ),
+            options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        )
+    )
+    session = sessions_module._sessions[created.sessionId]
+    candidate = sessions_module._clone_session_for_preview(session)
+    session.closing = True
+    candidate.closing = False
+
+    sessions_module._commit_session_candidate(session, candidate, [])
+
+    assert session.closing is True
 
 
 def test_future_runtime_event_clears_stale_safety_intervention_before_advancing() -> None:
@@ -2925,6 +3090,214 @@ def test_session_create_replans_queued_task_after_immediate_completion() -> None
     assert payload["result"]["assignments"][0]["tasks"][0]["id"] == "T1"
     assert len(payload["metricsHistory"]) == 1
     assert payload["metricsHistory"][0]["time"] == 0
+
+
+def test_t1_manual_current_cell_completion_replans_final_payload_and_clears_plan_state() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "t1-manual-current-cell-completion",
+        "name": "t1-manual-current-cell-completion",
+        "description": "非零时刻即时完成后必须返回不含已完成任务的新计划。",
+        "width": 4,
+        "height": 1,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [],
+            "inspection": [[0, 0], [1, 0], [2, 0], [3, 0]],
+            "delivery": [],
+            "charging": [],
+        },
+        "robots": [
+            {
+                "id": "R1",
+                "name": "R1",
+                "start": [0, 0],
+                "battery": 90,
+                "batteryCapacity": 100,
+                "load": 1,
+            }
+        ],
+        "tasks": [
+            {
+                "id": "Q",
+                "type": "inspection",
+                "title": "原队列任务",
+                "priority": 1,
+                "targets": [[3, 0]],
+            }
+        ],
+        "dynamic": {
+            "triggerTime": 99,
+            "blockedCells": [],
+            "failedRobots": [],
+            "tasks": [],
+        },
+    }
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+    ticked = client.post(
+        f"/api/sessions/{session_id}/tick",
+        json={"currentTime": 1},
+    )
+    assert ticked.status_code == 200
+    current_position = next(
+        state["position"]
+        for state in ticked.json()["robotStates"]
+        if state["robotId"] == "R1"
+    )
+
+    added = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={
+            "task": {
+                "id": "M",
+                "type": "inspection",
+                "title": "当前位置即时任务",
+                "priority": 5,
+                "releaseTime": 1,
+                "targets": [current_position],
+            }
+        },
+    )
+
+    assert added.status_code == 200
+    payload = added.json()
+    states = {state["taskId"]: state for state in payload["taskStates"]}
+    assert states["M"]["status"] == "completed"
+    assert states["M"]["completionTime"] == 1
+    assert states["M"]["assignedRobotId"] is None
+    assert states["Q"]["assignedRobotId"] == "R1"
+    assignment_task_ids = [
+        task["id"]
+        for assignment in payload["result"]["assignments"]
+        for task in assignment["tasks"]
+    ]
+    assert assignment_task_ids == ["Q"]
+    event_texts = [event["text"] for event in payload["result"]["eventLog"]]
+    assert event_texts.count("任务 M 已完成") == 1
+    assert event_texts.count("手动录入任务：M 当前位置即时任务") == 1
+    assert [snapshot["time"] for snapshot in payload["metricsHistory"]] == [0, 1]
+
+    session = sessions_module._sessions[session_id]
+    assert "M" not in session.preferred_task_robot_ids
+    assert "M" not in session.locked_task_robot_ids
+    assert session.last_result is not None
+    assert all(
+        task.id != "M"
+        for assignment in session.last_result.assignments
+        for task in assignment.tasks
+    )
+
+
+def test_dynamic_rolling_and_completion_same_tick_replan_to_final_consistent_payload() -> None:
+    client = TestClient(app)
+    scenario = {
+        "id": "dynamic-rolling-completion-same-tick",
+        "name": "dynamic-rolling-completion-same-tick",
+        "description": "完成、动态触发和滚动窗口在同一 tick 时必须收敛到最终计划。",
+        "width": 4,
+        "height": 1,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [],
+            "inspection": [[0, 0], [1, 0], [2, 0], [3, 0]],
+            "delivery": [],
+            "charging": [],
+        },
+        "robots": [
+            {
+                "id": "R1",
+                "name": "R1",
+                "start": [0, 0],
+                "battery": 90,
+                "batteryCapacity": 100,
+                "load": 1,
+            }
+        ],
+        "tasks": [
+            {
+                "id": "B",
+                "type": "inspection",
+                "title": "T=1 完成任务",
+                "priority": 4,
+                "targets": [[1, 0]],
+            },
+            {
+                "id": "F",
+                "type": "inspection",
+                "title": "T=1 纳入窗口",
+                "priority": 1,
+                "releaseTime": 2,
+                "targets": [[3, 0]],
+            },
+        ],
+        "dynamic": {
+            "triggerTime": 1,
+            "blockedCells": [],
+            "failedRobots": [],
+            "tasks": [
+                {
+                    "id": "D",
+                    "type": "emergency",
+                    "title": "T=1 原地动态任务",
+                    "priority": 5,
+                    "target": [1, 0],
+                }
+            ],
+        },
+    }
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario,
+            "options": {
+                "avoidConflicts": True,
+                "includeDynamic": True,
+                "assignmentReplanWindow": 1,
+            },
+        },
+    )
+    assert created.status_code == 200
+
+    ticked = client.post(
+        f"/api/sessions/{created.json()['sessionId']}/tick",
+        json={"currentTime": 1},
+    )
+
+    assert ticked.status_code == 200
+    payload = ticked.json()
+    states = {state["taskId"]: state for state in payload["taskStates"]}
+    assert states["B"]["status"] == "completed"
+    assert states["B"]["completionTime"] == 1
+    assert states["D"]["status"] == "completed"
+    assert states["D"]["completionTime"] == 1
+    assert states["D"]["assignedRobotId"] is None
+    assert states["F"]["status"] == "pending"
+    assert states["F"]["assignedRobotId"] == "R1"
+    assignment_task_ids = [
+        task["id"]
+        for assignment in payload["result"]["assignments"]
+        for task in assignment["tasks"]
+    ]
+    assert assignment_task_ids == ["F"]
+    event_texts = [event["text"] for event in payload["result"]["eventLog"]]
+    assert event_texts.count("任务 B 已完成") == 1
+    assert event_texts.count("T=1 场景动态事件触发") == 1
+    assert event_texts.count("T=1 滚动窗口纳入远期任务") == 1
+    assert event_texts.count("任务 D 已完成") == 1
+    assert [snapshot["time"] for snapshot in payload["metricsHistory"]] == [0, 1]
+
+    session = sessions_module._sessions[payload["sessionId"]]
+    assert {"B", "D"}.isdisjoint(session.preferred_task_robot_ids)
+    assert {"B", "D"}.isdisjoint(session.locked_task_robot_ids)
+    assert session.preferred_task_robot_ids["F"] == "R1"
 
 
 def test_session_create_raises_when_immediate_completion_replan_does_not_converge(
