@@ -980,6 +980,34 @@ def _first_execution_conflict(
     )
 
 
+def _first_energy_violation(
+    session: DispatchSession,
+    result: DispatchResult,
+    target_time: int,
+) -> tuple[int, str] | None:
+    violations: list[tuple[int, str]] = []
+    for robot in session.scenario.robots:
+        battery = session.robot_battery_levels.get(robot.id, robot.battery)
+        previous_position = session.robot_positions.get(robot.id, robot.start)
+        path = result.paths.get(robot.id, [previous_position])
+        charging_completion_times = {
+            visit.completionTime
+            for visit in result.chargingVisits
+            if visit.robotId == robot.id
+        }
+        for tick_time in range(session.current_time + 1, target_time + 1):
+            current_position = path_at(path, tick_time) or previous_position
+            if current_position != previous_position:
+                if battery <= 0:
+                    violations.append((tick_time, robot.id))
+                    break
+                battery -= 1
+            if tick_time in charging_completion_times:
+                battery = robot.batteryCapacity
+            previous_position = current_position
+    return min(violations, default=None)
+
+
 def _apply_result_through_time(
     session: DispatchSession,
     result: DispatchResult,
@@ -1074,15 +1102,10 @@ def _safety_hold_result(session: DispatchSession, result: DispatchResult) -> Dis
     )
 
 
-def _apply_safety_hold(
+def _record_safety_hold(
     session: DispatchSession,
-    result: DispatchResult,
     conflict: Conflict,
 ) -> None:
-    if conflict.time != session.current_time + 1:
-        raise ValueError("safety hold must apply to the next session tick")
-    hold_result = _safety_hold_result(session, result)
-    _apply_result_through_time(session, hold_result, conflict.time)
     for robot in session.scenario.robots:
         session.safety_hold_times.setdefault(robot.id, set()).add(conflict.time)
     session.last_safety_intervention = conflict
@@ -1092,6 +1115,38 @@ def _apply_safety_hold(
         session,
         conflict.time,
         f"T={conflict.time} 执行安全门拦截 {conflict.type} 冲突：{robot_ids}",
+    )
+    _invalidate_plan(session)
+
+
+def _apply_safety_hold(
+    session: DispatchSession,
+    result: DispatchResult,
+    conflict: Conflict,
+) -> None:
+    if conflict.time != session.current_time + 1:
+        raise ValueError("safety hold must apply to the next session tick")
+    hold_result = _safety_hold_result(session, result)
+    _apply_result_through_time(session, hold_result, conflict.time)
+    _record_safety_hold(session, conflict)
+
+
+def _apply_energy_hold(
+    session: DispatchSession,
+    result: DispatchResult,
+    event_time: int,
+    robot_id: str,
+) -> None:
+    if event_time != session.current_time + 1:
+        raise ValueError("energy hold must apply to the next session tick")
+    hold_result = _safety_hold_result(session, result)
+    _apply_result_through_time(session, hold_result, event_time)
+    for robot in session.scenario.robots:
+        session.safety_hold_times.setdefault(robot.id, set()).add(event_time)
+    _record_session_event(
+        session,
+        event_time,
+        f"T={event_time} 电量安全门拦截：{robot_id} 电量不足，保持原位并重新规划",
     )
     _invalidate_plan(session)
 
@@ -1107,6 +1162,7 @@ def _advance_session(session: DispatchSession, target_time: int) -> bool:
     dynamic_trigger_time = _next_scenario_dynamic_trigger_time(session, target_time)
     window_trigger_time = _next_rolling_window_trigger_time(session, target_time)
     active_completion_time = _next_active_task_completion_time(session, result, target_time)
+    energy_violation = _first_energy_violation(session, result, target_time)
     safety_conflict = (
         _first_execution_conflict(result, session.current_time, target_time)
         if session.enforce_execution_safety and session.options.avoidConflicts
@@ -1119,6 +1175,7 @@ def _advance_session(session: DispatchSession, target_time: int) -> bool:
             dynamic_trigger_time,
             window_trigger_time,
             active_completion_time,
+            energy_violation[0] if energy_violation is not None else None,
             safety_conflict.time if safety_conflict is not None else None,
         ],
     )
@@ -1128,13 +1185,22 @@ def _advance_session(session: DispatchSession, target_time: int) -> bool:
             return True
         return _advance_session(session, target_time)
 
-    if safety_conflict is not None and safety_conflict.time == target_time:
+    energy_violation_at_target = energy_violation is not None and energy_violation[0] == target_time
+    safety_conflict_at_target = safety_conflict is not None and safety_conflict.time == target_time
+    if energy_violation_at_target or safety_conflict_at_target:
         if target_time > session.current_time + 1:
             if _advance_session(session, target_time - 1):
                 return True
             return _advance_session(session, target_time)
 
-        _apply_safety_hold(session, result, safety_conflict)
+        if energy_violation_at_target and energy_violation is not None:
+            _apply_energy_hold(session, result, target_time, energy_violation[1])
+            if safety_conflict_at_target and safety_conflict is not None:
+                _record_safety_hold(session, safety_conflict)
+            else:
+                _clear_safety_stall(session)
+        elif safety_conflict is not None:
+            _apply_safety_hold(session, result, safety_conflict)
         if dynamic_trigger_time == target_time:
             _activate_scenario_dynamic(session, target_time, result)
         if window_trigger_time == target_time:

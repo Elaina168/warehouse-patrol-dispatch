@@ -109,6 +109,53 @@ def test_first_execution_conflict_ignores_past_and_out_of_range_conflicts() -> N
     assert sessions_module._first_execution_conflict(result, current_time=2, target_time=5) is None
 
 
+def test_zero_battery_cached_path_is_held_before_history_write() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "zero-battery-cached-path",
+            "name": "zero-battery-cached-path",
+            "description": "零电量机器人不得执行无效缓存路径",
+            "width": 2,
+            "height": 1,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [0, 0],
+                    "battery": 0,
+                    "batteryCapacity": 10,
+                    "load": 1,
+                }
+            ],
+            "tasks": [],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+    result = _safety_test_result(scenario, {"R1": [(0, 0), (1, 0)]}, [])
+    session = sessions_module.DispatchSession(
+        session_id="zero-battery-cached-path",
+        scenario=scenario,
+        options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        robot_positions={"R1": (0, 0)},
+        robot_path_history={"R1": [(0, 0)]},
+        robot_travelled_distance={"R1": 0},
+        robot_battery_levels={"R1": 0},
+        last_result=result,
+        planning_started=True,
+    )
+
+    sessions_module._advance_session(session, 1)
+
+    assert session.robot_positions["R1"] == (0, 0)
+    assert session.robot_path_history["R1"][1] == (0, 0)
+    assert session.robot_battery_levels["R1"] == 0
+    assert session.last_result is None
+    assert session.last_safety_intervention is None
+    assert any("电量不足" in event.text for event in session.event_notes)
+
+
 def _forced_safety_gate_scenario() -> dict[str, Any]:
     return {
         "id": "forced-safety-gate",
@@ -339,6 +386,73 @@ def test_session_safety_gate_blocks_reverse_edge_swap() -> None:
     assert session.robot_travelled_distance == {"R1": 0, "R2": 0}
     assert session.robot_battery_levels == {"R1": 80, "R2": 80}
     assert session.last_safety_intervention == conflict
+
+
+def test_zero_battery_and_execution_safety_same_tick_apply_one_hold_with_two_explanations() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "energy-conflict-same-tick",
+            "name": "energy-conflict-same-tick",
+            "description": "同 tick 电量与碰撞执行门只推进一次",
+            "width": 2,
+            "height": 1,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [0, 0],
+                    "battery": 0,
+                    "batteryCapacity": 10,
+                    "load": 1,
+                },
+                {
+                    "id": "R2",
+                    "name": "R2",
+                    "start": [1, 0],
+                    "battery": 80,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                },
+            ],
+            "tasks": [],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+    conflict = Conflict(time=1, type="edge", robots=["R1", "R2"], cell=(1, 0))
+    result = _safety_test_result(
+        scenario,
+        {"R1": [(0, 0), (1, 0)], "R2": [(1, 0), (0, 0)]},
+        [conflict],
+    )
+    session = sessions_module.DispatchSession(
+        session_id="energy-conflict-same-tick",
+        scenario=scenario,
+        options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        robot_positions={"R1": (0, 0), "R2": (1, 0)},
+        robot_path_history={"R1": [(0, 0)], "R2": [(1, 0)]},
+        robot_travelled_distance={"R1": 0, "R2": 0},
+        robot_battery_levels={"R1": 0, "R2": 80},
+        last_result=result,
+        planning_started=True,
+    )
+
+    sessions_module._advance_session(session, 1)
+
+    assert session.current_time == 1
+    assert session.robot_path_history == {
+        "R1": [(0, 0), (0, 0)],
+        "R2": [(1, 0), (1, 0)],
+    }
+    assert session.robot_travelled_distance == {"R1": 0, "R2": 0}
+    assert session.robot_battery_levels == {"R1": 0, "R2": 80}
+    assert session.safety_hold_times == {"R1": {1}, "R2": {1}}
+    assert session.last_safety_intervention == conflict
+    assert session.last_result is None
+    texts = [event.text for event in session.event_notes]
+    assert texts.count("T=1 电量安全门拦截：R1 电量不足，保持原位并重新规划") == 1
+    assert texts.count("T=1 执行安全门拦截 edge 冲突：R1 / R2") == 1
 
 
 def test_safety_hold_does_not_complete_unexecuted_delivery_pickup() -> None:
