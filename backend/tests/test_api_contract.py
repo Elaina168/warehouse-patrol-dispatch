@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from backend.app.main import app
 from backend.app import schemas
+from backend.app.limits import MAX_TASK_SERVICE_TIME
 
 
 FRONTEND_TYPES = Path("frontend/src/domain/types.ts")
@@ -80,9 +81,9 @@ def _frontend_string_literal_union(type_name: str) -> set[str]:
 
 def _frontend_numeric_constant(name: str) -> int:
     text = FRONTEND_MAIN.read_text(encoding="utf-8")
-    match = re.search(rf"const {re.escape(name)} = (?P<value>\d+);", text)
+    match = re.search(rf"const {re.escape(name)} = (?P<value>\d[\d_]*);", text)
     assert match is not None, f"Missing frontend numeric constant: {name}"
-    return int(match.group("value"))
+    return int(match.group("value").replace("_", ""))
 
 
 def _backend_string_literal_values(annotation: Any) -> set[str]:
@@ -241,6 +242,10 @@ def test_frontend_assignment_replan_window_constants_match_backend_schema() -> N
     assert schema["minimum"] == 0
     assert schema["default"] == _frontend_numeric_constant("DEFAULT_ASSIGNMENT_REPLAN_WINDOW")
     assert schema["maximum"] == _frontend_numeric_constant("MAX_ASSIGNMENT_REPLAN_WINDOW")
+
+
+def test_frontend_service_time_limit_matches_backend_limit() -> None:
+    assert _frontend_numeric_constant("MAX_TASK_SERVICE_TIME") == MAX_TASK_SERVICE_TIME
 
 
 def test_frontend_recovery_action_union_matches_backend_schema() -> None:

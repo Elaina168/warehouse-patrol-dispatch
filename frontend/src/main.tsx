@@ -15,6 +15,7 @@ import "./styles.css";
 const API_BASE = "http://127.0.0.1:8011";
 const DEFAULT_ASSIGNMENT_REPLAN_WINDOW = 24;
 const MAX_ASSIGNMENT_REPLAN_WINDOW = 120;
+const MAX_TASK_SERVICE_TIME = 10_000;
 const DEFAULT_PLAYBACK_RATE = 2.4;
 const MIN_PLAYBACK_RATE = 0.2;
 const MAX_PLAYBACK_RATE = 10;
@@ -819,9 +820,10 @@ function App() {
                    </label>
                    <label>
                      <span>作业时间（tick）</span>
-                     <input
-                       min={0}
-                       step={1}
+                      <input
+                        min={0}
+                        max={MAX_TASK_SERVICE_TIME}
+                        step={1}
                        type="number"
                        value={manualTask.serviceTime}
                        onChange={(event) => setManualTask((task) => ({ ...task, serviceTime: Number(event.target.value) }))}
@@ -2230,7 +2232,7 @@ function mapPickLabel(target: MapPickTarget): string {
   return "目标";
 }
 
-function buildManualTask(form: ManualTaskForm, tasks: Task[], currentTime: number, scenario: Scenario): Task | null {
+export function buildManualTask(form: ManualTaskForm, tasks: Task[], currentTime: number, scenario: Scenario): Task | null {
   const target = parseCoordinateInput(form.target, scenario);
   const pickup = parseCoordinateInput(form.pickup, scenario);
   const dropoff = parseCoordinateInput(form.dropoff, scenario);
@@ -2241,7 +2243,11 @@ function buildManualTask(form: ManualTaskForm, tasks: Task[], currentTime: numbe
     priority: normalizeTaskPriority(form.priority),
     releaseTime: currentTime,
     deadline: normalizeManualTaskDeadline(form.deadline, currentTime),
-    serviceTime: Math.max(0, Math.floor(Number.isFinite(form.serviceTime) ? form.serviceTime : 0))
+    serviceTime: clamp(
+      Math.floor(Number.isFinite(form.serviceTime) ? form.serviceTime : 0),
+      0,
+      MAX_TASK_SERVICE_TIME
+    )
   };
 
   if (form.type === "delivery") {

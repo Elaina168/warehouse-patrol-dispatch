@@ -52,6 +52,7 @@ import {
   routeHintsAfterSessionUpdate,
   parseScenario,
   parseCoordinateInput,
+  buildManualTask,
   createManualTaskForm,
   createSessionRequestCoordinator,
   MapBoard,
@@ -942,6 +943,16 @@ describe("event navigation", () => {
 });
 
 describe("manual task coordinates", () => {
+  it("bounds manual service time after truncating fractional values", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const form = createManualTaskForm(scenario);
+
+    expect(buildManualTask({ ...form, serviceTime: 10_001 }, [], 0, scenario)?.serviceTime).toBe(10_000);
+    expect(buildManualTask({ ...form, serviceTime: -1 }, [], 0, scenario)?.serviceTime).toBe(0);
+    expect(buildManualTask({ ...form, serviceTime: 10_000.9 }, [], 0, scenario)?.serviceTime).toBe(10_000);
+    expect(buildManualTask({ ...form, serviceTime: -0.9 }, [], 0, scenario)?.serviceTime).toBe(0);
+  });
+
   it("defaults warehouse delivery dropoff to the first initially empty shelf service cell", () => {
     const scenario = buildWarehouseGeneratorScenario();
 
