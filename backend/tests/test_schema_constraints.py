@@ -4,6 +4,7 @@ import pytest
 
 from backend.app import main, schemas
 from backend.app.limits import (
+    MAX_EXPERIMENT_CASES,
     MAX_SCENARIO_AXIS_LENGTH,
     MAX_SCENARIO_CELL_COUNT,
     MAX_SCENARIO_ROBOTS,
@@ -115,6 +116,83 @@ def test_scenario_charge_time_limit_accepts_10000_and_rejects_10001() -> None:
     ).chargeTime == 10_000
     with pytest.raises(ValidationError):
         schemas.Scenario.model_validate({**payload, "chargeTime": 10_001})
+
+
+def test_replan_window_experiment_batch_limit_accepts_1_and_32() -> None:
+    payload = {
+        "scenario": scenario_payload(),
+        "options": {},
+    }
+
+    valid_one = schemas.ReplanWindowExperimentRequest.model_validate(
+        {**payload, "windows": [4]}
+    )
+    valid_maximum = schemas.ReplanWindowExperimentRequest.model_validate(
+        {**payload, "windows": list(range(MAX_EXPERIMENT_CASES))}
+    )
+
+    assert len(valid_one.windows) == 1
+    assert len(valid_maximum.windows) == MAX_EXPERIMENT_CASES
+
+
+def test_replan_window_experiment_batch_limit_rejects_0_and_33() -> None:
+    payload = {
+        "scenario": scenario_payload(),
+        "options": {},
+    }
+
+    with pytest.raises(ValidationError):
+        schemas.ReplanWindowExperimentRequest.model_validate(
+            {**payload, "windows": []}
+        )
+    with pytest.raises(ValidationError):
+        schemas.ReplanWindowExperimentRequest.model_validate(
+            {
+                **payload,
+                "windows": list(range(MAX_EXPERIMENT_CASES + 1)),
+            }
+        )
+
+
+def test_replan_window_experiment_duplicate_window_rejected() -> None:
+    payload = {
+        "scenario": scenario_payload(),
+        "options": {},
+        "windows": [4, 4],
+    }
+
+    with pytest.raises(ValidationError, match="windows must be unique"):
+        schemas.ReplanWindowExperimentRequest.model_validate(payload)
+
+
+def test_scale_experiment_batch_limit_accepts_1_and_32() -> None:
+    scenario = scenario_payload()
+    one_case = [{"label": "case-0", "scenario": scenario}]
+    maximum_cases = [
+        {"label": f"case-{index}", "scenario": scenario}
+        for index in range(MAX_EXPERIMENT_CASES)
+    ]
+
+    valid_one = schemas.ScaleExperimentRequest.model_validate({"cases": one_case})
+    valid_maximum = schemas.ScaleExperimentRequest.model_validate(
+        {"cases": maximum_cases}
+    )
+
+    assert len(valid_one.cases) == 1
+    assert len(valid_maximum.cases) == MAX_EXPERIMENT_CASES
+
+
+def test_scale_experiment_batch_limit_rejects_0_and_33() -> None:
+    scenario = scenario_payload()
+    excessive_cases = [
+        {"label": f"case-{index}", "scenario": scenario}
+        for index in range(MAX_EXPERIMENT_CASES + 1)
+    ]
+
+    with pytest.raises(ValidationError):
+        schemas.ScaleExperimentRequest.model_validate({"cases": []})
+    with pytest.raises(ValidationError):
+        schemas.ScaleExperimentRequest.model_validate({"cases": excessive_cases})
 
 
 def test_request_models_reject_negative_time_and_non_positive_dimensions() -> None:

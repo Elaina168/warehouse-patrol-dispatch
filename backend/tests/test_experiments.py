@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 import backend.app.experiments as experiments_module
 import backend.app.sessions as sessions_module
 from backend.app.main import app
+from backend.app.limits import MAX_EXPERIMENT_CASES
 from backend.app.schemas import Scenario
 from backend.tests.helpers import frontend_demo_scenario
 
@@ -141,6 +142,45 @@ def forced_online_experiment_conflict_scenario() -> Scenario:
             },
         }
     )
+
+
+def test_invalid_experiment_batch_limits_and_duplicate_windows_never_run_dispatch(
+    monkeypatch,
+) -> None:
+    client = TestClient(app)
+    scenario = crossing_delivery_scenario()
+    calls: list[tuple] = []
+
+    def forbidden_run_dispatch(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("run_dispatch must not receive an invalid experiment request")
+
+    monkeypatch.setattr(experiments_module, "run_dispatch", forbidden_run_dispatch)
+    excessive_cases = [
+        {"label": f"case-{index}", "scenario": scenario}
+        for index in range(MAX_EXPERIMENT_CASES + 1)
+    ]
+    requests = [
+        ("/api/experiments/replan-window", {"scenario": scenario, "windows": []}),
+        (
+            "/api/experiments/replan-window",
+            {"scenario": scenario, "windows": [4, 4]},
+        ),
+        (
+            "/api/experiments/replan-window",
+            {
+                "scenario": scenario,
+                "windows": list(range(MAX_EXPERIMENT_CASES + 1)),
+            },
+        ),
+        ("/api/experiments/scale", {"cases": []}),
+        ("/api/experiments/scale", {"cases": excessive_cases}),
+    ]
+
+    for path, body in requests:
+        response = client.post(path, json=body)
+        assert response.status_code == 422
+        assert calls == []
 
 
 def test_conflict_avoidance_experiment_returns_baseline_and_avoidance_cases() -> None:

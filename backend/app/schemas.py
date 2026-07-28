@@ -3,6 +3,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.app.limits import (
+    MAX_EXPERIMENT_CASES,
     MAX_SCENARIO_CHARGE_TIME,
     MAX_SCENARIO_AXIS_LENGTH,
     MAX_SCENARIO_CELL_COUNT,
@@ -172,8 +173,17 @@ class DynamicReplanningExperimentRequest(ApiModel):
 class ReplanWindowExperimentRequest(ApiModel):
     scenario: Scenario
     options: DispatchOptions = Field(default_factory=DispatchOptions)
-    windows: list[AssignmentReplanWindowInt]
+    windows: list[AssignmentReplanWindowInt] = Field(
+        min_length=1,
+        max_length=MAX_EXPERIMENT_CASES,
+    )
     includeAdaptive: bool = False
+
+    @model_validator(mode="after")
+    def validate_unique_windows(self) -> "ReplanWindowExperimentRequest":
+        if len(set(self.windows)) != len(self.windows):
+            raise ValueError("windows must be unique")
+        return self
 
 
 class ScaleExperimentScenario(ApiModel):
@@ -182,7 +192,10 @@ class ScaleExperimentScenario(ApiModel):
 
 
 class ScaleExperimentRequest(ApiModel):
-    cases: list[ScaleExperimentScenario]
+    cases: list[ScaleExperimentScenario] = Field(
+        min_length=1,
+        max_length=MAX_EXPERIMENT_CASES,
+    )
     options: DispatchOptions = Field(default_factory=DispatchOptions)
 
 
