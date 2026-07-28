@@ -4,7 +4,7 @@ import backend.app.dispatch as dispatch_module
 from backend.app.dispatch import build_paths, build_paths_for_order, path_planning_candidate_score, task_completion_times
 from backend.app.main import app
 from backend.app.planning_diagnostics import PathCandidateDiagnostics
-from backend.app.schemas import Assignment, DispatchOptions, Scenario
+from backend.app.schemas import Assignment, DispatchOptions, Scenario, TaskFailureDetail
 from backend.tests.helpers import scenario_payload, seeded_pressure_scenario
 
 
@@ -131,7 +131,7 @@ def test_timed_detour_battery_rejects_path_beyond_available_movement_units() -> 
         (2, 0),
     ]
 
-    path, failed = dispatch_module.plan_robot_path(
+    path, failed, path_plan_failure = dispatch_module.plan_robot_path(
         scenario,
         scenario.robots[0],
         scenario.robots[0].start,
@@ -143,6 +143,7 @@ def test_timed_detour_battery_rejects_path_beyond_available_movement_units() -> 
     )
 
     assert failed is True
+    assert path_plan_failure is None
     assert path == [(0, 0)]
 
 
@@ -2964,6 +2965,294 @@ def test_path_planning_keeps_robot_at_task_endpoint_for_service_time() -> None:
     assert failures == []
     assert paths["R1"] == [(0, 0), (1, 0), (1, 0), (1, 0), (2, 0)]
     assert completions == {"T1": 3, "T2": 4}
+
+
+PATH_TICK_BUDGET_REASON = "规划路径超过最大时域 10000 tick"
+
+
+def assert_path_tick_budget_failure(
+    result,
+    task_id: str,
+    robot_id: str = "R1",
+) -> None:
+    assert all(len(path) <= 10_001 for path in result.paths.values())
+    assert result.failureReasons == {task_id: PATH_TICK_BUDGET_REASON}
+    assert result.failureDetails == {
+        task_id: TaskFailureDetail(
+            reason=PATH_TICK_BUDGET_REASON,
+            category="permanent",
+            recoveryAction="fixTaskDefinition",
+        )
+    }
+    assert result.metrics.failureCount == 1
+    assert [item.text for item in result.eventLog].count(f"{robot_id} 存在不可达任务") == 1
+    assert all(conflict.time <= 10_000 for conflict in result.conflicts)
+
+
+def test_path_tick_budget_rejects_cumulative_service_overflow() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "cumulative-service-path-tick-budget",
+            "name": "cumulative-service-path-tick-budget",
+            "description": "两个合法作业时长累计后不得突破规划路径预算。",
+            "width": 3,
+            "height": 1,
+            "obstacles": [],
+            "zones": {
+                "warehouse": [],
+                "inspection": [[1, 0], [2, 0]],
+                "delivery": [],
+                "charging": [],
+            },
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [0, 0],
+                    "battery": 100,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "T1",
+                    "type": "inspection",
+                    "title": "第一段作业",
+                    "priority": 2,
+                    "targets": [[1, 0]],
+                    "serviceTime": 6000,
+                },
+                {
+                    "id": "T2",
+                    "type": "inspection",
+                    "title": "第二段作业",
+                    "priority": 1,
+                    "targets": [[2, 0]],
+                    "serviceTime": 5000,
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=False, includeDynamic=False),
+    )
+
+    assert [
+        task.id
+        for assignment in result.assignments
+        for task in assignment.tasks
+    ] == ["T1", "T2"]
+    assert_path_tick_budget_failure(result, "T2")
+
+
+def test_path_tick_budget_rejects_move_after_release_wait() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "release-wait-path-tick-budget",
+            "name": "release-wait-path-tick-budget",
+            "description": "等待到路径预算末端后不得再拼接移动路径。",
+            "width": 2,
+            "height": 1,
+            "obstacles": [],
+            "zones": {
+                "warehouse": [],
+                "inspection": [[1, 0]],
+                "delivery": [],
+                "charging": [],
+            },
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [0, 0],
+                    "battery": 100,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "T1",
+                    "type": "inspection",
+                    "title": "预算末端释放",
+                    "priority": 1,
+                    "releaseTime": 10000,
+                    "targets": [[1, 0]],
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        locked_task_robot_ids={"T1": "R1"},
+    )
+
+    assert result.paths["R1"] == [(0, 0)] * 10_001
+    assert_path_tick_budget_failure(result, "T1")
+
+
+def test_path_tick_budget_rejects_charge_wait_overflow() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "charge-wait-path-tick-budget",
+            "name": "charge-wait-path-tick-budget",
+            "description": "到达充电桩后剩余预算不足时不得追加充电等待。",
+            "width": 4,
+            "height": 1,
+            "obstacles": [],
+            "zones": {
+                "warehouse": [],
+                "inspection": [[3, 0]],
+                "delivery": [],
+                "charging": [[0, 0]],
+            },
+            "chargeTime": 2,
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [1, 0],
+                    "battery": 1,
+                    "batteryCapacity": 8,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "T1",
+                    "type": "inspection",
+                    "title": "预算末端充电",
+                    "priority": 1,
+                    "releaseTime": 9999,
+                    "targets": [[3, 0]],
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        locked_task_robot_ids={"T1": "R1"},
+    )
+
+    assert result.paths["R1"][-1] == (0, 0)
+    assert result.chargingVisits == []
+    assert_path_tick_budget_failure(result, "T1")
+
+
+def test_path_tick_budget_failure_preserves_unrelated_and_deferred_tasks() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "isolated-path-tick-budget-failure",
+            "name": "isolated-path-tick-budget-failure",
+            "description": "单条路径超限不得影响其他机器人或远期任务。",
+            "width": 5,
+            "height": 2,
+            "obstacles": [],
+            "zones": {
+                "warehouse": [],
+                "inspection": [[1, 0], [2, 0]],
+                "delivery": [[3, 1], [2, 1]],
+                "charging": [],
+            },
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [0, 0],
+                    "battery": 100,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+                {
+                    "id": "R2",
+                    "name": "R2",
+                    "start": [4, 1],
+                    "battery": 100,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                    "capabilities": ["delivery"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "OVERFLOW",
+                    "type": "inspection",
+                    "title": "预算末端释放",
+                    "priority": 3,
+                    "releaseTime": 10000,
+                    "targets": [[1, 0]],
+                },
+                {
+                    "id": "OK",
+                    "type": "delivery",
+                    "title": "不相关配送",
+                    "priority": 2,
+                    "pickup": [3, 1],
+                    "dropoff": [2, 1],
+                    "demand": 1,
+                },
+                {
+                    "id": "DEFERRED",
+                    "type": "inspection",
+                    "title": "远期巡检",
+                    "priority": 1,
+                    "releaseTime": 999,
+                    "targets": [[2, 0]],
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        locked_task_robot_ids={"OVERFLOW": "R1"},
+    )
+
+    assert {
+        assignment.robotId: [task.id for task in assignment.tasks]
+        for assignment in result.assignments
+    } == {"R1": ["OVERFLOW"], "R2": ["OK"]}
+    assert [task.id for task in result.tasks] == ["OVERFLOW", "OK", "DEFERRED"]
+    assert "DEFERRED" not in result.failureReasons
+    assert "DEFERRED" not in result.failureDetails
+    assert "OK" not in result.failureReasons
+    assert_path_tick_budget_failure(result, "OVERFLOW")
 
 
 def test_path_planning_portfolio_selects_lower_makespan_order() -> None:
