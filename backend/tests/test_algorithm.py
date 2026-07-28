@@ -3237,7 +3237,27 @@ def test_dispatch_api_caps_cumulative_valid_service_path_nodes() -> None:
     )
 
     assert response.status_code == 200
-    assert all(len(path) <= 10_001 for path in response.json()["paths"].values())
+    payload = response.json()
+    assert payload["paths"]["R1"]
+    assert [
+        {
+            "robotId": assignment["robotId"],
+            "taskIds": [task["id"] for task in assignment["tasks"]],
+        }
+        for assignment in payload["assignments"]
+    ] == [{"robotId": "R1", "taskIds": ["T1", "T2"]}]
+    assert payload["failureReasons"] == {"T2": PATH_TICK_BUDGET_REASON}
+    assert payload["failureDetails"] == {
+        "T2": {
+            "reason": PATH_TICK_BUDGET_REASON,
+            "category": "permanent",
+            "recoveryAction": "fixTaskDefinition",
+            "blockingCells": [],
+            "blockingRobotIds": [],
+        }
+    }
+    assert payload["metrics"]["failureCount"] == 1
+    assert all(len(path) <= 10_001 for path in payload["paths"].values())
 
 
 def test_timed_path_budget_keeps_static_unreachable_failure_generic() -> None:
