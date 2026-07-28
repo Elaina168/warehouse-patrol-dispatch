@@ -810,17 +810,26 @@ def test_runtime_operation_applies_when_safety_hold_reaches_exact_tick(
         assert "R1" not in payload["result"]["unavailableRobotIds"]
 
 
-def test_exact_tick_block_revalidates_actual_held_cell_occupancy(monkeypatch) -> None:
+def test_second_future_block_occupancy_rejection_is_transactional(monkeypatch) -> None:
     client = TestClient(app)
-    created = client.post(
-        "/api/sessions",
-        json={
-            "scenario": _forced_safety_gate_scenario(),
-            "options": {"avoidConflicts": True, "includeDynamic": False},
-        },
+    observations: list[ReplanObservation] = []
+    observer = observations.append
+    created = sessions_module.create_session(
+        CreateSessionRequest(
+            scenario=Scenario.model_validate(_forced_safety_gate_scenario()),
+            options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        ),
+        replan_observer=observer,
     )
-    assert created.status_code == 200
-    session_id = created.json()["sessionId"]
+    session_id = created.sessionId
+    before = client.get(f"/api/sessions/{session_id}").json()
+    session = sessions_module._sessions[session_id]
+    authoritative_before = {
+        item.name: copy.deepcopy(getattr(session, item.name))
+        for item in dataclasses.fields(sessions_module.DispatchSession)
+        if item.name not in {"last_accessed_at", "lock", "replan_observer"}
+    }
+    observation_count = len(observations)
     real_preview = sessions_module._preview_session_at_time
 
     def preview_without_occupancy(session, target_time):
@@ -844,11 +853,52 @@ def test_exact_tick_block_revalidates_actual_held_cell_occupancy(monkeypatch) ->
 
     assert response.status_code == 409
     assert response.json()["detail"] == "封锁单元被机器人占用：R2 (1, 0)"
-    session = sessions_module._sessions[session_id]
-    assert session.current_time == 2
-    assert session.robot_positions["R2"] == (1, 0)
-    assert session.last_safety_intervention is not None
-    assert (1, 0) not in session.runtime_blocked_cells
+    assert sessions_module._sessions[session_id] is session
+    assert session.replan_observer is observer
+    assert len(observations) == observation_count
+    for field_name, before_value in authoritative_before.items():
+        assert getattr(session, field_name) == before_value
+    after = client.get(f"/api/sessions/{session_id}").json()
+    after["lastAccessedAt"] = before["lastAccessedAt"]
+    assert after == before
+    assert len(observations) == observation_count
+
+
+def test_successful_future_block_notifies_observer_after_candidate_commit() -> None:
+    session_id_holder: dict[str, str] = {}
+    observed_committed_blocks: list[tuple[int, bool]] = []
+
+    def observer(observation: ReplanObservation) -> None:
+        session_id = session_id_holder.get("session_id")
+        if session_id is None:
+            return
+        observed_committed_blocks.append(
+            (
+                observation.time,
+                (0, 0) in sessions_module._sessions[session_id].runtime_blocked_cells,
+            )
+        )
+
+    created = sessions_module.create_session(
+        CreateSessionRequest(
+            scenario=Scenario.model_validate(
+                _future_block_replan_transaction_scenario()
+            ),
+            options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        ),
+        replan_observer=observer,
+    )
+    session_id_holder["session_id"] = created.sessionId
+
+    response = sessions_module.add_blocked_cell(
+        created.sessionId,
+        sessions_module.AddBlockRequest(cell=(0, 0), currentTime=2),
+    )
+
+    assert response.currentTime == 2
+    assert (0, 0) in sessions_module._sessions[created.sessionId].runtime_blocked_cells
+    assert observed_committed_blocks
+    assert all(is_committed for _, is_committed in observed_committed_blocks)
 
 
 def test_future_runtime_event_clears_stale_safety_intervention_before_advancing() -> None:

@@ -344,38 +344,75 @@ def add_blocked_cell(session_id: str, request: AddBlockRequest) -> SessionResult
             )
             if occupying_robot_id is not None:
                 raise HTTPException(status_code=409, detail=f"封锁单元被机器人占用：{occupying_robot_id} ({cell[0]}, {cell[1]})")
-        previous_time = session.current_time
-        if _advance_runtime_event(session, current_time):
-            _touch_session_if_time_changed(session, previous_time)
-            return _build_result(session)
+        transaction_observations: list[ReplanObservation] = []
+        transaction_session = session
+        if current_time > session.current_time:
+            transaction_session = _clone_session_for_preview(session)
+            if session.replan_observer is not None:
+                transaction_session.replan_observer = transaction_observations.append
+        previous_time = transaction_session.current_time
+        if _advance_runtime_event(transaction_session, current_time):
+            _touch_session_if_time_changed(transaction_session, previous_time)
+            result = _build_result(transaction_session)
+            if transaction_session is not session:
+                _commit_session_candidate(
+                    session,
+                    transaction_session,
+                    transaction_observations,
+                )
+            return result
         if not is_active_dynamic_block_request:
             occupying_robot_id = next(
                 (
                     robot.id
-                    for robot in session.scenario.robots
-                    if session.robot_positions.get(robot.id, robot.start) == cell
+                    for robot in transaction_session.scenario.robots
+                    if transaction_session.robot_positions.get(robot.id, robot.start) == cell
                 ),
                 None,
             )
             if occupying_robot_id is not None:
-                _touch_session_if_time_changed(session, previous_time)
                 raise HTTPException(
                     status_code=409,
                     detail=f"封锁单元被机器人占用：{occupying_robot_id} ({cell[0]}, {cell[1]})",
                 )
-        is_dynamic_blocked_cell = _is_scenario_dynamic_active(session) and cell in session.scenario.dynamic.blockedCells
-        is_new_blocked_cell = cell not in session.runtime_blocked_cells and not is_dynamic_blocked_cell
+        is_dynamic_blocked_cell = (
+            _is_scenario_dynamic_active(transaction_session)
+            and cell in transaction_session.scenario.dynamic.blockedCells
+        )
+        is_new_blocked_cell = (
+            cell not in transaction_session.runtime_blocked_cells
+            and not is_dynamic_blocked_cell
+        )
         if is_new_blocked_cell:
-            current_result = session.last_result or _build_result(session).result
-            _release_locks_for_blocked_cell(session, current_result, cell, current_time)
-            session.runtime_blocked_cells.append(cell)
-            _clear_safety_stall(session)
-            _invalidate_plan(session)
-            _touch_session_updated(session)
-            _record_session_event(session, current_time, f"T={current_time} 手动封锁单元：({cell[0]}, {cell[1]})")
+            current_result = (
+                transaction_session.last_result
+                or _build_result(transaction_session).result
+            )
+            _release_locks_for_blocked_cell(
+                transaction_session,
+                current_result,
+                cell,
+                current_time,
+            )
+            transaction_session.runtime_blocked_cells.append(cell)
+            _clear_safety_stall(transaction_session)
+            _invalidate_plan(transaction_session)
+            _touch_session_updated(transaction_session)
+            _record_session_event(
+                transaction_session,
+                current_time,
+                f"T={current_time} 手动封锁单元：({cell[0]}, {cell[1]})",
+            )
         else:
-            _touch_session_if_time_changed(session, previous_time)
-        return _build_result(session)
+            _touch_session_if_time_changed(transaction_session, previous_time)
+        result = _build_result(transaction_session)
+        if transaction_session is not session:
+            _commit_session_candidate(
+                session,
+                transaction_session,
+                transaction_observations,
+            )
+        return result
 
 
 def remove_blocked_cell(session_id: str, request: RemoveBlockRequest) -> SessionResult:
@@ -526,6 +563,24 @@ def _preview_session_at_time(
     preview = _clone_session_for_preview(session)
     _advance_runtime_event(preview, target_time)
     return preview
+
+
+def _commit_session_candidate(
+    session: DispatchSession,
+    candidate: DispatchSession,
+    observations: list[ReplanObservation],
+) -> None:
+    committed_values = {
+        item.name: copy.deepcopy(getattr(candidate, item.name))
+        for item in dataclasses.fields(DispatchSession)
+        if item.name not in {"lock", "replan_observer"}
+    }
+    for field_name, value in committed_values.items():
+        setattr(session, field_name, value)
+    observer = session.replan_observer
+    if observer is not None:
+        for observation in observations:
+            observer(observation)
 
 
 def _advance_runtime_event(session: DispatchSession, current_time: int) -> bool:
