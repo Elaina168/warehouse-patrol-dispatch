@@ -490,7 +490,7 @@ def test_planning_diagnostics_collect_path_candidates_for_density_case() -> None
     [
         ("density-r8-t31", 31, 2, 1, 1),
         ("density-r8-t43", 43, 2, 1, 1),
-        ("density-r8-t55", 55, 1, 0, 0),
+        ("density-r8-t55", 55, 2, 1, 1),
     ],
 )
 def test_density_planning_pruning_preserves_results(

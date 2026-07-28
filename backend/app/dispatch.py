@@ -576,7 +576,7 @@ def assign_tasks_beam_search(
                 current_time = robot_state.time
                 start_time = max(current_time, task_release_time(task))
                 finish_time = start_time + int(travel_time) + task_service_time(task)
-                battery_penalty = max(0, 45 - robot.battery)
+                battery_penalty = max(0, 45 - next_battery)
                 wait_penalty = max(0, task_release_time(task) - current_time) * 0.25
                 switch_penalty = assignment_switch_penalty(task, robot.id, preferred_task_robot_ids, active_robot_ids)
                 waypoints = task_waypoints(task)
