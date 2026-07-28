@@ -1,3 +1,5 @@
+import copy
+import dataclasses
 from types import SimpleNamespace
 from typing import Any
 
@@ -808,7 +810,7 @@ def test_runtime_operation_applies_when_safety_hold_reaches_exact_tick(
         assert "R1" not in payload["result"]["unavailableRobotIds"]
 
 
-def test_exact_tick_block_revalidates_actual_held_cell_occupancy() -> None:
+def test_exact_tick_block_revalidates_actual_held_cell_occupancy(monkeypatch) -> None:
     client = TestClient(app)
     created = client.post(
         "/api/sessions",
@@ -819,6 +821,21 @@ def test_exact_tick_block_revalidates_actual_held_cell_occupancy() -> None:
     )
     assert created.status_code == 200
     session_id = created.json()["sessionId"]
+    real_preview = sessions_module._preview_session_at_time
+
+    def preview_without_occupancy(session, target_time):
+        preview = real_preview(session, target_time)
+        preview.robot_positions = {
+            robot.id: robot.start
+            for robot in preview.scenario.robots
+        }
+        return preview
+
+    monkeypatch.setattr(
+        sessions_module,
+        "_preview_session_at_time",
+        preview_without_occupancy,
+    )
 
     response = client.post(
         f"/api/sessions/{session_id}/blocked-cells",
@@ -4031,6 +4048,133 @@ def test_future_blocked_cell_rejected_for_robot_occupancy_does_not_advance_sessi
     assert payload["updatedAt"] == 7000.0
     assert payload["runtimeEventCount"] == 0
     assert payload["metricsHistory"][-1]["time"] == 0
+
+
+def _future_block_replan_transaction_scenario() -> dict[str, Any]:
+    return {
+        "id": "future-block-replan-transaction",
+        "name": "future-block-replan-transaction",
+        "description": "未来封锁占用拒绝必须保持真实会话不变。",
+        "width": 3,
+        "height": 1,
+        "obstacles": [],
+        "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+        "robots": [
+            {
+                "id": "R1",
+                "name": "R1",
+                "start": [0, 0],
+                "battery": 100,
+                "batteryCapacity": 100,
+                "load": 1,
+            }
+        ],
+        "tasks": [
+            {
+                "id": "T1",
+                "type": "inspection",
+                "title": "T1",
+                "priority": 5,
+                "targets": [[1, 0]],
+            },
+            {
+                "id": "T2",
+                "type": "inspection",
+                "title": "T2",
+                "priority": 1,
+                "targets": [[2, 0]],
+            },
+        ],
+        "dynamic": {
+            "triggerTime": 0,
+            "blockedCells": [],
+            "failedRobots": [],
+            "tasks": [],
+        },
+    }
+
+
+def test_future_block_replan_transaction_preserves_complete_public_session_payload(monkeypatch) -> None:
+    clock = {"now": 7050.0}
+    monkeypatch.setattr(sessions_module, "_session_now", lambda: clock["now"])
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _future_block_replan_transaction_scenario(),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+    assert create_response.status_code == 200
+    session_id = create_response.json()["sessionId"]
+
+    clock["now"] = 7051.0
+    before = client.get(f"/api/sessions/{session_id}").json()
+    clock["now"] = 7052.0
+    response = client.post(
+        f"/api/sessions/{session_id}/blocked-cells",
+        json={"cell": [2, 0], "currentTime": 2},
+    )
+
+    assert response.status_code == 409
+    clock["now"] = 7053.0
+    after = client.get(f"/api/sessions/{session_id}").json()
+    after["lastAccessedAt"] = before["lastAccessedAt"]
+    assert after == before
+
+
+def test_future_preview_isolates_observer_store_and_mutable_runtime_state() -> None:
+    scenario = Scenario.model_validate(_future_block_replan_transaction_scenario())
+    observations: list[ReplanObservation] = []
+    request = CreateSessionRequest(
+        scenario=scenario,
+        options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+    )
+    preview_created = sessions_module.create_session(
+        request,
+        replan_observer=observations.append,
+    )
+    control_created = sessions_module.create_session(request)
+    preview_session = sessions_module._sessions[preview_created.sessionId]
+    control_session = sessions_module._sessions[control_created.sessionId]
+    session_field_snapshot = {
+        item.name: copy.deepcopy(getattr(preview_session, item.name))
+        for item in dataclasses.fields(sessions_module.DispatchSession)
+        if item.name not in {"lock", "replan_observer"}
+    }
+    session_store_snapshot = dict(sessions_module._sessions)
+    observation_count = len(observations)
+
+    preview = sessions_module._preview_session_at_time(preview_session, 2)
+
+    assert preview is not preview_session
+    assert preview.lock is not preview_session.lock
+    assert preview.replan_observer is None
+    assert len(observations) == observation_count
+    assert sessions_module._sessions == session_store_snapshot
+    assert sessions_module._sessions[preview_created.sessionId] is preview_session
+    assert preview_session.metrics_history == session_field_snapshot["metrics_history"]
+    assert preview_session.event_notes == session_field_snapshot["event_notes"]
+    for field_name, before_value in session_field_snapshot.items():
+        assert getattr(preview_session, field_name) == before_value
+    for field_name in (
+        "scenario",
+        "robot_positions",
+        "robot_path_history",
+        "completed_task_ids",
+        "event_notes",
+        "metrics_history",
+        "preferred_task_robot_ids",
+        "last_result",
+    ):
+        assert getattr(preview, field_name) is not getattr(preview_session, field_name)
+
+    sessions_module.tick_session(
+        control_created.sessionId,
+        sessions_module.SessionTickRequest(currentTime=2),
+    )
+    assert preview.robot_positions == control_session.robot_positions
+    assert preview.completed_task_ids == control_session.completed_task_ids
 
 
 def test_future_blocked_cell_occupancy_validation_does_not_write_plan_cache(monkeypatch) -> None:

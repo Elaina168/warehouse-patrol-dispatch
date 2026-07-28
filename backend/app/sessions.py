@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import dataclasses
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -323,7 +325,23 @@ def add_blocked_cell(session_id: str, request: AddBlockRequest) -> SessionResult
             and cell in session.scenario.dynamic.blockedCells
         )
         if not is_active_dynamic_block_request:
-            occupying_robot_id = _robot_at_cell_at_time(session, cell, current_time)
+            occupancy_session = (
+                _preview_session_at_time(session, current_time)
+                if current_time > session.current_time
+                else session
+            )
+            occupying_robot_id = (
+                next(
+                    (
+                        robot.id
+                        for robot in occupancy_session.scenario.robots
+                        if occupancy_session.robot_positions.get(robot.id, robot.start) == cell
+                    ),
+                    None,
+                )
+                if occupancy_session.current_time == current_time
+                else None
+            )
             if occupying_robot_id is not None:
                 raise HTTPException(status_code=409, detail=f"封锁单元被机器人占用：{occupying_robot_id} ({cell[0]}, {cell[1]})")
         previous_time = session.current_time
@@ -488,6 +506,26 @@ def _runtime_request_time(
     if "currentTime" in request.model_fields_set:
         return request.currentTime
     return session.current_time
+
+
+def _clone_session_for_preview(session: DispatchSession) -> DispatchSession:
+    preview = copy.copy(session)
+    for item in dataclasses.fields(DispatchSession):
+        if item.name in {"lock", "replan_observer"}:
+            continue
+        setattr(preview, item.name, copy.deepcopy(getattr(session, item.name)))
+    preview.lock = RLock()
+    preview.replan_observer = None
+    return preview
+
+
+def _preview_session_at_time(
+    session: DispatchSession,
+    target_time: int,
+) -> DispatchSession:
+    preview = _clone_session_for_preview(session)
+    _advance_runtime_event(preview, target_time)
+    return preview
 
 
 def _advance_runtime_event(session: DispatchSession, current_time: int) -> bool:
