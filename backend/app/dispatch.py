@@ -624,6 +624,25 @@ def join_paths(base: list[Cell], segment: list[Cell]) -> list[Cell]:
     return [*base, *segment[1:]]
 
 
+def path_movement_count(path: list[Cell]) -> int:
+    return sum(
+        1
+        for previous, current in zip(path, path[1:])
+        if previous != current
+    )
+
+
+def _join_energy_checked_segment(
+    base: list[Cell],
+    segment: list[Cell],
+    battery: int,
+) -> tuple[list[Cell], int, bool]:
+    movement_cost = path_movement_count(segment)
+    if movement_cost > battery:
+        return base, battery, False
+    return join_paths(base, segment), battery - movement_cost, True
+
+
 def expand_path_by_move_ticks(path: list[Cell], move_ticks: int) -> list[Cell]:
     if not path:
         return []
@@ -680,7 +699,7 @@ def plan_robot_path(
         )
         if charge_decision is None:
             return path, True
-        charge_station, _, next_battery = charge_decision
+        charge_station, _, _ = charge_decision
         if charge_station is not None:
             departure_time = len(path) - 1
             segment = (
@@ -699,7 +718,9 @@ def plan_robot_path(
             )
             if not segment:
                 return path, True
-            path = join_paths(path, segment)
+            path, battery, joined = _join_energy_checked_segment(path, segment, battery)
+            if not joined:
+                return path, True
             cursor = charge_station
             arrival_time = len(path) - 1
             for _ in range(scenario.chargeTime):
@@ -736,11 +757,21 @@ def plan_robot_path(
             )
             if not segment:
                 return path, True
-            path = join_paths(path, segment)
+            path, battery, joined = _join_energy_checked_segment(path, segment, battery)
+            if not joined:
+                return path, True
             cursor = waypoint
+        if scenario.zones.charging:
+            nearest_station = nearest_charge_station(
+                scenario,
+                cursor,
+                extra_blocked,
+                distance_cache,
+            )
+            if nearest_station is None or battery < nearest_station[1]:
+                return path, True
         for _ in range(task_service_time(task)):
             path.append(cursor)
-        battery = next_battery
         next_tasks = tasks[task_index + 1 : task_index + 2]
         next_waypoints = task_waypoints(next_tasks[0]) if next_tasks else []
         if next_waypoints and same_cell(cursor, next_waypoints[0]):

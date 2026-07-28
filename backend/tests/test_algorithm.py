@@ -66,6 +66,83 @@ def test_timed_path_expands_each_move_by_robot_duration() -> None:
     assert path == [(0, 0), (0, 0), (0, 0), (1, 0)]
 
 
+def test_timed_detour_battery_rejects_path_beyond_available_movement_units() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "timed-detour-battery",
+            "name": "timed-detour-battery",
+            "description": "时空避碰绕行必须按实际移动格数校验电量。",
+            "width": 3,
+            "height": 2,
+            "obstacles": [],
+            "zones": {
+                "warehouse": [],
+                "inspection": [[2, 0]],
+                "delivery": [],
+                "charging": [],
+            },
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [1, 0],
+                    "battery": 100,
+                    "load": 1,
+                    "capabilities": ["emergency"],
+                },
+                {
+                    "id": "R2",
+                    "name": "R2",
+                    "start": [0, 0],
+                    "battery": 2,
+                    "batteryCapacity": 2,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "E1",
+                    "type": "emergency",
+                    "title": "高优先级原地处置",
+                    "priority": 5,
+                    "serviceTime": 5,
+                    "target": [1, 0],
+                },
+                {
+                    "id": "T1",
+                    "type": "inspection",
+                    "title": "低电量巡检",
+                    "priority": 1,
+                    "targets": [[2, 0]],
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+    options = DispatchOptions(avoidConflicts=True, includeDynamic=False)
+
+    result = dispatch_module.run_dispatch(scenario, options)
+    path = result.paths["R2"]
+    task_succeeded = "T1" not in result.failureReasons
+
+    assert not (
+        path == [(0, 0), (0, 1), (1, 1), (2, 1), (2, 0)]
+        and task_succeeded
+    )
+    if task_succeeded:
+        movement_units = sum(
+            previous != current
+            for previous, current in zip(path, path[1:])
+        )
+        assert movement_units <= 2
+
+
 def _timed_diagnostics_scenario() -> Scenario:
     return Scenario.model_validate(
         {
