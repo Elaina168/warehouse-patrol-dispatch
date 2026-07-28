@@ -97,6 +97,26 @@ def test_robot_capabilities_require_a_unique_nonempty_known_subset() -> None:
         Robot(id="R1", name="R1", start=(0, 0), battery=100, load=1, capabilities=["unknown"])
 
 
+def test_task_service_time_limit_accepts_10000_and_rejects_10001() -> None:
+    task_payload = _inspection_task(0)
+
+    assert schemas.Task.model_validate(
+        {**task_payload, "serviceTime": 10_000}
+    ).serviceTime == 10_000
+    with pytest.raises(ValidationError):
+        schemas.Task.model_validate({**task_payload, "serviceTime": 10_001})
+
+
+def test_scenario_charge_time_limit_accepts_10000_and_rejects_10001() -> None:
+    payload = scenario_payload()
+
+    assert schemas.Scenario.model_validate(
+        {**payload, "chargeTime": 10_000}
+    ).chargeTime == 10_000
+    with pytest.raises(ValidationError):
+        schemas.Scenario.model_validate({**payload, "chargeTime": 10_001})
+
+
 def test_request_models_reject_negative_time_and_non_positive_dimensions() -> None:
     client = TestClient(app)
     scenario = scenario_payload()

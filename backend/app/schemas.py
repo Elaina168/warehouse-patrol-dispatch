@@ -3,16 +3,20 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.app.limits import (
+    MAX_SCENARIO_CHARGE_TIME,
     MAX_SCENARIO_AXIS_LENGTH,
     MAX_SCENARIO_CELL_COUNT,
     MAX_SCENARIO_ROBOTS,
     MAX_SCENARIO_TASKS,
+    MAX_TASK_SERVICE_TIME,
     MAX_TASK_TARGETS,
 )
 
 Cell = tuple[int, int]
 NonNegativeInt = Annotated[int, Field(ge=0)]
 PositiveInt = Annotated[int, Field(gt=0)]
+TaskServiceTimeInt = Annotated[int, Field(ge=0, le=MAX_TASK_SERVICE_TIME)]
+ChargeTimeInt = Annotated[int, Field(ge=1, le=MAX_SCENARIO_CHARGE_TIME)]
 ScenarioAxisInt = Annotated[int, Field(gt=0, le=MAX_SCENARIO_AXIS_LENGTH)]
 PriorityInt = Annotated[int, Field(ge=0, le=5)]
 AssignmentReplanWindowInt = Annotated[int, Field(ge=0, le=120)]
@@ -43,7 +47,7 @@ class Task(ApiModel):
     priority: PriorityInt
     releaseTime: NonNegativeInt | None = None
     deadline: NonNegativeInt | None = None
-    serviceTime: NonNegativeInt | None = None
+    serviceTime: TaskServiceTimeInt | None = None
     targets: list[Cell] | None = Field(default=None, max_length=MAX_TASK_TARGETS)
     pickup: Cell | None = None
     dropoff: Cell | None = None
@@ -110,7 +114,7 @@ class Scenario(ApiModel):
     robots: list[Robot] = Field(max_length=MAX_SCENARIO_ROBOTS)
     tasks: list[Task] = Field(max_length=MAX_SCENARIO_TASKS)
     dynamic: DynamicEvent
-    chargeTime: PositiveInt = 4
+    chargeTime: ChargeTimeInt = 4
 
     @model_validator(mode="after")
     def validate_size_limits(self) -> "Scenario":
