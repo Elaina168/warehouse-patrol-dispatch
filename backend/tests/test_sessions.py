@@ -988,6 +988,52 @@ def test_successful_future_block_notifies_observer_after_candidate_commit() -> N
     assert all(is_committed for _, is_committed in observed_committed_blocks)
 
 
+def test_failed_future_block_observer_rolls_back_committed_candidate() -> None:
+    session_id_holder: dict[str, str] = {}
+    observer_error = RuntimeError("future block observer failed")
+
+    def observer(_observation: ReplanObservation) -> None:
+        session_id = session_id_holder.get("session_id")
+        if session_id is None:
+            return
+        committed_session = sessions_module._sessions[session_id]
+        assert committed_session.current_time == 2
+        assert (0, 0) in committed_session.runtime_blocked_cells
+        raise observer_error
+
+    created = sessions_module.create_session(
+        CreateSessionRequest(
+            scenario=Scenario.model_validate(
+                _future_block_replan_transaction_scenario()
+            ),
+            options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        ),
+        replan_observer=observer,
+    )
+    session_id_holder["session_id"] = created.sessionId
+    session = sessions_module._sessions[created.sessionId]
+    original_lock = session.lock
+    original_observer = session.replan_observer
+    authoritative_before = {
+        item.name: copy.deepcopy(getattr(session, item.name))
+        for item in dataclasses.fields(sessions_module.DispatchSession)
+        if item.name not in {"last_accessed_at", "lock", "replan_observer"}
+    }
+
+    with pytest.raises(RuntimeError, match="future block observer failed") as raised:
+        sessions_module.add_blocked_cell(
+            created.sessionId,
+            sessions_module.AddBlockRequest(cell=(0, 0), currentTime=2),
+        )
+
+    assert raised.value is observer_error
+    assert sessions_module._sessions[created.sessionId] is session
+    assert session.lock is original_lock
+    assert session.replan_observer is original_observer
+    for field_name, before_value in authoritative_before.items():
+        assert getattr(session, field_name) == before_value
+
+
 def test_future_runtime_event_clears_stale_safety_intervention_before_advancing() -> None:
     client = TestClient(app)
     created = client.post(

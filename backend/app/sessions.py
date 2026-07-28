@@ -575,12 +575,22 @@ def _commit_session_candidate(
         for item in dataclasses.fields(DispatchSession)
         if item.name not in {"lock", "replan_observer"}
     }
-    for field_name, value in committed_values.items():
-        setattr(session, field_name, value)
+    previous_values = {
+        item.name: copy.deepcopy(getattr(session, item.name))
+        for item in dataclasses.fields(DispatchSession)
+        if item.name not in {"lock", "replan_observer"}
+    }
     observer = session.replan_observer
-    if observer is not None:
-        for observation in observations:
-            observer(observation)
+    try:
+        for field_name, value in committed_values.items():
+            setattr(session, field_name, value)
+        if observer is not None:
+            for observation in observations:
+                observer(observation)
+    except Exception:
+        for field_name, value in previous_values.items():
+            setattr(session, field_name, value)
+        raise
 
 
 def _advance_runtime_event(session: DispatchSession, current_time: int) -> bool:
