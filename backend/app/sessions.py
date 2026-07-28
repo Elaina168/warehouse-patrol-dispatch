@@ -2103,8 +2103,6 @@ def _update_task_waypoint_progress(
                     session.task_service_started_times.setdefault(task.id, service_started_at)
                     completion_time = service_started_at + task_service_time(task)
                     cursor_index = max(cursor_index, completion_time + 1)
-                    if completion_time <= target_time:
-                        session.task_completion_times[task.id] = completion_time
     return outbound_pickup_times
 
 

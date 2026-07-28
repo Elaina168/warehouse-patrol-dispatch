@@ -61,6 +61,93 @@ def _safety_test_result(
     )
 
 
+def test_waypoint_progress_does_not_persist_completion_before_authoritative_transition() -> None:
+    task = Task.model_validate(
+        {
+            "id": "T1",
+            "type": "inspection",
+            "title": "权威完成转换",
+            "priority": 2,
+            "serviceTime": 2,
+            "targets": [[1, 0]],
+        }
+    )
+    scenario = Scenario.model_validate(
+        {
+            "id": "authoritative-completion-transition",
+            "name": "authoritative completion transition",
+            "description": "完成时间与其余完成副作用必须一起提交",
+            "width": 2,
+            "height": 1,
+            "obstacles": [],
+            "zones": {
+                "warehouse": [],
+                "inspection": [[1, 0]],
+                "delivery": [],
+                "charging": [],
+            },
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [0, 0],
+                    "battery": 90,
+                    "load": 1,
+                }
+            ],
+            "tasks": [task.model_dump()],
+            "dynamic": {
+                "triggerTime": 99,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+    result = _safety_test_result(
+        scenario,
+        {"R1": [(0, 0), (1, 0), (1, 0), (1, 0)]},
+        [],
+        assignments=[Assignment(robotId="R1", tasks=[task])],
+    )
+    session = sessions_module.DispatchSession(
+        session_id="authoritative-completion-transition",
+        scenario=scenario,
+        options=DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        robot_positions={"R1": (0, 0)},
+        robot_path_history={"R1": [(0, 0)]},
+        robot_travelled_distance={"R1": 0},
+        robot_battery_levels={"R1": 90},
+        task_payload_positions={"T1": (0, 0)},
+        preferred_task_robot_ids={"T1": "R1"},
+        locked_task_robot_ids={"T1": "R1"},
+        planning_started=True,
+    )
+
+    sessions_module._update_task_waypoint_progress(session, result, target_time=3)
+
+    assert session.task_waypoint_progress == {"T1": 1}
+    assert session.task_service_started_times == {"T1": 1}
+    assert session.task_completion_times == {}
+    assert session.completed_task_ids == set()
+    assert session.task_payload_positions == {"T1": (0, 0)}
+    assert session.preferred_task_robot_ids == {"T1": "R1"}
+    assert session.locked_task_robot_ids == {"T1": "R1"}
+    assert session.event_notes == []
+
+    completion_time = sessions_module._session_task_completion_times(session, result)["T1"]
+    assert completion_time == 3
+    assert sessions_module._complete_session_task(session, "T1", completion_time) is True
+    assert session.task_completion_times == {"T1": 3}
+    assert session.completed_task_ids == {"T1"}
+    assert session.task_payload_positions == {}
+    assert session.preferred_task_robot_ids == {}
+    assert session.locked_task_robot_ids == {}
+    assert [(event.time, event.text) for event in session.event_notes] == [
+        (3, "任务 T1 已完成"),
+    ]
+
+
 def test_session_create_rejects_duplicate_robot_start() -> None:
     client = TestClient(app)
     scenario = scenario_payload()
