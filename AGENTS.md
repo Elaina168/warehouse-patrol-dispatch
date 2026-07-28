@@ -2,7 +2,7 @@
 
 ## Project Context
 
-This repository is a competition-oriented multi-robot dispatch system for warehouse logistics and campus/facility patrol scenarios.
+This repository is a multi-robot dispatch system for warehouse logistics and campus/facility patrol scenarios. It may later support competition delivery, but current work prioritizes the system itself.
 
 Read this file before each new work session in this repository. It is the current high-level plan and should be used to avoid drifting back into static/batch-only dispatch work.
 
@@ -19,7 +19,8 @@ Target direction:
 - The project should evolve toward an online task-flow dispatch system, not a static one-shot batch dispatcher.
 - The backend should maintain ongoing scheduling session state: robot states, task queues, assigned tasks, paths, ticks, events, and metrics history.
 - The frontend should remain an operational control dashboard for online scheduling: start sessions, add manual or timed generated tasks through the unified task endpoint, trigger emergencies, inspect paths, inspect events, and observe metrics.
-- Do not prioritize final presentation polish before backend scheduling behavior is credible.
+- Until the user explicitly confirms competition participation and material requirements, prioritize system correctness, safety, scheduling capability, reliability, and maintainability over charts, reports, slides, recordings, 3D, or presentation polish.
+- The next feature, hardening item, or algorithm change has not been selected. Do not turn a candidate direction into the project plan without explicit user confirmation.
 
 ## Current Progress
 
@@ -152,6 +153,7 @@ Completed and currently expected to remain in the project:
 - Scenario inputs are bounded to 64 cells per axis, 1024 total cells, 32 robots, 128 total initial/dynamic/runtime tasks, and 64 targets per task.
 - Adaptive rolling-window latency uses the median of the latest five real replans after at least three samples, entering slow state at 60ms and leaving it at 40ms; fixed mode remains unchanged.
 - Browser CORS defaults to the two local Vite origins and accepts explicit comma-separated origins through `WAREHOUSE_PATROL_CORS_ORIGINS`; wildcard origins remain rejected.
+- Current verification snapshot on 2026-07-27: frontend production build passed, frontend tests `105/105`, backend tests `523/523`.
 
 Recently removed because they are not needed yet:
 
@@ -160,27 +162,27 @@ Recently removed because they are not needed yet:
 
 ## Current Plan
 
-The project is no longer in a from-scratch build phase. The next phase should finish each module to a competition-acceptable level, then immediately move into algorithm evidence, presentation materials, and demo hardening.
+The project is no longer in a from-scratch build phase. Current work should strengthen the runnable system itself. The next specific implementation item has not been selected and must be confirmed with the user before design or coding begins.
 
-Module-complete means "complete enough to support judging, demonstration, and written defense", not product-grade completeness.
+System-complete means the current online dispatch workflow is credible, safe within its documented boundary, maintainable, and protected by regression tests. It does not imply product-grade persistence, authentication, or industrial MAPF guarantees.
 
 Priority order for future work:
 
 1. Freeze and protect a runnable baseline: keep the current online dispatch demo passing checks and avoid broad rewrites.
-2. Complete the core algorithm module at competition scope: task assignment, A* paths, conflict avoidance, dynamic replanning, task locks, preemption, failure recovery, and metrics must remain stable under larger scenarios.
+2. Improve the core algorithm module when a concrete, reproduced system boundary has been selected: task assignment, A* paths, conflict avoidance, dynamic replanning, task locks, preemption, failure recovery, and metrics must remain stable.
 3. Complete the online scheduling module: session creation, ticks, unified runtime task insertion, runtime blocked cells, robot failures, recovery APIs, event logs, metrics history, reset/list/delete, and validation should stay closed-loop.
-4. Complete the frontend operations module: the dashboard must explain maps, robots, task states, paths, conflicts, replanning causes, failure recovery, and metric changes clearly enough for judges.
-5. Build the experiment module: compare conflict avoidance, dynamic replanning, rolling-window settings, and robot/task scale; produce charts and conclusions for the report and defense.
-6. Build competition materials: technical report, project description, slides, demo script, recording, architecture diagrams, algorithm diagrams, and backup scenarios.
-7. Keep 3D visualization as a late optional presentation phase, not a blocker for algorithm evidence or competition materials.
+4. Complete the frontend operations module only where controls, state visibility, error explanation, and debugging directly improve operation of the system.
+5. Retain experiment APIs and offline benchmarks as internal diagnostic and regression tools; do not prioritize chart or report production before competition requirements are known.
+6. Defer competition materials until the user explicitly confirms participation and supplies the applicable requirements.
+7. Keep 3D visualization as a later optional presentation phase.
 
 Do not add new frontend showcase panels unless they directly support debugging, operating, or explaining the online dispatch workflow.
 
 ## Progress-Ordered Roadmap
 
-Read this section before choosing work in each new session. Continue from the highest-priority incomplete competition module unless the user explicitly directs otherwise. Progress uses qualitative status only: `稳定基线`, `接近完成`, `部分完成`, `未开始`, and `延后/可选`.
+Read this section before choosing work in each new session. Use it to understand implemented modules and known boundaries, but do not infer the next task from the roadmap: the next specific direction remains pending user confirmation. Progress uses qualitative status only: `稳定基线`, `接近完成`, `部分完成`, `未开始`, and `延后/可选`.
 
-Recommended execution order:
+Current module status:
 
 1. Baseline freeze and demo stability - 稳定基线
    - The current full check passes and the online dispatch workflow is implemented.
@@ -188,7 +190,7 @@ Recommended execution order:
    - The sole frontend `integrated-demo` scenario is protected by shared JSON, frontend data, and backend end-to-end regressions.
    - The fixed baseline is a `26 × 16` realistic warehouse with twelve `3 × 2` shelf groups, 72 impassable shelf entity cells, 72 unique adjacent service cells, and two-cell clearances.
    - Its default six-task online flow starts with 12 stocked shelves and finishes with 13 by T=700 without runtime task injection, runtime blocks, or robot failures.
-   - Next work is to keep this fixed demo flow stable during backend/frontend changes and avoid destabilizing broad refactors.
+   - Baseline maintenance rule: keep this flow stable during backend/frontend changes and avoid destabilizing broad refactors.
 
 2. Core algorithm module completion - 接近完成
    - Assignment, task-type capability eligibility, A* path planning, conflict avoidance, lock stability, preemption scoring, rolling-window behavior, partial-progress replanning, delivery cargo continuity, dynamic timing, and failure recovery classification are implemented with targeted regressions.
@@ -200,7 +202,7 @@ Recommended execution order:
    - An explainable adaptive rolling-window policy is implemented with fixed-mode compatibility, task-pressure and planning-latency contraction, low-load future-work expansion, effective-window explanations, and experiment comparison support. Fixed mode remains the cross-environment deterministic regression baseline because wall-clock latency feedback can vary by machine load.
    - Online execution safety is now a code-enforced invariant for `avoidConflicts=true`: the first predicted vertex or reverse-edge conflict tick causes a full-fleet hold, is returned early through `SessionResult.safetyIntervention`, and never writes the conflicting action into actual path history. Baseline comparison, direct dispatch, and experiments intentionally remain prediction/comparison paths and can still return or execute conflicts.
    - The offline algorithm boundary benchmark is implemented with deterministic scale, density, and online bottleneck cases, isolated per-run timeouts, JSON/CSV result reports, and stability summaries. It records planning forecasts separately from online execution safety evidence; it does not establish complete MAPF or full-horizon zero-conflict guarantees.
-   - Remaining work is algorithmic quality beyond the current heuristic planner, especially richer MAPF behavior if needed, adaptive-threshold calibration, performance tuning on larger instances, and full-horizon zero-conflict guarantees. The safety gate prevents unsafe execution but does not guarantee that every input has a zero-conflict route.
+   - Known boundaries remain beyond the current heuristic planner, including arbitrary-input route solvability, larger-instance performance, portable adaptive thresholds, and full-horizon zero-conflict guarantees. These are documented boundaries, not an approved next task. The safety gate prevents unsafe execution but does not guarantee that every input has a zero-conflict route.
    - The density benchmark performance anomaly has been attributed to a timed A* candidate whose goal remained vertex-reserved for the complete search horizon. The planner now rejects that candidate before state expansion, records deterministic planning-work diagnostics in benchmark schema v2, and preserves the existing candidate order and result semantics.
    - 同机 density x5 优化证据的 `medianReplanTimeMs` / P95 为：`density-r8-t31` 150.85 / 155.90 ms、`density-r8-t43` 213.56 / 214.37 ms、`density-r8-t55` 231.33 / 235.45 ms；31/43 的全预留目标拒绝不再进入 exhausted 搜索，55 保持首个候选成功。
    - The offline adaptive-window calibration compares fixed `4T`/`24T`/`48T` with the current adaptive `24T` baseline on three deterministic online cases. It records real replan decisions, correctness outcomes, execution-safety evidence, and deterministic planning work without changing production `60/40ms`, latest-5/minimum-3 latency sampling, or the `2×` pressure rule.
@@ -213,7 +215,7 @@ Recommended execution order:
    - Implemented runtime task insertion through one unified task endpoint, timed frontend task generation through that same endpoint, runtime blocked cells, robot failure and recovery, scenario dynamic timing, rolling-window triggers, task locks, event logs, and metrics history.
    - Integrated-scenario default continuity is regression-tested through T=700; manual insertion, runtime events, and recovery edge coverage remain protected by focused session regressions.
    - Fixed-seed randomized online pressure is now regression-tested through continuous ticks, dynamic activation, manual emergency insertion, runtime block/failure events, recovery APIs, event history, and metrics history.
-   - Remaining work is mainly harder online pressure boundary cases or dedicated performance profiling if algorithm scale becomes a priority. Persistence, auth, or external observability remain out of competition scope unless the project scope expands.
+   - Unselected boundary candidates include harder online pressure cases or dedicated performance profiling if algorithm scale later becomes a confirmed priority. Persistence, auth, or external observability are not current capabilities.
 
 4. Online pressure and regression coverage - 接近完成
    - Larger and continuous online regressions cover repeated ticks, timed generated arrivals and urgent task insertion through the unified task endpoint, dynamic activation, runtime blocked cells, robot failures, recovery actions, deferred tasks, metrics history, event ordering, and path/state consistency.
@@ -226,16 +228,16 @@ Recommended execution order:
    - Online sessions now also cover `integrated-demo` through continuous ticks, `E1` release, and manual high-priority task insertion.
    - Focused generic scenarios retain dynamic robot failure, block recovery, and emergency handoff regression coverage without adding more persisted demo maps.
    - The integrated conflict-avoidance comparison retains direct-plan baseline and avoidance coverage; active-session conflict safety remains covered through continuous ticks.
-   - Remaining work is randomized scenario families or dedicated performance profiling if algorithm scale becomes a priority.
+   - Unselected coverage candidates include additional randomized scenario families or dedicated performance profiling if algorithm scale later becomes a confirmed priority.
 
 5. Unschedulable task recovery semantics - 接近完成
    - Temporary and permanent failure categories, structured recovery actions, blocking cells, blocking robots, runtime recovery APIs, and frontend recovery buttons are implemented and regression-tested.
    - Online recovery state now has targeted coverage for mixed load-capacity fleets where unrelated runtime blocked cells must not be reported as recovery blockers.
-   - Remaining work is edge-case expansion for larger mixed-capacity fleets and clearer operator workflows around permanent definition fixes.
+   - Unselected boundary candidates include larger mixed-capacity fleet edges and clearer operator workflows around permanent definition fixes.
 
 6. API contract alignment infrastructure - 稳定基线
    - Contract tests now compare backend Pydantic models with frontend TypeScript API types, request optionality, response nullability, runtime literal unions, rolling-window constants, recovery actions, OpenAPI request models, OpenAPI response models, and expected session routes.
-   - Remaining work is mostly automation quality, such as schema snapshot generation or client generation if the API grows.
+   - Optional future automation includes schema snapshot generation or client generation if API growth later justifies it.
 
 7. Frontend operational clarity - 接近完成
    - Keep the frontend as a dense operational dashboard.
@@ -244,10 +246,10 @@ Recommended execution order:
    - Improve only controls, state visibility, event inspection, metrics visibility, and debugging clarity that support online dispatch.
    - Do not add marketing or showcase panels.
 
-8. Experiment and comparison evidence - 部分完成
+8. Experiment and comparison tooling - 稳定基线
    - The backend has six experiment APIs for conflict avoidance, dynamic events, rolling windows, scale, fixed-seed pressure, and online pressure. They are covered by backend tests and OpenAPI contract assertions.
    - Fixed-seed pressure reports assignment rate. Online pressure separately reports task coverage and actual released-task completion, avoiding the previous metric-name ambiguity.
-   - The main frontend intentionally has no experiment panel; report charts, reviewed conclusions, and final competition evidence tables have not yet been produced.
+   - The main frontend intentionally has no experiment panel. Charts, reviewed report conclusions, and competition evidence tables are deferred until participation and material requirements are explicitly confirmed.
    - Conflict-avoidance comparison now has backend regression coverage on a real fixed demo scenario instead of only synthetic scenarios.
    - Dynamic-replanning comparison now has backend regression coverage on a real fixed demo scenario instead of only synthetic scenarios.
    - Rolling-window comparison now has backend regression coverage on a real fixed demo scenario and can include an adaptive case alongside fixed-window cases.
@@ -255,24 +257,24 @@ Recommended execution order:
    - Scale comparison also covers labeled homogeneous and specialized capability fleets, and a focused online regression covers the unique-compatible-robot failure and recovery sequence without adding another experiment endpoint.
    - Fixed-seed pressure comparison has backend coverage for standard and extended stability sets, including the repaired seed-43 pressure boundary, with assignment-rate, deadline-miss, planning-budget, distance, and makespan evidence.
    - The offline algorithm boundary benchmark is implemented as command-line evidence for nine deterministic scale, density, and online bottleneck cases. Its reports distinguish predicted conflicts from active online conflicts and safety interventions; the six existing experiment APIs remain unchanged.
-   - 已完成 density x5 取证：`density-r8-t31`、`density-r8-t43`、`density-r8-t55` 的 `medianReplanTimeMs` / P95 依次为 150.85 / 155.90 ms、213.56 / 214.37 ms、231.33 / 235.45 ms。下一步基于确定性诊断和同机证据选择性能调优、自适应阈值校准或独立 MAPF 评估；不得把该基准表述为完整 MAPF 结果。
+   - 已完成 density x5 取证：`density-r8-t31`、`density-r8-t43`、`density-r8-t55` 的 `medianReplanTimeMs` / P95 依次为 150.85 / 155.90 ms、213.56 / 214.37 ms、231.33 / 235.45 ms。该结果保留为内部诊断证据，不自动指定后续性能调优、阈值修改或 MAPF 评估方向，也不得表述为完整 MAPF 结果。
    - The separate offline adaptive-window calibration uses three deterministic online cases and four variants (`fixed-4`, `fixed-24`, `fixed-48`, `adaptive-current-24`), with 60 runs by default. Its schema-v1 JSON/CSV evidence preserves completed-but-unstable, timeout, and error outcomes; any candidate envelope is built only from stable completed `fixed-24` observations and must be manually reviewed.
    - The reviewed pre-fix default 60-run evidence had 40 stable and 20 completed-but-unstable runs. All four variants were stable in the low-load and transition cases, while all five repetitions of every variant in the pressure case had zero predicted/active conflicts but one deadline miss and two failures; the candidate envelope was therefore correctly unavailable rather than backfilled from ineligible evidence.
    - The repaired default 60-run evidence at `output/adaptive-replan-calibration/20260726T150547Z` has 60 completed stable runs, 1,330 real-replan observations, 12 summaries, pressure cumulative distance `[671, 671]`, and a non-null same-machine candidate envelope. It did not modify the production policy.
-   - Output should feed the report and defense: charts, tables, conclusions, and a short explanation of why the algorithm improves the baseline.
+   - Current outputs serve regression and engineering diagnosis. Do not start chart, table, report, or defense-material production until the user confirms the applicable competition requirements.
 
-9. Competition materials and demo package - 未开始
+9. Competition materials and demo package - 延后/可选
    - Environment notes, algorithm notes, README, and a fixed demo flow exist.
-   - Remaining work is project description, technical report, PPT, demo script, screen recording, architecture diagram, algorithm flow diagram, experiment charts, and backup scenarios.
+   - Project description, technical report, PPT, demo script, screen recording, diagrams, experiment charts, and backup scenarios are not current work. Reassess only after the user explicitly confirms participation and requirements.
 
 10. Demo presentation and 3D visualization - 延后/可选
    - Treat 3D visualization as a later phase.
    - The fixed 2D demo flow and documentation exist, but Three.js or another 3D rendering layer has not been added.
-   - Do not start this until algorithm evidence, competition materials, and 2D demo stability are substantially stronger or the user explicitly prioritizes presentation.
+   - Do not start this unless the user explicitly prioritizes presentation after participation requirements are known.
 
 ## Future Presentation Goal
 
-The eventual final demo may become a 3D real-time visualization after backend optimization is mostly complete.
+If later participation or presentation requirements justify it, the final demo may become a 3D real-time visualization. This is not part of the current roadmap.
 
 Desired direction for that later phase:
 
@@ -281,7 +283,7 @@ Desired direction for that later phase:
 - Interactive camera controls: drag/rotate view and zoom in/out.
 - Clear visualization of tasks, blocked cells, paths, conflicts, failures, and replanning events.
 - Prefer Three.js or another proven 3D rendering approach when this phase starts.
-- Keep this as a later presentation phase; do not implement it before backend scheduling quality and tests are in good shape.
+- Keep this as a later presentation phase; do not implement it without explicit user approval.
 
 ## Repository Structure
 
@@ -476,6 +478,8 @@ Before reporting implementation complete, run:
 ```powershell
 & 'C:\nvm4w\nodejs\npm.cmd' run check
 ```
+
+Latest full verification snapshot on 2026-07-27: frontend production build passed, frontend tests `105/105`, backend tests `523/523`.
 
 For frontend behavior changes, also verify in a browser when practical:
 

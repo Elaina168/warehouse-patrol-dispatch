@@ -32,6 +32,8 @@ nvm-windows 1.2.2
 Python 3.13.2
 ```
 
+2026-07-27 已使用上述环境重新创建本地 `.venv`、恢复前端依赖并完成前后端启动检查。`.venv`、`frontend/node_modules` 和 `frontend/dist` 都是可重新生成的忽略目录，不属于源码。
+
 ## 启动项目
 
 一键启动正式版前后端并打开浏览器：
@@ -101,12 +103,14 @@ npm run backend:dev
 - `frontend` 单元测试
 - `backend` 测试
 
+2026-07-27 的当前结果：前端构建通过、前端测试 `105/105`、后端测试 `523/523`。
+
 ## 依赖安装
 
 前端依赖：
 
 ```powershell
-npm --prefix frontend install
+& 'C:\nvm4w\nodejs\npm.cmd' --prefix frontend install
 ```
 
 后端依赖：
@@ -116,3 +120,5 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r backend\requirements.txt
 ```
+
+如果 `.venv` 目录存在但缺少 `Scripts\python.exe`，应将其视为未安装完成的生成目录，重新创建虚拟环境并安装锁定的后端依赖；不要修改项目脚本绕过该检查。
