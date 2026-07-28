@@ -3238,7 +3238,7 @@ def test_dispatch_api_caps_cumulative_valid_service_path_nodes() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["paths"]["R1"]
+    assert len(payload["paths"]["R1"]) == 6003
     assert [
         {
             "robotId": assignment["robotId"],
@@ -3260,15 +3260,67 @@ def test_dispatch_api_caps_cumulative_valid_service_path_nodes() -> None:
     assert all(len(path) <= 10_001 for path in payload["paths"].values())
 
 
+def test_timed_path_budget_keeps_permanent_reservation_exhaustion_generic() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "timed-permanent-reservation-exhaustion",
+            "name": "timed-permanent-reservation-exhaustion",
+            "description": "预算截断不能把时空搜索范围内永久不可达误报为预算不足。",
+            "width": 3,
+            "height": 1,
+            "obstacles": [],
+            "zones": {
+                "warehouse": [],
+                "inspection": [[2, 0]],
+                "delivery": [],
+                "charging": [],
+            },
+            "robots": [],
+            "tasks": [],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+    reservations = dispatch_module.Reservations(
+        vertices={
+            f"1,0@{time_index}"
+            for time_index in range(9996, 10008)
+        }
+    )
+
+    uncapped_path = dispatch_module.astar_timed(
+        scenario,
+        (0, 0),
+        (2, 0),
+        9995,
+        reservations,
+    )
+    capped_path = dispatch_module.astar_timed(
+        scenario,
+        (0, 0),
+        (2, 0),
+        9995,
+        reservations,
+        path_end_time=10_000,
+    )
+
+    assert uncapped_path == []
+    assert capped_path == []
+
+
 def test_timed_path_budget_keeps_static_unreachable_failure_generic() -> None:
     scenario = Scenario.model_validate(
         {
             "id": "timed-static-unreachable",
             "name": "timed-static-unreachable",
             "description": "启用路径时域上限时，静态不可达不得误报为预算失败。",
-            "width": 3,
-            "height": 2,
-            "obstacles": [[1, 0], [1, 1]],
+            "width": 64,
+            "height": 16,
+            "obstacles": [[1, y] for y in range(16)],
             "zones": {
                 "warehouse": [],
                 "inspection": [[2, 0]],
@@ -3284,6 +3336,7 @@ def test_timed_path_budget_keeps_static_unreachable_failure_generic() -> None:
                     "batteryCapacity": 100,
                     "load": 1,
                     "capabilities": ["inspection"],
+                    "moveTicks": 4,
                 },
             ],
             "tasks": [
@@ -3304,6 +3357,15 @@ def test_timed_path_budget_keeps_static_unreachable_failure_generic() -> None:
         }
     )
 
+    direct_path = dispatch_module.astar_timed(
+        scenario,
+        scenario.robots[0].start,
+        scenario.tasks[0].targets[0],
+        0,
+        dispatch_module.Reservations(),
+        move_ticks=scenario.robots[0].moveTicks,
+        path_end_time=10_000,
+    )
     path, failed, path_plan_failure = dispatch_module.plan_robot_path(
         scenario,
         scenario.robots[0],
@@ -3319,6 +3381,7 @@ def test_timed_path_budget_keeps_static_unreachable_failure_generic() -> None:
         DispatchOptions(avoidConflicts=True, includeDynamic=False),
     )
 
+    assert direct_path == []
     assert path == [(0, 0)]
     assert failed is True
     assert path_plan_failure is None

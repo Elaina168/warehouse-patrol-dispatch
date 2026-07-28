@@ -260,10 +260,6 @@ def astar_timed(
         else natural_latest_arrival
     )
     budget_limited = latest_arrival < natural_latest_arrival
-    if path_end_time is not None and start_time > path_end_time:
-        if call_diagnostics is not None:
-            call_diagnostics.finish("exhausted", 0)
-        raise _TimedPathBudgetExceeded
     if not same_cell(start, goal):
         earliest_arrival = start_time + manhattan(start, goal) * move_ticks
         if budget_limited:
@@ -273,31 +269,18 @@ def astar_timed(
                     call_diagnostics.finish("exhausted", 0)
                 return []
             earliest_arrival = start_time + (len(static_path) - 1) * move_ticks
-        if earliest_arrival > latest_arrival:
+        if earliest_arrival > natural_latest_arrival:
             if call_diagnostics is not None:
                 call_diagnostics.finish("exhausted", 0)
-            if budget_limited:
-                raise _TimedPathBudgetExceeded
             return []
         if not has_unreserved_goal_arrival_time(
             goal,
             earliest_arrival,
-            latest_arrival,
+            natural_latest_arrival,
             reservations,
         ):
-            available_after_budget = budget_limited and has_unreserved_goal_arrival_time(
-                goal,
-                max(earliest_arrival, latest_arrival + 1),
-                natural_latest_arrival,
-                reservations,
-            )
             if call_diagnostics is not None:
-                call_diagnostics.finish(
-                    "exhausted" if available_after_budget else "goalFullyReserved",
-                    0,
-                )
-            if available_after_budget:
-                raise _TimedPathBudgetExceeded
+                call_diagnostics.finish("goalFullyReserved", 0)
             return []
     start_state_key = timed_key(start, start_time)
     heap: list[tuple[int, int, int, Cell, str]] = [
@@ -306,11 +289,17 @@ def astar_timed(
     came_from: dict[str, str] = {}
     best: dict[str, int] = {start_state_key: 0}
     closed: set[str] = set()
-    budget_frontier_reached = False
 
     while heap:
         _, current_time, current_g, current_cell, current_key = heapq.heappop(heap)
         if same_cell(current_cell, goal):
+            if current_time > latest_arrival:
+                if call_diagnostics is not None:
+                    call_diagnostics.finish(
+                        "exhausted",
+                        expanded_state_count,
+                    )
+                raise _TimedPathBudgetExceeded
             if call_diagnostics is not None:
                 call_diagnostics.finish(
                     "success",
@@ -325,8 +314,7 @@ def astar_timed(
         for next_cell in neighbors(current_cell, scenario, blocked, include_wait=True):
             duration = 1 if same_cell(next_cell, current_cell) else move_ticks
             next_time = current_time + duration
-            if next_time > latest_arrival:
-                budget_frontier_reached = budget_limited
+            if next_time > natural_latest_arrival:
                 continue
             reserved = (
                 is_reserved(next_cell, next_time, current_cell, reservations)
@@ -339,7 +327,8 @@ def astar_timed(
             tentative = current_g + duration
             if tentative >= best.get(next_key, math.inf):
                 continue
-            came_from[next_key] = current_key
+            if next_time <= latest_arrival:
+                came_from[next_key] = current_key
             best[next_key] = tentative
             heapq.heappush(
                 heap,
@@ -348,8 +337,6 @@ def astar_timed(
 
     if call_diagnostics is not None:
         call_diagnostics.finish("exhausted", expanded_state_count)
-    if budget_frontier_reached:
-        raise _TimedPathBudgetExceeded
     return []
 
 
