@@ -2748,6 +2748,141 @@ def test_session_create_syncs_immediately_completed_task_count() -> None:
     assert payload["completedTaskCount"] == 1
     assert payload["metricsHistory"][-1]["completedTaskCount"] == 1
 
+
+def test_session_create_replans_queued_task_after_immediate_completion() -> None:
+    client = TestClient(app)
+    scenario = scenario_payload()
+    scenario["id"] = "instant-complete-replan"
+    scenario["width"] = 3
+    scenario["height"] = 1
+    scenario["obstacles"] = []
+    scenario["zones"] = {
+        "warehouse": [],
+        "inspection": [[0, 0], [2, 0]],
+        "delivery": [],
+        "charging": [],
+    }
+    scenario["robots"] = [
+        {"id": "R1", "name": "R1", "start": [0, 0], "battery": 90, "load": 1},
+    ]
+    scenario["tasks"] = [
+        {"id": "T0", "type": "inspection", "title": "instant", "priority": 5, "targets": [[0, 0]]},
+        {"id": "T1", "type": "inspection", "title": "queued", "priority": 1, "targets": [[2, 0]]},
+    ]
+    scenario["dynamic"] = {
+        "triggerTime": 99,
+        "blockedCells": [],
+        "failedRobots": [],
+        "tasks": [],
+    }
+
+    create_response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert create_response.status_code == 200
+    payload = create_response.json()
+    state_by_id = {state["taskId"]: state for state in payload["taskStates"]}
+    assert state_by_id["T0"]["status"] == "completed"
+    assert state_by_id["T1"]["assignedRobotId"] == "R1"
+    assert payload["result"]["assignments"][0]["tasks"][0]["id"] == "T1"
+    assert len(payload["metricsHistory"]) == 1
+    assert payload["metricsHistory"][0]["time"] == 0
+
+
+def test_session_create_raises_when_immediate_completion_replan_does_not_converge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = TestClient(app)
+    scenario = scenario_payload()
+    scenario["id"] = "instant-complete-non-convergent"
+    scenario["tasks"] = []
+    scenario["dynamic"] = {
+        "triggerTime": 99,
+        "blockedCells": [],
+        "failedRobots": [],
+        "tasks": [],
+    }
+    monkeypatch.setattr(
+        sessions_module,
+        "_sync_completed_task_states",
+        lambda *_args: {"T0"},
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="^T=0 即时完成重规划未在限定次数内收敛$",
+    ):
+        client.post(
+            "/api/sessions",
+            json={
+                "scenario": scenario,
+                "options": {"avoidConflicts": True, "includeDynamic": False},
+            },
+        )
+
+
+def test_session_create_allows_final_immediate_completion_convergence_check() -> None:
+    client = TestClient(app)
+    scenario = scenario_payload()
+    scenario["id"] = "instant-complete-convergence-bound"
+    scenario["width"] = 1
+    scenario["height"] = 1
+    scenario["obstacles"] = []
+    scenario["zones"] = {
+        "warehouse": [],
+        "inspection": [[0, 0]],
+        "delivery": [],
+        "charging": [],
+    }
+    scenario["robots"] = [
+        {"id": "R1", "name": "R1", "start": [0, 0], "battery": 90, "load": 1},
+    ]
+    scenario["tasks"] = [
+        {
+            "id": f"T{index}",
+            "type": "inspection",
+            "title": f"instant-{index}",
+            "priority": 4 - index,
+            "targets": [[0, 0]],
+        }
+        for index in range(3)
+    ]
+    scenario["dynamic"] = {
+        "triggerTime": 99,
+        "blockedCells": [],
+        "failedRobots": [],
+        "tasks": [],
+    }
+
+    create_response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert create_response.status_code == 200
+    payload = create_response.json()
+    assert [state["status"] for state in payload["taskStates"]] == [
+        "completed",
+        "completed",
+        "completed",
+    ]
+    assert all(not assignment["tasks"] for assignment in payload["result"]["assignments"])
+    assert len(payload["metricsHistory"]) == 1
+    for task_id in ("T0", "T1", "T2"):
+        assert sum(
+            event["text"] == f"任务 {task_id} 已完成"
+            for event in payload["result"]["eventLog"]
+        ) == 1
+
+
 def test_session_add_manual_task_preserves_existing_locked_assignments() -> None:
     client = TestClient(app)
     create_response = client.post(

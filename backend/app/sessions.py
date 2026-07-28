@@ -828,56 +828,68 @@ def _build_result(session: DispatchSession) -> SessionResult:
             safetyStall=session.last_safety_stall,
             result=result,
         )
-    if result is None:
-        scenario, options, task_lookup = _build_effective_dispatch_input(session)
-        _release_invalid_task_locks_for_replan(session, scenario, options)
-        evaluation = _session_replan_window_evaluation(session)
-        samples_before = tuple(session.recent_replan_times_ms)
-        slow_before = session.adaptive_latency_slow
-        planning_diagnostics = (
-            PlanningDiagnostics()
-            if session.replan_observer is not None
-            else None
-        )
-        result = _restore_absolute_result(
-            run_dispatch(
-                scenario,
-                options,
-                session.locked_task_robot_ids,
-                session.preferred_task_robot_ids,
-                include_dynamic_events=_include_scenario_dynamic_events(session),
-                apply_dynamic_constraints_at_start=True,
-                task_limit_per_robot=1,
-                replan_window_decision=evaluation.decision,
-                active_charging_visits=_relative_active_charging_visits(session),
-                planning_diagnostics=planning_diagnostics,
-            ),
-            task_lookup,
-            session.current_time,
-            session,
-        )
-        _record_replan_window_decision(session, evaluation.decision)
-        _record_replan_latency(session, result.metrics.replanTimeMs)
-        if planning_diagnostics is not None:
-            _notify_replan_observer(
-                session,
-                evaluation,
-                samples_before,
-                slow_before,
-                result.metrics.replanTimeMs,
-                planning_diagnostics,
-            )
-        _update_task_robot_preferences(session, result)
+    immediate_replan_limit = len(_all_tasks(session)) + 1
+    immediate_replan_iteration = 0
+    while True:
+        immediate_replan_iteration += 1
+        if immediate_replan_iteration > immediate_replan_limit:
+            raise RuntimeError("T=0 即时完成重规划未在限定次数内收敛")
 
+        result = session.last_result
+        if result is None:
+            scenario, options, task_lookup = _build_effective_dispatch_input(session)
+            _release_invalid_task_locks_for_replan(session, scenario, options)
+            evaluation = _session_replan_window_evaluation(session)
+            samples_before = tuple(session.recent_replan_times_ms)
+            slow_before = session.adaptive_latency_slow
+            planning_diagnostics = (
+                PlanningDiagnostics()
+                if session.replan_observer is not None
+                else None
+            )
+            result = _restore_absolute_result(
+                run_dispatch(
+                    scenario,
+                    options,
+                    session.locked_task_robot_ids,
+                    session.preferred_task_robot_ids,
+                    include_dynamic_events=_include_scenario_dynamic_events(session),
+                    apply_dynamic_constraints_at_start=True,
+                    task_limit_per_robot=1,
+                    replan_window_decision=evaluation.decision,
+                    active_charging_visits=_relative_active_charging_visits(session),
+                    planning_diagnostics=planning_diagnostics,
+                ),
+                task_lookup,
+                session.current_time,
+                session,
+            )
+            _record_replan_window_decision(session, evaluation.decision)
+            _record_replan_latency(session, result.metrics.replanTimeMs)
+            if planning_diagnostics is not None:
+                _notify_replan_observer(
+                    session,
+                    evaluation,
+                    samples_before,
+                    slow_before,
+                    result.metrics.replanTimeMs,
+                    planning_diagnostics,
+                )
+            _update_task_robot_preferences(session, result)
+
+            session.last_result = result
+        result = result.model_copy(
+            update={"conflictStates": _build_conflict_states(result.conflicts, result.paths, session.current_time)}
+        )
         session.last_result = result
-    result = result.model_copy(
-        update={"conflictStates": _build_conflict_states(result.conflicts, result.paths, session.current_time)}
-    )
-    session.last_result = result
-    result = result.model_copy(update={"eventLog": _build_session_event_log(session, result)})
-    robot_states = _build_robot_states(session, result)
-    task_states = _build_task_states(session, result)
-    _sync_completed_task_states(session, task_states)
+        result = result.model_copy(update={"eventLog": _build_session_event_log(session, result)})
+        robot_states = _build_robot_states(session, result)
+        task_states = _build_task_states(session, result)
+        newly_completed_task_ids = _sync_completed_task_states(session, task_states)
+        if session.current_time != 0 or not newly_completed_task_ids:
+            break
+        _invalidate_plan(session)
+
     snapshot = _build_metric_snapshot(session, result, task_states)
     _record_metric_snapshot(session, snapshot)
     result = result.model_copy(
@@ -1148,26 +1160,15 @@ def _apply_result_through_time(
             pickup_time is not None
             and session.task_waypoint_progress.get(task.id, 0) >= 1
         ):
-            if complete_outbound_pickup(session.shelf_statuses, session.shelf_task_bindings, task.id):
-                _record_session_event(session, pickup_time, f"货架 {binding.shelf_id} 已取货")
+            _complete_outbound_task_pickup(session, task.id, pickup_time)
 
     completions = _session_task_completion_times(session, result)
     completed_task = False
     for task_id, completion_time in completions.items():
         if completion_time <= target_time:
-            newly_completed = task_id not in session.completed_task_ids
-            session.completed_task_ids.add(task_id)
-            session.task_completion_times[task_id] = completion_time
-            session.task_payload_positions.pop(task_id, None)
-            session.preferred_task_robot_ids.pop(task_id, None)
-            session.locked_task_robot_ids.pop(task_id, None)
-            if newly_completed:
+            if _complete_session_task(session, task_id, completion_time):
                 completed_task = True
-                _record_session_event(session, completion_time, f"任务 {task_id} 已完成")
-                binding = session.shelf_task_bindings.get(task_id)
-                if binding is not None and binding.kind == "inbound":
-                    if complete_inbound_task(session.shelf_statuses, session.shelf_task_bindings, task_id):
-                        _record_session_event(session, completion_time, f"货架 {binding.shelf_id} 已放货")
+                _complete_inbound_task_inventory(session, task_id, completion_time)
 
     session.current_time = target_time
     if completed_task:
@@ -1317,6 +1318,58 @@ def _record_session_event(session: DispatchSession, event_time: int, text: str) 
     session.event_notes.append(EventItem(time=event_time, text=text))
     if len(session.event_notes) > MAX_SESSION_EVENT_NOTES:
         session.event_notes = session.event_notes[-MAX_SESSION_EVENT_NOTES:]
+
+
+def _complete_outbound_task_pickup(
+    session: DispatchSession,
+    task_id: str,
+    pickup_time: int,
+) -> bool:
+    binding = session.shelf_task_bindings.get(task_id)
+    if binding is None or binding.kind != "outbound":
+        return False
+    if not complete_outbound_pickup(
+        session.shelf_statuses,
+        session.shelf_task_bindings,
+        task_id,
+    ):
+        return False
+    _record_session_event(session, pickup_time, f"货架 {binding.shelf_id} 已取货")
+    return True
+
+
+def _complete_inbound_task_inventory(
+    session: DispatchSession,
+    task_id: str,
+    completion_time: int,
+) -> bool:
+    binding = session.shelf_task_bindings.get(task_id)
+    if binding is None or binding.kind != "inbound":
+        return False
+    if not complete_inbound_task(
+        session.shelf_statuses,
+        session.shelf_task_bindings,
+        task_id,
+    ):
+        return False
+    _record_session_event(session, completion_time, f"货架 {binding.shelf_id} 已放货")
+    return True
+
+
+def _complete_session_task(
+    session: DispatchSession,
+    task_id: str,
+    completion_time: int,
+) -> bool:
+    if task_id in session.completed_task_ids:
+        return False
+    session.completed_task_ids.add(task_id)
+    session.task_completion_times[task_id] = completion_time
+    session.task_payload_positions.pop(task_id, None)
+    session.preferred_task_robot_ids.pop(task_id, None)
+    session.locked_task_robot_ids.pop(task_id, None)
+    _record_session_event(session, completion_time, f"任务 {task_id} 已完成")
+    return True
 
 
 def _is_scenario_dynamic_active(session: DispatchSession) -> bool:
@@ -1785,17 +1838,30 @@ def _build_task_states(session: DispatchSession, result: DispatchResult) -> list
     return states
 
 
-def _sync_completed_task_states(session: DispatchSession, task_states: list[TaskRuntimeState]) -> None:
+def _sync_completed_task_states(
+    session: DispatchSession,
+    task_states: list[TaskRuntimeState],
+) -> set[str]:
+    newly_completed_task_ids: set[str] = set()
     for state in task_states:
         if state.status != "completed" or state.completionTime is None:
             continue
         if state.completionTime > session.current_time:
             continue
-        session.completed_task_ids.add(state.taskId)
-        session.task_completion_times[state.taskId] = state.completionTime
-        session.task_payload_positions.pop(state.taskId, None)
-        session.preferred_task_robot_ids.pop(state.taskId, None)
-        session.locked_task_robot_ids.pop(state.taskId, None)
+        _complete_outbound_task_pickup(
+            session,
+            state.taskId,
+            state.completionTime,
+        )
+        if not _complete_session_task(session, state.taskId, state.completionTime):
+            continue
+        newly_completed_task_ids.add(state.taskId)
+        _complete_inbound_task_inventory(
+            session,
+            state.taskId,
+            state.completionTime,
+        )
+    return newly_completed_task_ids
 
 
 def _build_metric_snapshot(

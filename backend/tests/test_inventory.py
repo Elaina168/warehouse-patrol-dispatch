@@ -1,5 +1,7 @@
 import pytest
+from fastapi.testclient import TestClient
 
+from backend.app.main import app
 from backend.app.inventory import (
     ShelfInventoryError,
     build_shelf_runtime_states,
@@ -114,3 +116,141 @@ def test_inventory_does_not_restrict_delivery_when_shelves_are_absent() -> None:
     assert reserve_shelf_task(scenario, statuses, bindings, inbound_task()) is None
     assert statuses == {}
     assert bindings == {}
+
+
+def t0_inventory_session_scenario(*, outbound: bool) -> dict:
+    task_id = "OUT" if outbound else "IN"
+    return {
+        "id": f"t0-inventory-{'outbound' if outbound else 'inbound'}",
+        "name": "t0 inventory",
+        "description": "T=0 库存完成转换",
+        "width": 2,
+        "height": 1,
+        "obstacles": [[1, 0]],
+        "zones": {
+            "warehouse": [] if outbound else [[0, 0]],
+            "inspection": [],
+            "delivery": [[0, 0]] if outbound else [],
+            "charging": [],
+        },
+        "shelves": [
+            {
+                "id": "S01",
+                "cell": [1, 0],
+                "serviceCell": [0, 0],
+                "initialOccupied": outbound,
+            }
+        ],
+        "robots": [
+            {
+                "id": "R1",
+                "name": "R1",
+                "start": [0, 0],
+                "battery": 100,
+                "load": 1,
+            }
+        ],
+        "tasks": [
+            {
+                "id": task_id,
+                "type": "delivery",
+                "title": task_id,
+                "priority": 2,
+                "pickup": [0, 0],
+                "dropoff": [0, 0],
+                "demand": 1,
+            }
+        ],
+        "dynamic": {
+            "triggerTime": 10,
+            "blockedCells": [],
+            "failedRobots": [],
+            "tasks": [],
+        },
+    }
+
+
+def test_t0_inventory_inbound_completion_is_applied_once() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": t0_inventory_session_scenario(outbound=False),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert created.status_code == 200
+    payload = created.json()
+    task_state = next(state for state in payload["taskStates"] if state["taskId"] == "IN")
+    shelf_state = next(state for state in payload["shelfStates"] if state["shelfId"] == "S01")
+    assert task_state["status"] == "completed"
+    assert shelf_state["status"] == "occupied"
+    created_events = [
+        event
+        for event in payload["result"]["eventLog"]
+        if event["text"] in {"任务 IN 已完成", "货架 S01 已放货"}
+    ]
+    assert created_events == [
+        {"time": 0, "text": "任务 IN 已完成"},
+        {"time": 0, "text": "货架 S01 已放货"},
+    ]
+
+    ticked = client.post(
+        f"/api/sessions/{payload['sessionId']}/tick",
+        json={"currentTime": 1},
+    )
+
+    assert ticked.status_code == 200
+    relevant_events = [
+        event
+        for event in ticked.json()["result"]["eventLog"]
+        if event["text"] in {"任务 IN 已完成", "货架 S01 已放货"}
+    ]
+    assert relevant_events == [
+        {"time": 0, "text": "任务 IN 已完成"},
+        {"time": 0, "text": "货架 S01 已放货"},
+    ]
+
+
+def test_t0_inventory_outbound_completion_is_applied_once() -> None:
+    client = TestClient(app)
+    created = client.post(
+        "/api/sessions",
+        json={
+            "scenario": t0_inventory_session_scenario(outbound=True),
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert created.status_code == 200
+    payload = created.json()
+    task_state = next(state for state in payload["taskStates"] if state["taskId"] == "OUT")
+    shelf_state = next(state for state in payload["shelfStates"] if state["shelfId"] == "S01")
+    assert task_state["status"] == "completed"
+    assert shelf_state["status"] == "empty"
+    created_events = [
+        event
+        for event in payload["result"]["eventLog"]
+        if event["text"] in {"货架 S01 已取货", "任务 OUT 已完成"}
+    ]
+    assert created_events == [
+        {"time": 0, "text": "货架 S01 已取货"},
+        {"time": 0, "text": "任务 OUT 已完成"},
+    ]
+
+    ticked = client.post(
+        f"/api/sessions/{payload['sessionId']}/tick",
+        json={"currentTime": 1},
+    )
+
+    assert ticked.status_code == 200
+    relevant_events = [
+        event
+        for event in ticked.json()["result"]["eventLog"]
+        if event["text"] in {"货架 S01 已取货", "任务 OUT 已完成"}
+    ]
+    assert relevant_events == [
+        {"time": 0, "text": "货架 S01 已取货"},
+        {"time": 0, "text": "任务 OUT 已完成"},
+    ]
