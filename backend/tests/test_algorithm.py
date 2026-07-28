@@ -143,6 +143,94 @@ def test_timed_detour_battery_rejects_path_beyond_available_movement_units() -> 
         assert movement_units <= 2
 
 
+def test_parking_battery_rejects_post_task_move_after_battery_is_exhausted() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "parking-battery",
+            "name": "parking-battery",
+            "description": "任务后停车移动也必须受剩余电量约束。",
+            "width": 5,
+            "height": 2,
+            "obstacles": [],
+            "zones": {
+                "warehouse": [],
+                "inspection": [[0, 0], [1, 0]],
+                "delivery": [],
+                "charging": [],
+            },
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [4, 0],
+                    "battery": 100,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+                {
+                    "id": "R2",
+                    "name": "R2",
+                    "start": [0, 1],
+                    "battery": 2,
+                    "batteryCapacity": 2,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "T1",
+                    "type": "inspection",
+                    "title": "预留后续通道",
+                    "priority": 2,
+                    "targets": [[0, 0]],
+                },
+                {
+                    "id": "T2",
+                    "type": "inspection",
+                    "title": "耗尽电量后停车",
+                    "priority": 1,
+                    "targets": [[1, 0]],
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+    tasks = {task.id: task for task in scenario.tasks}
+    assignments = [
+        Assignment(robotId="R1", tasks=[tasks["T1"]]),
+        Assignment(robotId="R2", tasks=[tasks["T2"]]),
+    ]
+
+    candidate = build_paths_for_order(
+        scenario,
+        scenario.robots,
+        assignments,
+        True,
+        [],
+        [],
+        scenario.robots,
+    )
+    path = candidate.paths["R2"]
+    robot_succeeded = "R2 存在不可达任务" not in candidate.failures
+
+    assert not (
+        path == [(0, 1), (0, 0), (1, 0), (1, 1), (1, 0), (2, 0)]
+        and robot_succeeded
+    )
+    if robot_succeeded:
+        movement_units = sum(
+            previous != current
+            for previous, current in zip(path, path[1:])
+        )
+        assert movement_units <= 2, (path, candidate.failures)
+
+
 def _timed_diagnostics_scenario() -> Scenario:
     return Scenario.model_validate(
         {

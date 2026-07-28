@@ -826,9 +826,21 @@ def has_future_vertex_reservation(
     )
 
 
+def remaining_battery_after_path(
+    robot: Robot,
+    path: list[Cell],
+    charging_visits: list[ChargingVisit],
+) -> int:
+    if not charging_visits:
+        return robot.battery - path_movement_count(path)
+    last_completion_time = max(visit.completionTime for visit in charging_visits)
+    return robot.batteryCapacity - path_movement_count(path[last_completion_time:])
+
+
 def append_parking_step(
     scenario: Scenario,
     path: list[Cell],
+    battery: int,
     move_ticks: int,
     reservations: Reservations,
     extra_blocked: list[Cell],
@@ -836,21 +848,22 @@ def append_parking_step(
     delayed_block_time: int | None = None,
     horizon_padding: int = 12,
     candidate_diagnostics: PathCandidateDiagnostics | None = None,
-) -> list[Cell]:
+) -> tuple[list[Cell], bool]:
     if not path:
-        return path
+        return path, False
 
     delayed_blocked = delayed_blocked or []
     final_cell = path[-1]
     start_time = len(path) - 1
     next_time = start_time + 1
     if not has_future_vertex_reservation(final_cell, next_time, reservations, horizon_padding):
-        return path
+        return path, False
 
     blocked = make_blocked_set(
         scenario,
         blocked_cells_at_time(extra_blocked, delayed_blocked, delayed_block_time, next_time),
     )
+    parking_candidate_found = False
     for candidate in neighbors(final_cell, scenario, blocked):
         segment = astar_timed(
             scenario,
@@ -867,8 +880,24 @@ def append_parking_step(
         arrival_time = start_time + len(segment) - 1
         if not can_hold_cell(candidate, arrival_time + 1, reservations, horizon_padding):
             continue
-        return join_paths(path, segment)
-    return path
+        parking_candidate_found = True
+        parked_path, remaining_battery, joined = _join_energy_checked_segment(
+            path,
+            segment,
+            battery,
+        )
+        if not joined:
+            continue
+        if scenario.zones.charging:
+            nearest_station = nearest_charge_station(
+                scenario,
+                parked_path[-1],
+                extra_blocked,
+            )
+            if nearest_station is None or remaining_battery < nearest_station[1]:
+                continue
+        return parked_path, False
+    return path, parking_candidate_found
 
 
 def plan_idle_robot_parking_path(
@@ -1057,9 +1086,10 @@ def build_paths_for_order(
                 candidate_diagnostics,
             )
         if avoid_conflicts and assigned and not failed:
-            path = append_parking_step(
+            path, failed = append_parking_step(
                 scenario,
                 path,
+                remaining_battery_after_path(robot, path, charging_visits),
                 robot.moveTicks,
                 reservations,
                 extra_blocked,
