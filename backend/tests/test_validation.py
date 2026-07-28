@@ -3,8 +3,9 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app.main import app
-from backend.app.schemas import Robot, Scenario
+from backend.app.schemas import DispatchOptions, Robot, Scenario
 from backend.tests.helpers import scenario_payload
+from backend.app.validation import validate_scenario
 
 
 def shelf_scenario_payload() -> dict:
@@ -41,6 +42,30 @@ def create_shelf_session(scenario: dict, *, include_dynamic: bool = True):
             "options": {"avoidConflicts": True, "includeDynamic": include_dynamic},
         },
     )
+
+
+def test_validate_scenario_rejects_duplicate_robot_start() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "duplicate-robot-start",
+            "name": "重复机器人起点",
+            "description": "验证机器人起点唯一性。",
+            "width": 2,
+            "height": 2,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+            "robots": [
+                {"id": "R1", "name": "R1", "start": [0, 0], "battery": 100, "load": 1},
+                {"id": "R2", "name": "R2", "start": [0, 0], "battery": 100, "load": 1},
+            ],
+            "tasks": [],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+
+    errors = validate_scenario(scenario, DispatchOptions())
+
+    assert "机器人起点重复：(0, 0)" in errors
 
 
 def test_robot_move_ticks_defaults_for_legacy_scenarios_and_rejects_invalid_values() -> None:

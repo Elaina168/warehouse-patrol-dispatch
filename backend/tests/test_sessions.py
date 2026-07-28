@@ -59,6 +59,23 @@ def _safety_test_result(
     )
 
 
+def test_session_create_rejects_duplicate_robot_start() -> None:
+    client = TestClient(app)
+    scenario = scenario_payload()
+    scenario["robots"][1]["start"] = [0, 0]
+
+    response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "机器人起点重复：(0, 0)" in response.json()["detail"]
+
+
 def test_first_execution_conflict_selects_earliest_future_conflict_deterministically() -> None:
     scenario = Scenario.model_validate(scenario_payload())
     result = _safety_test_result(
@@ -1867,7 +1884,7 @@ def test_session_restore_target_excludes_failed_robot_with_incompatible_task_typ
             {
                 "id": "R-INCOMPATIBLE",
                 "name": "巡检机器人",
-                "start": [0, 0],
+                "start": [1, 0],
                 "battery": 100,
                 "load": 1,
                 "capabilities": ["inspection"],
@@ -1935,7 +1952,7 @@ def test_session_releases_incompatible_stale_lock_and_replans_immediately() -> N
             {
                 "id": "R-CAPABLE",
                 "name": "应急机器人",
-                "start": [0, 0],
+                "start": [1, 0],
                 "battery": 100,
                 "load": 1,
                 "capabilities": ["emergency"],
@@ -5626,7 +5643,7 @@ def test_session_task_state_narrows_joint_recovery_after_partial_runtime_fix() -
         "id": "runtime-joint-recovery",
         "name": "runtime-joint-recovery",
         "description": "runtime joint recovery regression",
-        "width": 3,
+        "width": 4,
         "height": 1,
         "obstacles": [],
         "zones": {
@@ -5635,7 +5652,7 @@ def test_session_task_state_narrows_joint_recovery_after_partial_runtime_fix() -
             "delivery": [[2, 0]],
         },
         "robots": [
-            {"id": "R1", "name": "R1", "start": [0, 0], "battery": 90, "load": 1},
+            {"id": "R1", "name": "R1", "start": [3, 0], "battery": 90, "load": 1},
             {"id": "R2", "name": "R2", "start": [0, 0], "battery": 90, "load": 2},
         ],
         "tasks": [
@@ -5733,7 +5750,7 @@ def test_session_task_state_ignores_unrelated_blocks_for_load_recovery() -> None
             "delivery": [[2, 0]],
         },
         "robots": [
-            {"id": "R1", "name": "R1", "start": [0, 0], "battery": 90, "load": 1},
+            {"id": "R1", "name": "R1", "start": [1, 1], "battery": 90, "load": 1},
             {"id": "R2", "name": "R2", "start": [0, 0], "battery": 90, "load": 2},
         ],
         "tasks": [

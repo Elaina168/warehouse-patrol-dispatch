@@ -18,6 +18,7 @@ def validate_scenario(scenario: Scenario, options: DispatchOptions) -> list[str]
     errors.extend(_dynamic_failed_robot_errors(scenario))
     errors.extend(_duplicate_errors("任务 ID", [task.id for task in _all_tasks(scenario)]))
     errors.extend(_duplicate_errors("障碍/封锁坐标", [cell_key(cell) for cell in blocked_cells]))
+    errors.extend(_duplicate_robot_start_errors(scenario.robots))
     errors.extend(_shelf_errors(scenario))
     errors.extend(_cell_bounds_errors(scenario))
     errors.extend(_blocked_point_errors(scenario))
@@ -35,6 +36,16 @@ def _duplicate_errors(label: str, values: list[str]) -> list[str]:
             duplicates.append(value)
         seen.add(value)
     return [f"{label} 重复：{value}" for value in duplicates]
+
+
+def _duplicate_robot_start_errors(robots: list[Robot]) -> list[str]:
+    seen: set[Cell] = set()
+    duplicates: list[Cell] = []
+    for robot in robots:
+        if robot.start in seen and robot.start not in duplicates:
+            duplicates.append(robot.start)
+        seen.add(robot.start)
+    return [f"机器人起点重复：({cell[0]}, {cell[1]})" for cell in duplicates]
 
 
 def _dynamic_failed_robot_errors(scenario: Scenario) -> list[str]:
