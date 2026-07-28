@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 import backend.app.dispatch as dispatch_module
+import backend.app.main as main_module
 from backend.app.dispatch import build_paths, build_paths_for_order, path_planning_candidate_score, task_completion_times
 from backend.app.main import app
 from backend.app.planning_diagnostics import PathCandidateDiagnostics
@@ -3130,6 +3131,58 @@ def test_path_planning_keeps_robot_at_task_endpoint_for_service_time() -> None:
 PATH_TICK_BUDGET_REASON = "规划路径超过最大时域 10000 tick"
 
 
+def _cumulative_service_path_tick_budget_payload() -> dict:
+    return {
+        "id": "cumulative-service-path-tick-budget",
+        "name": "cumulative-service-path-tick-budget",
+        "description": "两个合法作业时长累计后不得突破规划路径预算。",
+        "width": 3,
+        "height": 1,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [],
+            "inspection": [[1, 0], [2, 0]],
+            "delivery": [],
+            "charging": [],
+        },
+        "robots": [
+            {
+                "id": "R1",
+                "name": "R1",
+                "start": [0, 0],
+                "battery": 100,
+                "batteryCapacity": 100,
+                "load": 1,
+                "capabilities": ["inspection"],
+            },
+        ],
+        "tasks": [
+            {
+                "id": "T1",
+                "type": "inspection",
+                "title": "第一段作业",
+                "priority": 2,
+                "targets": [[1, 0]],
+                "serviceTime": 6000,
+            },
+            {
+                "id": "T2",
+                "type": "inspection",
+                "title": "第二段作业",
+                "priority": 1,
+                "targets": [[2, 0]],
+                "serviceTime": 5000,
+            },
+        ],
+        "dynamic": {
+            "triggerTime": 0,
+            "blockedCells": [],
+            "failedRobots": [],
+            "tasks": [],
+        },
+    }
+
+
 def assert_path_tick_budget_failure(
     result,
     task_id: str,
@@ -3149,18 +3202,56 @@ def assert_path_tick_budget_failure(
     assert all(conflict.time <= 10_000 for conflict in result.conflicts)
 
 
-def test_path_tick_budget_rejects_cumulative_service_overflow() -> None:
+def test_dispatch_api_rejects_service_time_over_limit_before_planning(monkeypatch) -> None:
+    dispatch_call_count = 0
+    original_run_dispatch = main_module.run_dispatch
+
+    def recording_run_dispatch(*args, **kwargs):
+        nonlocal dispatch_call_count
+        dispatch_call_count += 1
+        return original_run_dispatch(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "run_dispatch", recording_run_dispatch)
+    scenario = scenario_payload()
+    scenario["tasks"][0]["serviceTime"] = 10_001
+
+    response = TestClient(app).post(
+        "/api/dispatch",
+        json={
+            "scenario": scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": False},
+        },
+    )
+
+    assert response.status_code == 422
+    assert dispatch_call_count == 0
+
+
+def test_dispatch_api_caps_cumulative_valid_service_path_nodes() -> None:
+    response = TestClient(app).post(
+        "/api/dispatch",
+        json={
+            "scenario": _cumulative_service_path_tick_budget_payload(),
+            "options": {"avoidConflicts": False, "includeDynamic": False},
+        },
+    )
+
+    assert response.status_code == 200
+    assert all(len(path) <= 10_001 for path in response.json()["paths"].values())
+
+
+def test_timed_path_budget_keeps_static_unreachable_failure_generic() -> None:
     scenario = Scenario.model_validate(
         {
-            "id": "cumulative-service-path-tick-budget",
-            "name": "cumulative-service-path-tick-budget",
-            "description": "两个合法作业时长累计后不得突破规划路径预算。",
+            "id": "timed-static-unreachable",
+            "name": "timed-static-unreachable",
+            "description": "启用路径时域上限时，静态不可达不得误报为预算失败。",
             "width": 3,
-            "height": 1,
-            "obstacles": [],
+            "height": 2,
+            "obstacles": [[1, 0], [1, 1]],
             "zones": {
                 "warehouse": [],
-                "inspection": [[1, 0], [2, 0]],
+                "inspection": [[2, 0]],
                 "delivery": [],
                 "charging": [],
             },
@@ -3177,20 +3268,11 @@ def test_path_tick_budget_rejects_cumulative_service_overflow() -> None:
             ],
             "tasks": [
                 {
-                    "id": "T1",
+                    "id": "WALLED",
                     "type": "inspection",
-                    "title": "第一段作业",
-                    "priority": 2,
-                    "targets": [[1, 0]],
-                    "serviceTime": 6000,
-                },
-                {
-                    "id": "T2",
-                    "type": "inspection",
-                    "title": "第二段作业",
+                    "title": "静态不可达巡检",
                     "priority": 1,
                     "targets": [[2, 0]],
-                    "serviceTime": 5000,
                 },
             ],
             "dynamic": {
@@ -3201,6 +3283,35 @@ def test_path_tick_budget_rejects_cumulative_service_overflow() -> None:
             },
         }
     )
+
+    path, failed, path_plan_failure = dispatch_module.plan_robot_path(
+        scenario,
+        scenario.robots[0],
+        scenario.robots[0].start,
+        scenario.tasks,
+        scenario.robots[0].moveTicks,
+        True,
+        dispatch_module.Reservations(),
+        [],
+    )
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=False),
+    )
+
+    assert path == [(0, 0)]
+    assert failed is True
+    assert path_plan_failure is None
+    assert result.failureReasons == {"WALLED": "所有候选机器人到剩余目标不可达"}
+    assert result.failureDetails["WALLED"] == TaskFailureDetail(
+        reason="所有候选机器人到剩余目标不可达",
+        category="permanent",
+        recoveryAction="fixMapOrTaskTarget",
+    )
+
+
+def test_path_tick_budget_rejects_cumulative_service_overflow() -> None:
+    scenario = Scenario.model_validate(_cumulative_service_path_tick_budget_payload())
 
     result = dispatch_module.run_dispatch(
         scenario,
