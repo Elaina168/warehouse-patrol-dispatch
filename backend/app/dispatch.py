@@ -34,6 +34,10 @@ ASSIGNMENT_REPLAN_WINDOW = 24
 ASSIGNMENT_SWITCH_PENALTY = 8
 
 
+class _TimedPathBudgetExceeded(Exception):
+    pass
+
+
 def has_dynamic_event(dynamic: DynamicEvent) -> bool:
     return bool(dynamic.blockedCells or dynamic.failedRobots or dynamic.tasks)
 
@@ -73,6 +77,7 @@ class PathPlanningCandidate:
     order: list[str]
     charging_visits: list[ChargingVisit] = field(default_factory=list)
     failureDetails: dict[str, TaskFailureDetail] = field(default_factory=dict)
+    suppressedFailureTaskIds: set[str] = field(default_factory=set)
 
 
 DistanceCache = dict[tuple[Cell, Cell], float]
@@ -229,6 +234,7 @@ def astar_timed(
     extra_blocked: list[Cell] | None = None,
     move_ticks: int = 1,
     candidate_diagnostics: PathCandidateDiagnostics | None = None,
+    path_end_time: int | None = None,
 ) -> list[Cell]:
     call_diagnostics = (
         candidate_diagnostics.start_timed_astar_call()
@@ -247,17 +253,51 @@ def astar_timed(
         return []
 
     max_time = start_time + scenario.width * scenario.height * 4 * move_ticks
+    natural_latest_arrival = max_time + move_ticks - 1
+    latest_arrival = (
+        min(natural_latest_arrival, path_end_time)
+        if path_end_time is not None
+        else natural_latest_arrival
+    )
+    budget_limited = latest_arrival < natural_latest_arrival
+    if path_end_time is not None and start_time > path_end_time:
+        if call_diagnostics is not None:
+            call_diagnostics.finish("exhausted", 0)
+        raise _TimedPathBudgetExceeded
     if not same_cell(start, goal):
         earliest_arrival = start_time + manhattan(start, goal) * move_ticks
-        latest_goal_arrival = max_time + move_ticks - 1
+        if budget_limited:
+            static_path = astar(scenario, start, goal, extra_blocked)
+            if not static_path:
+                if call_diagnostics is not None:
+                    call_diagnostics.finish("exhausted", 0)
+                return []
+            earliest_arrival = start_time + (len(static_path) - 1) * move_ticks
+        if earliest_arrival > latest_arrival:
+            if call_diagnostics is not None:
+                call_diagnostics.finish("exhausted", 0)
+            if budget_limited:
+                raise _TimedPathBudgetExceeded
+            return []
         if not has_unreserved_goal_arrival_time(
             goal,
             earliest_arrival,
-            latest_goal_arrival,
+            latest_arrival,
             reservations,
         ):
+            available_after_budget = budget_limited and has_unreserved_goal_arrival_time(
+                goal,
+                max(earliest_arrival, latest_arrival + 1),
+                natural_latest_arrival,
+                reservations,
+            )
             if call_diagnostics is not None:
-                call_diagnostics.finish("goalFullyReserved", 0)
+                call_diagnostics.finish(
+                    "exhausted" if available_after_budget else "goalFullyReserved",
+                    0,
+                )
+            if available_after_budget:
+                raise _TimedPathBudgetExceeded
             return []
     start_state_key = timed_key(start, start_time)
     heap: list[tuple[int, int, int, Cell, str]] = [
@@ -266,6 +306,7 @@ def astar_timed(
     came_from: dict[str, str] = {}
     best: dict[str, int] = {start_state_key: 0}
     closed: set[str] = set()
+    budget_frontier_reached = False
 
     while heap:
         _, current_time, current_g, current_cell, current_key = heapq.heappop(heap)
@@ -284,6 +325,9 @@ def astar_timed(
         for next_cell in neighbors(current_cell, scenario, blocked, include_wait=True):
             duration = 1 if same_cell(next_cell, current_cell) else move_ticks
             next_time = current_time + duration
+            if next_time > latest_arrival:
+                budget_frontier_reached = budget_limited
+                continue
             reserved = (
                 is_reserved(next_cell, next_time, current_cell, reservations)
                 if duration == 1
@@ -304,6 +348,8 @@ def astar_timed(
 
     if call_diagnostics is not None:
         call_diagnostics.finish("exhausted", expanded_state_count)
+    if budget_frontier_reached:
+        raise _TimedPathBudgetExceeded
     return []
 
 
@@ -732,20 +778,26 @@ def plan_robot_path(
         charge_station, _, _ = charge_decision
         if charge_station is not None:
             departure_time = len(path) - 1
-            segment = (
-                astar_timed(
-                    scenario,
-                    cursor,
-                    charge_station,
-                    departure_time,
-                    reservations,
-                    extra_blocked,
+            if avoid_conflicts:
+                try:
+                    segment = astar_timed(
+                        scenario,
+                        cursor,
+                        charge_station,
+                        departure_time,
+                        reservations,
+                        extra_blocked,
+                        move_ticks,
+                        candidate_diagnostics=candidate_diagnostics,
+                        path_end_time=MAX_PLANNED_PATH_TICKS,
+                    )
+                except _TimedPathBudgetExceeded:
+                    return path, True, _path_tick_budget_failure(task.id)
+            else:
+                segment = expand_path_by_move_ticks(
+                    astar(scenario, cursor, charge_station, extra_blocked),
                     move_ticks,
-                    candidate_diagnostics=candidate_diagnostics,
                 )
-                if avoid_conflicts
-                else expand_path_by_move_ticks(astar(scenario, cursor, charge_station, extra_blocked), move_ticks)
-            )
             if not segment:
                 return path, True, None
             segment_tick_count = max(0, len(segment) - 1)
@@ -775,20 +827,26 @@ def plan_robot_path(
                 if delayed_block_time is not None and len(path) - 1 >= delayed_block_time
                 else extra_blocked
             )
-            segment = (
-                astar_timed(
-                    scenario,
-                    cursor,
-                    waypoint,
-                    len(path) - 1,
-                    reservations,
-                    segment_blocked,
+            if avoid_conflicts:
+                try:
+                    segment = astar_timed(
+                        scenario,
+                        cursor,
+                        waypoint,
+                        len(path) - 1,
+                        reservations,
+                        segment_blocked,
+                        move_ticks,
+                        candidate_diagnostics=candidate_diagnostics,
+                        path_end_time=MAX_PLANNED_PATH_TICKS,
+                    )
+                except _TimedPathBudgetExceeded:
+                    return path, True, _path_tick_budget_failure(task.id)
+            else:
+                segment = expand_path_by_move_ticks(
+                    astar(scenario, cursor, waypoint, segment_blocked),
                     move_ticks,
-                    candidate_diagnostics=candidate_diagnostics,
                 )
-                if avoid_conflicts
-                else expand_path_by_move_ticks(astar(scenario, cursor, waypoint, segment_blocked), move_ticks)
-            )
             if not segment:
                 return path, True, None
             segment_tick_count = max(0, len(segment) - 1)
@@ -889,39 +947,47 @@ def append_parking_step(
     delayed_block_time: int | None = None,
     horizon_padding: int = 12,
     candidate_diagnostics: PathCandidateDiagnostics | None = None,
-) -> tuple[list[Cell], bool]:
+    task_id: str | None = None,
+) -> tuple[list[Cell], bool, PathPlanFailure | None]:
     if not path:
-        return path, False
+        return path, False, None
 
     delayed_blocked = delayed_blocked or []
     final_cell = path[-1]
     start_time = len(path) - 1
     next_time = start_time + 1
     if not has_future_vertex_reservation(final_cell, next_time, reservations, horizon_padding):
-        return path, False
+        return path, False, None
 
     blocked = make_blocked_set(
         scenario,
         blocked_cells_at_time(extra_blocked, delayed_blocked, delayed_block_time, next_time),
     )
     parking_candidate_found = False
+    parking_budget_exhausted = False
     for candidate in neighbors(final_cell, scenario, blocked):
-        segment = astar_timed(
-            scenario,
-            final_cell,
-            candidate,
-            start_time,
-            reservations,
-            blocked_cells_at_time(extra_blocked, delayed_blocked, delayed_block_time, start_time),
-            move_ticks,
-            candidate_diagnostics=candidate_diagnostics,
-        )
+        try:
+            segment = astar_timed(
+                scenario,
+                final_cell,
+                candidate,
+                start_time,
+                reservations,
+                blocked_cells_at_time(extra_blocked, delayed_blocked, delayed_block_time, start_time),
+                move_ticks,
+                candidate_diagnostics=candidate_diagnostics,
+                path_end_time=MAX_PLANNED_PATH_TICKS,
+            )
+        except _TimedPathBudgetExceeded:
+            parking_budget_exhausted = True
+            continue
         if not segment:
             continue
         arrival_time = start_time + len(segment) - 1
         if not can_hold_cell(candidate, arrival_time + 1, reservations, horizon_padding):
             continue
         if not _can_append_ticks(path, max(0, len(segment) - 1)):
+            parking_budget_exhausted = True
             continue
         parking_candidate_found = True
         parked_path, remaining_battery, joined = _join_energy_checked_segment(
@@ -939,8 +1005,11 @@ def append_parking_step(
             )
             if nearest_station is None or remaining_battery < nearest_station[1]:
                 continue
-        return parked_path, False
-    return path, parking_candidate_found
+        return parked_path, False, None
+    if parking_budget_exhausted:
+        failure = _path_tick_budget_failure(task_id) if task_id is not None else None
+        return path, True, failure
+    return path, parking_candidate_found, None
 
 
 def plan_idle_robot_parking_path(
@@ -966,16 +1035,20 @@ def plan_idle_robot_parking_path(
         key=lambda cell: (manhattan(start, cell), cell),
     )
     for candidate in candidates:
-        path = astar_timed(
-            scenario,
-            start,
-            candidate,
-            0,
-            reservations,
-            blocked_cells,
-            move_ticks,
-            candidate_diagnostics=candidate_diagnostics,
-        )
+        try:
+            path = astar_timed(
+                scenario,
+                start,
+                candidate,
+                0,
+                reservations,
+                blocked_cells,
+                move_ticks,
+                candidate_diagnostics=candidate_diagnostics,
+                path_end_time=MAX_PLANNED_PATH_TICKS,
+            )
+        except _TimedPathBudgetExceeded:
+            continue
         if not path or not can_hold_cell(
             candidate,
             len(path),
@@ -1108,6 +1181,7 @@ def build_paths_for_order(
     paths: dict[str, list[Cell]] = {}
     failures: list[str] = []
     failure_details: dict[str, TaskFailureDetail] = {}
+    suppressed_failure_task_ids: set[str] = set()
     all_charging_visits: list[ChargingVisit] = []
     active_charging_visits = active_charging_visits or {}
     tasks_by_robot = {assignment.robotId: assignment.tasks for assignment in assignments}
@@ -1157,8 +1231,17 @@ def build_paths_for_order(
             )
             if path_plan_failure is not None:
                 failure_details[path_plan_failure.taskId] = path_plan_failure.detail
+                failure_task_index = next(
+                    index
+                    for index, task in enumerate(assigned)
+                    if task.id == path_plan_failure.taskId
+                )
+                suppressed_failure_task_ids.update(
+                    task.id
+                    for task in assigned[failure_task_index + 1 :]
+                )
         if avoid_conflicts and assigned and not failed:
-            path, failed = append_parking_step(
+            path, failed, parking_failure = append_parking_step(
                 scenario,
                 path,
                 remaining_battery_after_path(robot, path, charging_visits),
@@ -1169,7 +1252,10 @@ def build_paths_for_order(
                 delayed_block_time,
                 horizon_padding,
                 candidate_diagnostics,
+                task_id=assigned[-1].id,
             )
+            if parking_failure is not None:
+                failure_details[parking_failure.taskId] = parking_failure.detail
         paths[robot.id] = path
         all_charging_visits.extend(charging_visits if assigned else [])
         if failed:
@@ -1184,6 +1270,7 @@ def build_paths_for_order(
         order=[robot.id for robot in planning_order],
         charging_visits=all_charging_visits,
         failureDetails=failure_details,
+        suppressedFailureTaskIds=suppressed_failure_task_ids,
     )
 
 
@@ -1226,6 +1313,7 @@ def build_paths(
         list[str],
         list[ChargingVisit],
         dict[str, TaskFailureDetail],
+        set[str],
     ]
 ):
     locked_task_robot_ids = locked_task_robot_ids or {}
@@ -1281,13 +1369,14 @@ def build_paths(
         if avoid_conflicts and score[0] == 0 and score[1] == 0 and score[2] == 0:
             break
     if best_candidate is None:
-        return ({}, [], [], {}) if include_charging_visits else ({}, [])
+        return ({}, [], [], {}, set()) if include_charging_visits else ({}, [])
     if include_charging_visits:
         return (
             best_candidate.paths,
             best_candidate.failures,
             best_candidate.charging_visits,
             best_candidate.failureDetails,
+            best_candidate.suppressedFailureTaskIds,
         )
     return best_candidate.paths, best_candidate.failures
 
@@ -2122,7 +2211,13 @@ def run_dispatch(
         assignment_replan_window,
         task_limit_per_robot,
     )
-    paths, path_failures, charging_visits, path_failure_details = build_paths(
+    (
+        paths,
+        path_failures,
+        charging_visits,
+        path_failure_details,
+        suppressed_failure_task_ids,
+    ) = build_paths(
         scenario,
         scenario.robots,
         assignments,
@@ -2160,9 +2255,14 @@ def run_dispatch(
         if task.id not in assigned_task_ids
     ]
     failures = [*path_failures, *unassigned_failures]
+    failure_detail_tasks = [
+        task
+        for task in failure_tasks
+        if task.id not in suppressed_failure_task_ids
+    ]
     failure_details = build_failure_details(
         scenario,
-        failure_tasks,
+        failure_detail_tasks,
         assignments,
         paths,
         extra_blocked,

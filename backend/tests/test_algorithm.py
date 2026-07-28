@@ -154,7 +154,7 @@ def test_parking_battery_rejects_post_task_move_after_battery_is_exhausted() -> 
         vertices={"1,0@2"},
     )
 
-    parked_path, failed = dispatch_module.append_parking_step(
+    parked_path, failed, parking_failure = dispatch_module.append_parking_step(
         scenario,
         task_path,
         0,
@@ -165,6 +165,7 @@ def test_parking_battery_rejects_post_task_move_after_battery_is_exhausted() -> 
     )
 
     assert failed is True
+    assert parking_failure is None
     assert parked_path == task_path
 
 
@@ -285,6 +286,165 @@ def _timed_diagnostics_scenario() -> Scenario:
             },
         }
     )
+
+
+def _path_tick_budget_timed_scenario(
+    target: tuple[int, int] = (1, 0),
+    holding_cell: tuple[int, int] | None = None,
+) -> Scenario:
+    walkable = {(0, 0), target}
+    if holding_cell is not None:
+        walkable.add(holding_cell)
+    return Scenario.model_validate(
+        {
+            "id": "timed-path-tick-budget",
+            "name": "timed-path-tick-budget",
+            "description": "时空 A* 不得在调用方 guard 前构造超预算路径。",
+            "width": 64,
+            "height": 16,
+            "obstacles": [
+                [x, y]
+                for x in range(64)
+                for y in range(16)
+                if (x, y) not in walkable
+            ],
+            "zones": {
+                "warehouse": [],
+                "inspection": [list(target)],
+                "delivery": [],
+                "charging": [],
+            },
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [0, 0],
+                    "battery": 100,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                    "moveTicks": 4,
+                    "capabilities": ["inspection"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "T1",
+                    "type": "inspection",
+                    "title": "预算外才可到达",
+                    "priority": 1,
+                    "targets": [list(target)],
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+
+
+def _path_tick_budget_goal_reservations(
+    goal: tuple[int, int] = (1, 0),
+) -> dispatch_module.Reservations:
+    return dispatch_module.Reservations(
+        vertices={
+            f"{goal[0]},{goal[1]}@{time_index}"
+            for time_index in range(4, 10_001)
+        }
+    )
+
+
+def test_path_tick_budget_stops_timed_astar_before_assigned_reconstruction(monkeypatch) -> None:
+    scenario = _path_tick_budget_timed_scenario()
+    original_reconstruct = dispatch_module.reconstruct_timed
+    reconstructed_lengths: list[int] = []
+
+    def recording_reconstruct(came_from, current_key):
+        reconstructed = original_reconstruct(came_from, current_key)
+        reconstructed_lengths.append(len(reconstructed))
+        return reconstructed
+
+    monkeypatch.setattr(dispatch_module, "reconstruct_timed", recording_reconstruct)
+
+    path, failed, path_plan_failure = dispatch_module.plan_robot_path(
+        scenario,
+        scenario.robots[0],
+        scenario.robots[0].start,
+        scenario.tasks,
+        scenario.robots[0].moveTicks,
+        True,
+        _path_tick_budget_goal_reservations(),
+        [],
+    )
+
+    assert reconstructed_lengths == []
+    assert path == [(0, 0)]
+    assert failed is True
+    assert path_plan_failure is not None
+    assert path_plan_failure.taskId == "T1"
+    assert path_plan_failure.detail.reason == PATH_TICK_BUDGET_REASON
+
+
+def test_path_tick_budget_stops_timed_astar_before_parking_reconstruction(monkeypatch) -> None:
+    scenario = _path_tick_budget_timed_scenario(holding_cell=(0, 1))
+    reservations = _path_tick_budget_goal_reservations()
+    reservations.vertices.add("0,0@4")
+    original_reconstruct = dispatch_module.reconstruct_timed
+    reconstructed_lengths: list[int] = []
+
+    def recording_reconstruct(came_from, current_key):
+        reconstructed = original_reconstruct(came_from, current_key)
+        reconstructed_lengths.append(len(reconstructed))
+        return reconstructed
+
+    monkeypatch.setattr(dispatch_module, "reconstruct_timed", recording_reconstruct)
+
+    parked_path, _, parking_failure = dispatch_module.append_parking_step(
+        scenario,
+        [(0, 0)],
+        100,
+        scenario.robots[0].moveTicks,
+        reservations,
+        [],
+        horizon_padding=4,
+    )
+
+    assert reconstructed_lengths == [5]
+    assert parking_failure is None
+    assert parked_path == [(0, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
+
+
+def test_path_tick_budget_stops_timed_astar_before_idle_reconstruction(monkeypatch) -> None:
+    scenario = _path_tick_budget_timed_scenario(
+        target=(0, 1),
+        holding_cell=(1, 0),
+    )
+    reservations = _path_tick_budget_goal_reservations((0, 1))
+    reservations.vertices.add("0,0@4")
+    original_reconstruct = dispatch_module.reconstruct_timed
+    reconstructed_lengths: list[int] = []
+
+    def recording_reconstruct(came_from, current_key):
+        reconstructed = original_reconstruct(came_from, current_key)
+        reconstructed_lengths.append(len(reconstructed))
+        return reconstructed
+
+    monkeypatch.setattr(dispatch_module, "reconstruct_timed", recording_reconstruct)
+
+    path = dispatch_module.plan_idle_robot_parking_path(
+        scenario,
+        (0, 0),
+        100,
+        scenario.robots[0].moveTicks,
+        reservations,
+        [],
+        horizon_padding=4,
+    )
+
+    assert reconstructed_lengths == [1, 5]
+    assert path == [(0, 0), (0, 0), (0, 0), (0, 0), (1, 0)]
 
 
 def test_idle_parking_helper_keeps_zero_battery_robot_at_start() -> None:
@@ -3055,6 +3215,95 @@ def test_path_tick_budget_rejects_cumulative_service_overflow() -> None:
     assert_path_tick_budget_failure(result, "T2")
 
 
+def test_path_tick_budget_suppresses_downstream_task_failures() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "downstream-path-tick-budget",
+            "name": "downstream-path-tick-budget",
+            "description": "预算触发任务之后未展开的任务不得重复报告为不可达。",
+            "width": 4,
+            "height": 1,
+            "obstacles": [],
+            "zones": {
+                "warehouse": [],
+                "inspection": [[1, 0], [2, 0], [3, 0]],
+                "delivery": [],
+                "charging": [],
+            },
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [0, 0],
+                    "battery": 100,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "T1",
+                    "type": "inspection",
+                    "title": "第一段作业",
+                    "priority": 3,
+                    "targets": [[1, 0]],
+                    "serviceTime": 6000,
+                },
+                {
+                    "id": "T2",
+                    "type": "inspection",
+                    "title": "预算触发作业",
+                    "priority": 2,
+                    "targets": [[2, 0]],
+                    "serviceTime": 5000,
+                },
+                {
+                    "id": "T3",
+                    "type": "inspection",
+                    "title": "尚未展开的后续作业",
+                    "priority": 1,
+                    "targets": [[3, 0]],
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=False, includeDynamic=False),
+    )
+
+    assert [
+        task.id
+        for assignment in result.assignments
+        for task in assignment.tasks
+    ] == ["T1", "T2", "T3"]
+    candidate = build_paths_for_order(
+        scenario,
+        scenario.robots,
+        result.assignments,
+        False,
+        [],
+        [],
+        scenario.robots,
+    )
+    assert candidate.failures == ["R1 存在不可达任务"]
+    assert path_planning_candidate_score(candidate, result.assignments)[0] == 1
+    assert result.metrics.failureCount == 1
+    assert_path_tick_budget_failure(result, "T2")
+    assert [item.text for item in result.eventLog].count(
+        f"任务 T2 调度失败原因：{PATH_TICK_BUDGET_REASON}"
+    ) == 1
+    assert all("任务 T3 调度失败原因" not in item.text for item in result.eventLog)
+
+
 def test_path_tick_budget_rejects_move_after_release_wait() -> None:
     scenario = Scenario.model_validate(
         {
@@ -3253,6 +3502,93 @@ def test_path_tick_budget_failure_preserves_unrelated_and_deferred_tasks() -> No
     assert "DEFERRED" not in result.failureDetails
     assert "OK" not in result.failureReasons
     assert_path_tick_budget_failure(result, "OVERFLOW")
+
+
+def test_path_tick_budget_reports_assigned_parking_overflow(monkeypatch) -> None:
+    walkable = {(0, 0), (1, 0), (2, 0)}
+    scenario = Scenario.model_validate(
+        {
+            "id": "assigned-parking-path-tick-budget",
+            "name": "assigned-parking-path-tick-budget",
+            "description": "任务路径用满预算后若必须 parking，应归属最后一个任务。",
+            "width": 64,
+            "height": 16,
+            "obstacles": [
+                [x, y]
+                for x in range(64)
+                for y in range(16)
+                if (x, y) not in walkable
+            ],
+            "zones": {
+                "warehouse": [],
+                "inspection": [[1, 0]],
+                "delivery": [],
+                "charging": [],
+            },
+            "robots": [
+                {
+                    "id": "R1",
+                    "name": "R1",
+                    "start": [0, 0],
+                    "battery": 100,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                    "capabilities": ["inspection"],
+                },
+                {
+                    "id": "R2",
+                    "name": "R2",
+                    "start": [2, 0],
+                    "battery": 100,
+                    "batteryCapacity": 100,
+                    "load": 1,
+                    "capabilities": ["emergency"],
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "T1",
+                    "type": "inspection",
+                    "title": "用满预算的巡检",
+                    "priority": 1,
+                    "targets": [[1, 0]],
+                    "serviceTime": 9999,
+                },
+                {
+                    "id": "RESERVE",
+                    "type": "emergency",
+                    "title": "未来占用终点",
+                    "priority": 2,
+                    "releaseTime": 6000,
+                    "target": [1, 0],
+                },
+            ],
+            "dynamic": {
+                "triggerTime": 0,
+                "blockedCells": [],
+                "failedRobots": [],
+                "tasks": [],
+            },
+        }
+    )
+    monkeypatch.setattr(
+        dispatch_module,
+        "path_planning_orders",
+        lambda _scenario, robots, *_args: [[robots[1], robots[0]]],
+    )
+
+    result = dispatch_module.run_dispatch(
+        scenario,
+        DispatchOptions(avoidConflicts=True, includeDynamic=False),
+        locked_task_robot_ids={"T1": "R1", "RESERVE": "R2"},
+    )
+
+    assert len(result.paths["R1"]) == 10_001
+    assert {
+        assignment.robotId: [task.id for task in assignment.tasks]
+        for assignment in result.assignments
+    } == {"R1": ["T1"], "R2": ["RESERVE"]}
+    assert_path_tick_budget_failure(result, "T1")
 
 
 def test_path_planning_portfolio_selects_lower_makespan_order() -> None:
