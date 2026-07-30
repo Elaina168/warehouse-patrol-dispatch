@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\env.ps1"
+. "$PSScriptRoot\dev-process-manifest.ps1"
 
 $frontendPort = [int]$env:PROJECT_FRONTEND_PORT
 $backendPort = [int]$env:PROJECT_BACKEND_PORT
@@ -25,7 +26,7 @@ if ($ValidateOnly) {
   exit 0
 }
 
-& "$PSScriptRoot\stop-dev.ps1"
+Stop-RecordedProcessTree
 
 $startedProcesses = New-Object System.Collections.Generic.List[System.Diagnostics.Process]
 
@@ -48,6 +49,23 @@ function Test-BackendCompatible {
     return $openapi.Content.Contains("/api/sessions")
   } catch {
     return $false
+  }
+}
+
+function Test-LocalPortOccupied {
+  param([int]$Port)
+
+  $client = [System.Net.Sockets.TcpClient]::new()
+  try {
+    $connection = $client.ConnectAsync("127.0.0.1", $Port)
+    if (-not $connection.Wait(1000)) {
+      return $false
+    }
+    return $client.Connected
+  } catch {
+    return $false
+  } finally {
+    $client.Dispose()
   }
 }
 
@@ -88,19 +106,13 @@ function Start-ManagedProcess {
   $process.BeginOutputReadLine()
   $process.BeginErrorReadLine()
   $startedProcesses.Add($process)
+  Add-DevProcessManifestEntry -Role $Name -ProcessId $process.Id
   Write-Host "$Name started. PID=$($process.Id)"
 }
 
 function Stop-StartedProcesses {
-  foreach ($process in $startedProcesses) {
-    if ($process -and -not $process.HasExited) {
-      Write-Host "Stopping process tree. PID=$($process.Id)"
-      $taskkillOutput = cmd /c "taskkill /PID $($process.Id) /T /F 2>&1"
-      if ($LASTEXITCODE -ne 0) {
-        Write-Host $taskkillOutput
-        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-      }
-    }
+  if ($startedProcesses.Count -gt 0) {
+    Stop-RecordedProcessTree
   }
 }
 
@@ -133,9 +145,9 @@ function Wait-ForService {
 try {
   Write-Host "Starting backend and frontend..."
 
-  if (Test-HttpReady -Url $backendHealthUrl) {
+  if (Test-LocalPortOccupied -Port $backendPort) {
     if (-not (Test-BackendCompatible -Port $backendPort)) {
-      throw "Backend port $backendPort is occupied by an incompatible service. Run .\scripts\stop-dev.ps1 or close the process using this port."
+      throw "Backend port $backendPort is occupied by an incompatible service. Close the process using this port before starting the project."
     }
     Write-Host "Reusing compatible backend on port $backendPort."
   } else {
@@ -144,6 +156,10 @@ try {
       -FilePath $backendPython `
       -Arguments "-m uvicorn backend.app.main:app --app-dir `"$PWD`" --reload --host 127.0.0.1 --port $backendPort" `
       -WorkingDirectory $PWD
+  }
+
+  if (Test-LocalPortOccupied -Port $frontendPort) {
+    throw "Frontend port $frontendPort is occupied. Close the process using this port before starting the frontend."
   }
 
   Start-ManagedProcess `
