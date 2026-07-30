@@ -153,6 +153,15 @@ Completed and currently expected to remain in the project:
 - Scenario inputs are bounded to 64 cells per axis, 1024 total cells, 32 robots, 128 total initial/dynamic/runtime tasks, and 64 targets per task.
 - Adaptive rolling-window latency uses the median of the latest five real replans after at least three samples, entering slow state at 60ms and leaving it at 40ms; fixed mode remains unchanged.
 - Browser CORS defaults to the two local Vite origins and accepts explicit comma-separated origins through `WAREHOUSE_PATROL_CORS_ORIGINS`; wildcard origins remain rejected.
+- Timed paths are the final authority for movement and battery consumption, including conflict detours and parking. Online execution applies an energy hold before history is written, so a zero-battery move is never committed.
+- Scenario validation requires unique robot starts. Future-time blocked-cell validation runs against a cloned transaction candidate and commits only after validation succeeds; rejected requests do not partially commit previewed runtime or planning state.
+- T=0 task completion uses the same task, outbound pickup, and inbound putaway transitions as normal ticks. Planned paths are bounded to 10,000 ticks, or at most 10,001 nodes including T=0; exceeding the bound is a task-definition failure, not a complete MAPF claim.
+- Frontend runtime mutations are enabled only for a ready, non-historical session and are disabled while a tick is in flight or historical playback is active. HTTP `4xx` business failures keep the backend online; a rejected tick pauses playback, while a rejected mutation does not.
+- Historical playback exposes path, event, and retained metric history only. It does not present current task, inventory, blocked-cell, failed-robot, or robot runtime state as a historical snapshot.
+- Development-process ownership is recorded in `.runtime/dev-processes.json`; stop cleanup affects only entries whose PID and `startedAtUtc` still match. Compatible unowned backends may be reused, while unknown occupied ports are reported instead of being killed.
+- `scripts/test-all.ps1` and `npm run check` run `frontend:build`, `frontend:test`, and `backend:test` in that order. Reproducible backend installation uses `backend/requirements.lock.txt`.
+- Replan-window and scale experiment batches are limited to 32 entries, and replan windows must be unique. Algorithm report publication treats `results.json`, `runs.csv`, and `case-summaries.csv` as one rollback-protected bundle.
+- Benchmark isolation cleans child processes and Pipe endpoints even for cancellation `BaseException`, escalating from terminate through bounded join to kill and bounded join when needed. Real wall-clock measurements remain offline evidence rather than daily pytest gates, and dependency locks and audits have dedicated checks.
 - Current verification snapshot on 2026-07-27: frontend production build passed, frontend tests `105/105`, backend tests `523/523`.
 
 Recently removed because they are not needed yet:

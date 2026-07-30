@@ -416,9 +416,11 @@ http://127.0.0.1:8011/health
 离线基准用于记录当前系统范围内的规模、密度和瓶颈边界；它不替代在线界面的人工操作测试，也不证明完整 MAPF 能力。先运行聚焦回归和完整项目检查：
 
 ```powershell
-& '.\.venv\Scripts\python.exe' -m pytest backend/tests/test_algorithm_benchmark.py -q
+& '.\.venv\Scripts\python.exe' -m pytest backend/tests/test_schema_constraints.py backend/tests/test_experiments.py backend/tests/test_benchmark_process_isolation.py backend/tests/test_algorithm_benchmark.py -q
 & 'C:\nvm4w\nodejs\npm.cmd' run check
 ```
+
+其中实验请求边界应确认滚动窗口和规模 case 每批最少 `1`、最多 `32`，且滚动窗口值必须唯一；`33` 项和重复窗口都应在运行实验前被拒绝。
 
 然后运行标准完整基准：
 
@@ -441,6 +443,8 @@ http://127.0.0.1:8011/health
 5. 日常 pytest 不断言真实墙钟阈值。`test_dispatch_handles_deterministic_scale_pressure_family`、`test_dispatch_handles_fixed_seed_pressure_family`、`test_seeded_pressure_experiment_returns_compact_performance_cases` 和 `test_seeded_pressure_experiment_can_run_extended_stability_cases` 只验证固定输入的分配、冲突、失败、案例标签/数量及 `replanTimeMs` 的类型和非负域；前两个直接调度测试还固定已有规划诊断。`planningTimeBudgetMs == 2000` 仅保留为实验 API 元数据。真实耗时上限、分布和前后比较只属于本节的离线重复基准证据，不作为日常 pytest 的通过/失败条件。
 
 命令会在 `output/algorithm-boundary-benchmark` 下创建一个 UTC 时间戳结果目录。最终目录必须同时包含 `results.json`、`runs.csv` 和 `case-summaries.csv`；`runs.csv` 与 `case-summaries.csv` 使用 UTF-8 with BOM，可直接按 UTF-8 打开。默认九个案例为 `scale-r4-t15`、`scale-r8-t27`、`scale-r12-t39`、`density-r8-t31`、`density-r8-t43`、`density-r8-t55`、`bottleneck-r4-t4`、`bottleneck-r6-t6`、`bottleneck-r8-t8`，各运行五次。
+
+三个最终文件按一个 bundle 发布。`test_algorithm_final_report_rollback*` 覆盖每个文件的备份和发布失败：已有 bundle 必须完整恢复，原来没有 bundle 时不得留下半套最终文件，`results.partial.json` 必须保留；恢复失败时可恢复的 `.backup` 也必须保留并出现在错误中。隔离进程测试同时要求先接收 Pipe 大载荷再 join，并覆盖超时或 `BaseException` 取消后的 `terminate -> bounded join -> kill -> bounded join` 清理、Pipe 关闭和无残留 worker；无法确认清理成功应按基础设施失败处理。
 
 字段含义：`outcome` 为 `completed`、`timeout` 或 `error`；`correctnessStable` 表示该次运行满足对应案例的稳定性条件；`stableRunRatePercent` 是每案例稳定运行率；`medianWallClockMs`、`p95WallClockMs`、`medianReplanTimeMs` 和 `p95ReplanTimeMs` 分别汇总完成运行的墙钟和规划耗时。`medianWallClockMs` 和 `p95WallClockMs` 仅作当前机器运行分布观察，第一版不设墙钟自动通过或失败阈值，必须结合正确性、稳定运行率和案例上下文人工复核。`predictedConflictCount` 对应 `Metrics.conflictCount`，仅代表规划预测。在线案例的 `executionSafetyEvaluated` 应为 `true`，并应复核 `activeConflictCount` 和 `safetyInterventionCount`；直接规划案例不评价实际执行安全。
 

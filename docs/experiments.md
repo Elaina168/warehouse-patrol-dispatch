@@ -91,6 +91,8 @@ POST http://127.0.0.1:8011/api/experiments/replan-window
 
 `windows` 中的每个值都会生成固定窗口 case，标签格式为 `window-<value>`。`includeAdaptive=true` 时额外生成 `adaptive-window-<base>`，其中 `<base>` 为 `options.assignmentReplanWindow`。每个结果通过 `effectiveAssignmentReplanWindow` 和 `replanWindowReason` 说明实际窗口与原因。
 
+`windows` 必须包含 `1..32` 个值且值不可重复；重复值以 `windows must be unique` 拒绝。规模对比接口的 `cases` 同样必须包含 `1..32` 项。`32` 是单次实验批量上限，不是机器人或任务规模结论。
+
 该接口用于内部滚动窗口对比：
 
 > 同一场景下，对比不同滚动窗口大小对当前分配任务数、远期任务延迟进入、路径长度、冲突数量和截止时间指标的影响。
@@ -264,7 +266,7 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 
 `timeout` 和 `error` 是算法边界基准的结果类别，不自动判为代码缺陷；应结合案例、错误信息、稳定运行率和人工复核再判断。报告结论必须人工复核，不能把预测零冲突或在线安全门表述为完整 MAPF 保证或任意输入下的全规划时域零冲突保证。
 
-`medianWallClockMs` 和 `p95WallClockMs` 仅用于观察当前机器上的运行分布。第一版不为墙钟分位数设置自动通过或失败阈值；应与正确性、稳定运行率及案例上下文一起人工复核。
+`medianWallClockMs` 和 `p95WallClockMs` 仅用于观察当前机器上的离线运行分布。真实 wall-clock 只属于同机离线证据，日常 pytest 不以它设置通过或失败阈值；应与正确性、稳定运行率及案例上下文一起人工复核。
 
 算法边界报告 `schemaVersion = 2`。直接规划运行设置 `planningDiagnosticsEvaluated = true`，并记录：
 
@@ -278,6 +280,10 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 - `timedAStarGoalFullyReservedRejectCount`
 
 在线、超时和异常记录不伪造规划工作量；未评价时 `planningDiagnosticsEvaluated = false`，其余字段为 `null`。扩展状态数是确定性工作量指标，墙钟中位数和 P95 仍只用于同机人工比较。
+
+最终 `results.json`、`runs.csv` 和 `case-summaries.csv` 按一个报告 bundle 发布：先完整写入临时文件，再备份同名旧文件，最后逐一替换。任一备份或发布步骤失败时，会删除本轮已发布文件并恢复旧 bundle；原来没有 bundle 时则不留下半套最终文件，`results.partial.json` 继续保留。若恢复本身失败，可恢复的 `.backup` 会保留，异常同时报告最初发布错误、恢复错误和备份路径，避免把新旧三文件混成一次成功报告。
+
+算法边界基准和自适应校准共用隔离子进程清理。父进程先通过 Pipe 的 `poll`/`recv` 接收完整载荷，再等待或清理 worker；超时、`KeyboardInterrupt` 等 `BaseException` 和父进程异常都会进入 `finally`，按“终止、有限等待、必要时强制终止、再次有限等待”的顺序确认退出并关闭进程与 Pipe 端点。普通取消在清理后重新抛出原对象；若无法确认 worker 已停止或资源关闭失败，则升级为基础设施错误并保留原异常链。
 
 ## 离线自适应窗口校准
 
