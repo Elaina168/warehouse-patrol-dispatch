@@ -1,7 +1,9 @@
 from pathlib import Path
 
+import pytest
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +24,12 @@ def _read_exact_pins(path: Path) -> dict[str, str]:
         assert specifiers[0].operator == "==", (
             f"{path}: 依赖必须使用 == 精确锁定: {line}"
         )
+        try:
+            Version(specifiers[0].version)
+        except InvalidVersion as error:
+            raise AssertionError(
+                f"{path}: 依赖版本必须是有效的 PEP 440 精确版本: {line}"
+            ) from error
 
         normalized_name = canonicalize_name(requirement.name)
         assert normalized_name not in pins, f"{path}: 依赖名称重复: {line}"
@@ -45,3 +53,11 @@ def test_backend_lock_preserves_all_direct_exact_versions() -> None:
     }
 
     assert not mismatches, f"后端直接依赖与锁文件不一致: {mismatches}"
+
+
+def test_exact_pin_parser_rejects_wildcard_version(tmp_path: Path) -> None:
+    requirements_path = tmp_path / "requirements.txt"
+    requirements_path.write_text("demo==1.*\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="必须是有效的 PEP 440 精确版本"):
+        _read_exact_pins(requirements_path)
