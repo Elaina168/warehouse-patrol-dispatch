@@ -58,10 +58,10 @@
 脚本会自动：
 
 - 固定使用 `C:\nvm4w\nodejs` 下的 Node/npm。
-- 启动 FastAPI 后端：`http://127.0.0.1:8011/health`
+- 启动 FastAPI 后端，或复用 `8011` 上的兼容后端：`http://127.0.0.1:8011/health`
 - 启动 Vite 前端：`http://127.0.0.1:5174`
 - 打开本地浏览器窗口到正式前端页面。
-- 按 `Ctrl+C` 时停止前后端进程。
+- 按 `Ctrl+C` 时，只停止脚本拥有、已记录在 `.runtime/dev-processes.json` 且 PID 与 `startedAtUtc` 仍匹配的进程；复用的外部兼容后端不会被停止。
 
 如果 PowerShell 阻止脚本执行：
 

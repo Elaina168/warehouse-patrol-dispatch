@@ -503,6 +503,6 @@ For frontend behavior changes, also verify in a browser when practical:
 
 - The repository uses Git. Work on feature or fix branches, run the relevant checks, then merge reviewed changes into `main`.
 - `frontend/node_modules`, `frontend/dist`, `.venv`, and Python caches are generated artifacts and should not be treated as source.
-- `scripts/start-dev.ps1` starts both frontend and backend and opens the frontend URL.
-- `Ctrl+C` in the startup terminal should stop both services.
+- `scripts/start-dev.ps1` starts the frontend, starts or reuses a compatible backend, and opens the frontend URL.
+- `Ctrl+C` and `.\scripts\stop-dev.ps1` stop only script-owned processes recorded in `.runtime/dev-processes.json` whose PID and `startedAtUtc` still match; they do not stop a reused external compatible backend.
 - If a dev service is left running, use `.\scripts\stop-dev.ps1`.
