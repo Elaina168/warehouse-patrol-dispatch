@@ -4,7 +4,8 @@ import { ArrowUp, Crosshair, Download, Lock, Pause, Play, Plus, RefreshCcw, Serv
 import { apiErrorFromResponse } from "./domain/apiError";
 import {
   deleteSession,
-  resetSession
+  resetSession,
+  settleCreatedSession
 } from "./domain/sessionApi";
 import {
   canMutateOnlineSession,
@@ -306,7 +307,6 @@ function App() {
   }, [latestConflictAlert, result, time]);
 
   useEffect(() => {
-    const controller = new AbortController();
     const requestGeneration = sessionRequestCoordinator.invalidate();
     setDispatchStatus("loading");
     setDispatchError(null);
@@ -328,25 +328,30 @@ function App() {
       body: JSON.stringify({
         scenario,
         options: buildDispatchOptions(avoidConflicts, true, assignmentReplanWindow, adaptiveReplanWindow)
-      }),
-      signal: controller.signal
       })
+    })
       .then((response) => {
         if (!response.ok) return responseError(response, "session failed");
         return response.json() as Promise<SessionResult>;
       })
-      .then((payload) => {
-        if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
-        applySessionPayload(payload);
+      .then(async (payload) => {
+        await settleCreatedSession(
+          payload,
+          sessionRequestCoordinator.isCurrent(requestGeneration),
+          applySessionPayload,
+          (sessionId) => deleteSession(API_BASE, sessionId).then(() => undefined)
+        );
       })
       .catch((error: Error) => {
-        if (controller.signal.aborted || !sessionRequestCoordinator.isCurrent(requestGeneration)) return;
+        if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
         setApiStatus("offline");
         setDispatchStatus("error");
         setDispatchError(error.message);
       });
 
-    return () => controller.abort();
+    return () => {
+      sessionRequestCoordinator.invalidate();
+    };
   }, [scenario, avoidConflicts, assignmentReplanWindow, adaptiveReplanWindow, sessionResetKey]);
 
   useEffect(() => {

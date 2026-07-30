@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   deleteSession,
-  resetSession
+  resetSession,
+  settleCreatedSession
 } from "./sessionApi";
 import type {
   DeleteSessionResult,
@@ -10,6 +11,64 @@ import type {
 } from "./types";
 
 describe("session API helpers", () => {
+  it("applies a current created session without deleting it", async () => {
+    const payload = { sessionId: "session-current" } as SessionResult;
+    const applied: string[] = [];
+    const deleted: string[] = [];
+
+    const outcome = await settleCreatedSession(
+      payload,
+      true,
+      (current) => applied.push(current.sessionId),
+      async (sessionId) => {
+        deleted.push(sessionId);
+      }
+    );
+
+    expect(outcome).toBe("applied");
+    expect(applied).toEqual(["session-current"]);
+    expect(deleted).toEqual([]);
+  });
+
+  it("deletes a stale created session without applying it", async () => {
+    const payload = { sessionId: "session-stale" } as SessionResult;
+    const applied: string[] = [];
+    const deleted: string[] = [];
+
+    const outcome = await settleCreatedSession(
+      payload,
+      false,
+      (current) => applied.push(current.sessionId),
+      async (sessionId) => {
+        deleted.push(sessionId);
+      }
+    );
+
+    expect(outcome).toBe("deleted");
+    expect(applied).toEqual([]);
+    expect(deleted).toEqual(["session-stale"]);
+  });
+
+  it("keeps stale state unapplied when cleanup deletion fails", async () => {
+    const payload = { sessionId: "session-stale" } as SessionResult;
+    const applied: string[] = [];
+    let deleteAttempted = false;
+
+    const outcome = await settleCreatedSession(
+      payload,
+      false,
+      (current) => applied.push(current.sessionId),
+      async () => {
+        deleteAttempted = true;
+        throw new Error("delete failed");
+      }
+    );
+
+    expect(outcome).toBe("deleted");
+    expect(deleteAttempted).toBe(true);
+    expect(applied).toEqual([]);
+  });
+
   it("posts to the current session reset endpoint and returns the session payload", async () => {
     const payload = { sessionId: "session-1" } as SessionResult;
     const fetcher = vi.fn(async () => (

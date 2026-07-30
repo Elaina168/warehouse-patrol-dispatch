@@ -6,6 +6,25 @@ import { apiErrorFromResponse } from "./apiError";
 
 export type FetchLike = typeof fetch;
 
+export async function settleCreatedSession(
+  payload: SessionResult,
+  current: boolean,
+  apply: (payload: SessionResult) => void,
+  remove: (sessionId: string) => Promise<void>
+): Promise<"applied" | "deleted"> {
+  if (current) {
+    apply(payload);
+    return "applied";
+  }
+
+  try {
+    await remove(payload.sessionId);
+  } catch {
+    // 过期会话不能重新写入界面；删除失败由服务端清理机制兜底。
+  }
+  return "deleted";
+}
+
 export async function resetSession(
   apiBase: string,
   sessionId: string,

@@ -64,6 +64,7 @@ import {
   taskTimingFields
 } from "./main";
 import { scenarios } from "./domain/scenarios";
+import { settleCreatedSession } from "./domain/sessionApi";
 import { runOnlineMutation } from "./domain/sessionRequestState";
 import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, ShelfRuntimeState, Task, TaskType } from "./domain/types";
 
@@ -122,6 +123,46 @@ describe("session request coordination", () => {
 
     expect(executionOrder).toEqual(["older-start", "older-finish", "reset"]);
     expect(appliedPayloads).toEqual(["reset-payload"]);
+  });
+
+  it("applies the newer create generation and deletes the older late response", async () => {
+    const coordinator = createSessionRequestCoordinator();
+    const applied: string[] = [];
+    const deleted: string[] = [];
+    const olderGeneration = coordinator.invalidate();
+    const newerGeneration = coordinator.invalidate();
+    const newerPayload = { sessionId: "session-new" } as SessionResult;
+    const olderPayload = { sessionId: "session-old" } as SessionResult;
+    let resolveOlder!: (payload: SessionResult) => void;
+    const olderResponse = new Promise<SessionResult>((resolve) => {
+      resolveOlder = resolve;
+    });
+
+    const olderSettlement = olderResponse.then((payload) =>
+      settleCreatedSession(
+        payload,
+        coordinator.isCurrent(olderGeneration),
+        (current) => applied.push(current.sessionId),
+        async (sessionId) => {
+          deleted.push(sessionId);
+        }
+      )
+    );
+    const newerSettlement = settleCreatedSession(
+      newerPayload,
+      coordinator.isCurrent(newerGeneration),
+      (payload) => applied.push(payload.sessionId),
+      async (sessionId) => {
+        deleted.push(sessionId);
+      }
+    );
+
+    await newerSettlement;
+    resolveOlder(olderPayload);
+    await olderSettlement;
+
+    expect(applied).toEqual(["session-new"]);
+    expect(deleted).toEqual(["session-old"]);
   });
 });
 
