@@ -115,6 +115,10 @@ function Stop-RecordedProcessTree {
   $remainingEntries = [System.Collections.Generic.List[object]]::new()
 
   foreach ($entry in @($manifest.processes)) {
+    if ($null -eq (Get-Process -Id ([int]$entry.pid) -ErrorAction SilentlyContinue)) {
+      continue
+    }
+
     if (-not (Test-DevProcessIdentity -ProcessId ([int]$entry.pid) -StartedAtUtc ([string]$entry.startedAtUtc))) {
       $remainingEntries.Add($entry)
       continue

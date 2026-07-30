@@ -270,6 +270,34 @@ try {{
     }
 
 
+def test_manifest_stop_discards_absent_pid_without_invoking_stop_callback() -> None:
+    result = run_powershell(
+        f"""
+. '{MANIFEST_HELPER}'
+$manifestPath = Join-Path ([System.IO.Path]::GetTempPath()) ("dev-processes-" + [guid]::NewGuid().ToString() + ".json")
+$absent = [pscustomobject]@{{ role = 'stale'; pid = 2147483647; startedAtUtc = '2000-01-01T00:00:00.0000000Z' }}
+
+try {{
+  $called = [System.Collections.Generic.List[int]]::new()
+  Write-DevProcessManifest -Manifest ([pscustomobject]@{{ version = 1; processes = @($absent) }}) -ManifestPath $manifestPath
+  Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{ param($processId) $called.Add($processId) }}
+  [ordered]@{{
+    stopCalls = @($called).Count
+    remainingEntries = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
+  }} | ConvertTo-Json -Compress
+}} finally {{
+  foreach ($path in @($manifestPath, "$manifestPath.tmp")) {{
+    if (Test-Path -LiteralPath $path) {{
+      Remove-Item -LiteralPath $path -Force
+    }}
+  }}
+}}
+"""
+    )
+
+    assert result == {"stopCalls": 0, "remainingEntries": 0}
+
+
 def test_start_lifecycle_records_started_processes_and_cleans_them_up() -> None:
     result = run_powershell_marked_result(
         f"""
