@@ -6,6 +6,7 @@ import {
   deleteSession,
   resetSession
 } from "./domain/sessionApi";
+import { classifySessionRequestFailure } from "./domain/sessionRequestState";
 import { buildShelfCellPresentations, buildWarehouseDeliveryCandidates } from "./domain/inventory";
 import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./domain/view";
 import { scenarios } from "./domain/scenarios";
@@ -158,6 +159,7 @@ function App() {
   const [result, setResult] = useState<DispatchResult | null>(null);
   const [dispatchStatus, setDispatchStatus] = useState<"loading" | "ready" | "error">("loading");
   const [dispatchError, setDispatchError] = useState<string | null>(null);
+  const [operationError, setOperationError] = useState<string | null>(null);
   const [manualTask, setManualTask] = useState<ManualTaskForm>(() => createManualTaskForm(scenarios[0]));
   const [manualTaskError, setManualTaskError] = useState<string | null>(null);
   const [mapPickTarget, setMapPickTarget] = useState<MapPickTarget | null>(null);
@@ -210,6 +212,7 @@ function App() {
     }
     setApiStatus("online");
     setDispatchStatus("ready");
+    setOperationError(null);
     if (previousSessionId && previousSessionId !== payload.sessionId) {
       void deleteSession(API_BASE, previousSessionId).catch(() => undefined);
     }
@@ -284,6 +287,7 @@ function App() {
     const requestGeneration = sessionRequestCoordinator.invalidate();
     setDispatchStatus("loading");
     setDispatchError(null);
+    setOperationError(null);
     setSession(null);
     setTime(0);
     setPlaying(false);
@@ -467,6 +471,7 @@ function App() {
     const requestGeneration = sessionRequestCoordinator.currentGeneration();
     setTickInFlight(true);
     setDispatchError(null);
+    setOperationError(null);
     try {
       const response = await sessionRequestCoordinator.enqueue(() =>
         fetch(`${API_BASE}/api/sessions/${session.sessionId}/tick`, {
@@ -481,10 +486,13 @@ function App() {
       applySessionPayload(payload);
     } catch (error) {
       if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
-      setPlaying(false);
-      setApiStatus("offline");
-      setDispatchStatus("error");
-      setDispatchError(error instanceof Error ? error.message : "unknown error");
+      const decision = classifySessionRequestFailure(error, "tick");
+      const message = error instanceof Error ? error.message : "unknown error";
+      if (decision.pausePlayback) setPlaying(false);
+      setApiStatus(decision.apiStatus);
+      setDispatchStatus(decision.dispatchStatus);
+      setDispatchError(message);
+      setOperationError(message);
     } finally {
       if (sessionRequestCoordinator.isCurrent(requestGeneration)) setTickInFlight(false);
     }
@@ -492,6 +500,7 @@ function App() {
 
   async function resetCurrentSession() {
     setRouteHintsEnabled(false);
+    setOperationError(null);
     const requestGeneration = sessionRequestCoordinator.invalidate();
     if (!session) {
       setSessionResetKey((value) => value + 1);
@@ -522,6 +531,7 @@ function App() {
     const requestGeneration = sessionRequestCoordinator.currentGeneration();
     setDispatchStatus("loading");
     setDispatchError(null);
+    setOperationError(null);
     try {
       const response = await sessionRequestCoordinator.enqueue(request);
       if (!response.ok) throw await responseError(response, "session update failed");
@@ -531,9 +541,13 @@ function App() {
       setRouteHintsEnabled(routeHintsAfterSessionUpdate);
     } catch (error) {
       if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
-      setApiStatus("offline");
-      setDispatchStatus("error");
-      setDispatchError(error instanceof Error ? error.message : "unknown error");
+      const decision = classifySessionRequestFailure(error, "mutation");
+      const message = error instanceof Error ? error.message : "unknown error";
+      if (decision.pausePlayback) setPlaying(false);
+      setApiStatus(decision.apiStatus);
+      setDispatchStatus(decision.dispatchStatus);
+      setDispatchError(message);
+      setOperationError(message);
     }
   }
 
@@ -942,6 +956,7 @@ function App() {
               <p className="session-note">
                 {playing ? "仿真运行中" : "仿真已暂停"} · {tickInFlight ? "后端 tick 同步中" : dispatchStatus === "loading" ? "等待重规划结果" : "调度结果已同步"}
               </p>
+              {operationError ? <p className="session-note">{operationError}</p> : null}
             </Panel>
           </section>
 

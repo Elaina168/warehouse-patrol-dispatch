@@ -1,4 +1,14 @@
-export async function apiErrorFromResponse(response: Response, prefix: string): Promise<Error> {
+export class ApiRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+  }
+}
+
+export async function apiErrorFromResponse(response: Response, prefix: string): Promise<ApiRequestError> {
   let detail = "";
   try {
     const payload = await response.json() as { detail?: unknown };
@@ -6,7 +16,10 @@ export async function apiErrorFromResponse(response: Response, prefix: string): 
   } catch {
     detail = "";
   }
-  return new Error(detail ? `${prefix}: ${detail}` : `${prefix}: ${response.status}`);
+  return new ApiRequestError(
+    response.status,
+    detail ? `${prefix}: ${detail}` : `${prefix}: ${response.status}`
+  );
 }
 
 export function formatApiErrorDetail(detail: unknown): string {
