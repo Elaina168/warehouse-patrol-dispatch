@@ -160,16 +160,15 @@ def _rollback_final_bundle(
         if target_path not in backed_up_targets:
             continue
         backup_path = backup_paths[target_path]
+        preserved_backup_paths.add(backup_path)
         try:
-            if not backup_path.exists():
-                raise OSError(f"缺少回滚备份: {backup_path.resolve()}")
             backup_path.replace(target_path)
         except Exception as exc:
-            if backup_path.exists():
-                preserved_backup_paths.add(backup_path)
             errors.append(
                 f"{backup_path.resolve()} -> {target_path.resolve()}: {exc}"
             )
+        else:
+            preserved_backup_paths.discard(backup_path)
     if errors:
         raise OSError("；".join(errors))
 

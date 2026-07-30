@@ -810,6 +810,28 @@ def _install_final_report_replace_failures(
     return failed_operations
 
 
+def _install_backup_probe_failure_after_restore(
+    monkeypatch,
+    failed_operations: dict[tuple[str, str], tuple[Path, Path]],
+    file_name: str,
+) -> dict[str, bool]:
+    real_exists = Path.exists
+    failure_state = {"raised": False}
+
+    def fail_probe_after_restore(path):
+        if (
+            ("restore", file_name) in failed_operations
+            and path.suffix == ".backup"
+            and path.name.startswith(f".{file_name}.")
+        ):
+            failure_state["raised"] = True
+            raise OSError(f"{file_name} backup stat failed")
+        return real_exists(path)
+
+    monkeypatch.setattr(Path, "exists", fail_probe_after_restore)
+    return failure_state
+
+
 def _assert_no_final_report_transaction_files(output_path: Path) -> None:
     assert not [
         path
@@ -949,6 +971,59 @@ def test_algorithm_final_report_rollback_restore_failure_preserves_recoverable_b
     assert "case-summaries.csv publish failed" in str(exc_info.value)
     assert "runs.csv restore failed" in str(exc_info.value)
     assert str(restore_source.resolve()) in str(exc_info.value)
+
+
+def test_algorithm_final_report_rollback_restore_failure_does_not_probe_backup_before_preserving_it(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    report = BenchmarkReport.create({}, [_benchmark_run("scale-r4-t15", 1)])
+    write_partial_report(tmp_path, report)
+    partial_path = tmp_path / "results.partial.json"
+    partial_content = partial_path.read_bytes()
+    original_files = {
+        "results.json": b"old results",
+        "runs.csv": b"old runs",
+        "case-summaries.csv": b"old summaries",
+    }
+    for file_name, content in original_files.items():
+        (tmp_path / file_name).write_bytes(content)
+
+    publish_error = OSError("case-summaries.csv publish failed")
+    restore_error = OSError("runs.csv restore failed")
+    failed_operations = _install_final_report_replace_failures(
+        monkeypatch,
+        {
+            ("publish", "case-summaries.csv"): publish_error,
+            ("restore", "runs.csv"): restore_error,
+        },
+    )
+    probe_failure_state = _install_backup_probe_failure_after_restore(
+        monkeypatch,
+        failed_operations,
+        "runs.csv",
+    )
+
+    with pytest.raises(OSError) as exc_info:
+        write_final_report(tmp_path, report)
+
+    restore_source, restore_target = failed_operations[("restore", "runs.csv")]
+    assert restore_source.read_bytes() == original_files["runs.csv"]
+    assert (tmp_path / "results.json").read_bytes() == original_files["results.json"]
+    assert (tmp_path / "runs.csv").exists() is False
+    assert (tmp_path / "case-summaries.csv").read_bytes() == original_files[
+        "case-summaries.csv"
+    ]
+    assert partial_path.read_bytes() == partial_content
+    assert not list(tmp_path.glob("*.tmp"))
+    assert list(tmp_path.glob("*.backup")) == [restore_source]
+    assert probe_failure_state["raised"] is False
+    assert exc_info.value.__cause__ is publish_error
+    assert "runs.csv restore failed" in str(exc_info.value)
+    assert (
+        f"{restore_source.resolve()} -> {restore_target.resolve()}"
+        in str(exc_info.value)
+    )
 
 
 @pytest.mark.parametrize(
