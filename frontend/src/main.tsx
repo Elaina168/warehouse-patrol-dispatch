@@ -96,6 +96,7 @@ type LiveMetrics = {
   travelledDistance: number;
   activeConflictCount: number;
   liveDeadlineMissCount: number;
+  replanTimeMs: number;
 };
 
 type ReplanStatus = {
@@ -146,6 +147,20 @@ export function createSessionRequestCoordinator(): SessionRequestCoordinator {
       return response;
     }
   };
+}
+
+export function applySessionRequestFailure(
+  error: unknown,
+  setters: {
+    setApiStatus: (status: "checking" | "online" | "offline" | "error") => void;
+    setDispatchStatus: (status: "loading" | "ready" | "error") => void;
+    setDispatchError: (message: string) => void;
+  }
+): void {
+  const decision = classifySessionRequestFailure(error, "mutation");
+  setters.setApiStatus(decision.apiStatus);
+  setters.setDispatchStatus("error");
+  setters.setDispatchError(error instanceof Error ? error.message : "unknown error");
 }
 
 function App() {
@@ -344,11 +359,9 @@ function App() {
           (sessionId) => deleteSession(API_BASE, sessionId).then(() => undefined)
         );
       })
-      .catch((error: Error) => {
+      .catch((error) => {
         if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
-        setApiStatus("offline");
-        setDispatchStatus("error");
-        setDispatchError(error.message);
+        applySessionRequestFailure(error, { setApiStatus, setDispatchStatus, setDispatchError });
       });
 
     return () => {
@@ -578,9 +591,7 @@ function App() {
       applySessionPayload(payload);
     } catch (error) {
       if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
-      setApiStatus("offline");
-      setDispatchStatus("error");
-      setDispatchError(error instanceof Error ? error.message : "unknown error");
+      applySessionRequestFailure(error, { setApiStatus, setDispatchStatus, setDispatchError });
     }
   }
 
@@ -822,7 +833,7 @@ function App() {
                         <Metric label="当前路程" value={`${liveMetrics?.travelledDistance ?? 0} 格`} />
                         <Metric label="当前冲突" value={`${liveMetrics?.activeConflictCount ?? 0} 次`} />
                         <Metric label="已超期任务" value={`${liveMetrics?.liveDeadlineMissCount ?? 0} 个`} />
-                        <Metric label="重规划" value={`${result.metrics.replanTimeMs} ms`} />
+                        <Metric label="重规划" value={`${liveMetrics?.replanTimeMs ?? 0} ms`} />
                       </div>
                     </>
                   ) : (
@@ -1678,6 +1689,17 @@ export function buildLiveMetrics(
 ): LiveMetrics {
   const snapshots = buildTaskSnapshots(result, time, runtimeStates);
   const backendSnapshot = getVisibleMetricsHistory(metricsHistory, time).at(-1);
+  if (backendSnapshot) {
+    return {
+      completedTaskCount: backendSnapshot.completedTaskCount,
+      activeTaskCount: backendSnapshot.activeTaskCount,
+      pendingTaskCount: backendSnapshot.pendingTaskCount,
+      travelledDistance: backendSnapshot.travelledDistance,
+      activeConflictCount: backendSnapshot.activeConflictCount,
+      liveDeadlineMissCount: backendSnapshot.deadlineMissCount,
+      replanTimeMs: backendSnapshot.replanTimeMs
+    };
+  }
   return {
     completedTaskCount: snapshots.filter((snapshot) => snapshot.status === "done").length,
     activeTaskCount: snapshots.filter((snapshot) => snapshot.status === "active").length,
@@ -1686,10 +1708,11 @@ export function buildLiveMetrics(
     activeConflictCount: result.conflictStates !== undefined
       ? result.conflictStates.filter((conflict) => isConflictStateActiveAtTime(conflict, time)).length
       : result.conflicts.filter((conflict) => conflict.time === time).length,
-    liveDeadlineMissCount: backendSnapshot?.deadlineMissCount ?? snapshots.filter((snapshot) => {
+    liveDeadlineMissCount: snapshots.filter((snapshot) => {
       const deadline = snapshot.task.deadline;
       return deadline != null && snapshot.status !== "done" && snapshot.status !== "pending" && time > deadline;
-    }).length
+    }).length,
+    replanTimeMs: result.metrics.replanTimeMs
   };
 }
 

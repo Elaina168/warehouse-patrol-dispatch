@@ -38,6 +38,7 @@ import {
   supportedTaskTypes,
   nextMapPickTarget,
   applyMapPickToManualTask,
+  applySessionRequestFailure,
   selectLatestConflictAlert,
   selectMapConflictMarkers,
   shouldPauseForSafetyIntervention,
@@ -64,11 +65,37 @@ import {
   taskTimingFields
 } from "./main";
 import { scenarios } from "./domain/scenarios";
+import { ApiRequestError } from "./domain/apiError";
 import { settleCreatedSession } from "./domain/sessionApi";
 import { runOnlineMutation } from "./domain/sessionRequestState";
 import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, ShelfRuntimeState, Task, TaskType } from "./domain/types";
 
 describe("session request coordination", () => {
+  it("keeps create and reset HTTP 4xx failures online while retaining the visible error", () => {
+    const state = {
+      apiStatus: "checking",
+      dispatchStatus: "loading",
+      dispatchError: null as string | null
+    };
+    applySessionRequestFailure(new ApiRequestError(422, "session reset failed: invalid request"), {
+      setApiStatus: (status) => {
+        state.apiStatus = status;
+      },
+      setDispatchStatus: (status) => {
+        state.dispatchStatus = status;
+      },
+      setDispatchError: (message) => {
+        state.dispatchError = message;
+      }
+    });
+
+    expect(state).toEqual({
+      apiStatus: "online",
+      dispatchStatus: "error",
+      dispatchError: "session reset failed: invalid request"
+    });
+  });
+
   it("does not call a blocked online mutation request", async () => {
     let calls = 0;
 
@@ -832,11 +859,30 @@ describe("live metrics", () => {
         recoveryAction: null
       }
     ];
+    const metricsHistory: SessionResult["metricsHistory"] = [
+      {
+        time: 2,
+        completedTaskCount: 1,
+        activeTaskCount: 0,
+        pendingTaskCount: 0,
+        travelledDistance: 2,
+        activeConflictCount: 0,
+        deadlineMissCount: 1,
+        replanTimeMs: 17
+      }
+    ];
 
-    const metrics = buildLiveMetrics(result, 2, runtimeStates);
+    const metrics = buildLiveMetrics(result, 2, runtimeStates, metricsHistory);
 
-    expect(metrics.completedTaskCount).toBe(0);
-    expect(metrics.activeTaskCount).toBe(1);
+    expect(metrics).toEqual({
+      completedTaskCount: 1,
+      activeTaskCount: 0,
+      pendingTaskCount: 0,
+      travelledDistance: 2,
+      activeConflictCount: 0,
+      liveDeadlineMissCount: 1,
+      replanTimeMs: 17
+    });
   });
 
   it("does not show future failure details while a replayed task is still active", () => {
