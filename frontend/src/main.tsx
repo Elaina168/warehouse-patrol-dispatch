@@ -16,6 +16,7 @@ import {
   runOnlineMutation
 } from "./domain/sessionRequestState";
 import { buildShelfCellPresentations, buildWarehouseDeliveryCandidates } from "./domain/inventory";
+import { MAX_TASK_SERVICE_TIME, parseScenario } from "./domain/scenarioImport";
 import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./domain/view";
 import { scenarios } from "./domain/scenarios";
 import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, RecoveryAction, Robot, SafetyStall, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
@@ -24,7 +25,6 @@ import "./styles.css";
 const API_BASE = "http://127.0.0.1:8011";
 const DEFAULT_ASSIGNMENT_REPLAN_WINDOW = 24;
 const MAX_ASSIGNMENT_REPLAN_WINDOW = 120;
-const MAX_TASK_SERVICE_TIME = 10_000;
 const DEFAULT_PLAYBACK_RATE = 2.4;
 const MIN_PLAYBACK_RATE = 0.2;
 const MAX_PLAYBACK_RATE = 10;
@@ -40,6 +40,8 @@ const taskTypeLabels: Record<TaskType, string> = {
   delivery: "取送",
   emergency: "突发"
 };
+
+export { parseScenario } from "./domain/scenarioImport";
 
 declare global {
   interface Window {
@@ -2568,198 +2570,6 @@ function taskTimingLabel(task: Task): string {
   const release = task.releaseTime ?? "-";
   const deadline = task.deadline ?? "-";
   return `到达 T=${release} · 截止 T=${deadline}`;
-}
-
-export function parseScenario(value: unknown): Scenario {
-  if (!isScenario(value)) {
-    throw new Error("JSON 必须是 Scenario 对象，并包含 id、name、description、width、height、obstacles、zones、robots、tasks、dynamic");
-  }
-  const scenario = { ...value, shelves: value.shelves ?? [] };
-  assertScenarioCellsInside(scenario);
-  const diagnostics = diagnoseScenario(scenario);
-  if (diagnostics.length > 0) {
-    throw new Error(diagnostics.join("；"));
-  }
-  return scenario;
-}
-
-function isScenario(value: unknown): value is Scenario {
-  return isRecord(value)
-    && isString(value.id)
-    && isString(value.name)
-    && isString(value.description)
-    && isNonNegativeInteger(value.width)
-    && isNonNegativeInteger(value.height)
-    && Array.isArray(value.obstacles)
-    && value.obstacles.every(isCell)
-    && (value.shelves === undefined || (
-      Array.isArray(value.shelves)
-      && value.shelves.every(isShelf)
-    ))
-    && isRecord(value.zones)
-    && Array.isArray(value.zones.warehouse)
-    && value.zones.warehouse.every(isCell)
-    && Array.isArray(value.zones.inspection)
-    && value.zones.inspection.every(isCell)
-    && Array.isArray(value.zones.delivery)
-    && value.zones.delivery.every(isCell)
-    && (value.zones.charging === undefined || (Array.isArray(value.zones.charging) && value.zones.charging.every(isCell)))
-    && Array.isArray(value.robots)
-    && value.robots.every(isRobot)
-    && Array.isArray(value.tasks)
-    && value.tasks.every(isTask)
-    && isDynamicEvent(value.dynamic)
-    && (value.chargeTime === undefined || isPositiveInteger(value.chargeTime));
-}
-
-function isShelf(value: unknown): value is Scenario["shelves"][number] {
-  return isRecord(value)
-    && isString(value.id)
-    && isCell(value.cell)
-    && isCell(value.serviceCell)
-    && typeof value.initialOccupied === "boolean";
-}
-
-function isRobot(value: unknown): value is Scenario["robots"][number] {
-  return isRecord(value)
-    && isString(value.id)
-    && isString(value.name)
-    && isCell(value.start)
-    && isFiniteNumber(value.battery)
-    && (value.batteryCapacity === undefined || (isPositiveInteger(value.batteryCapacity) && value.battery <= value.batteryCapacity))
-    && isFiniteNumber(value.load)
-    && (value.moveTicks === undefined || isMoveTicks(value.moveTicks))
-    && (value.capabilities === undefined || isCapabilityList(value.capabilities));
-}
-
-function isTaskType(value: unknown): value is TaskType {
-  return value === "inspection" || value === "delivery" || value === "emergency";
-}
-
-function isCapabilityList(value: unknown): value is TaskType[] {
-  return Array.isArray(value)
-    && value.length > 0
-    && value.every(isTaskType)
-    && new Set(value).size === value.length;
-}
-
-function isMoveTicks(value: unknown): value is number {
-  return isNonNegativeInteger(value) && value >= 1 && value <= 4;
-}
-
-function isPositiveInteger(value: unknown): value is number {
-  return isNonNegativeInteger(value) && value >= 1;
-}
-
-function isDynamicEvent(value: unknown): value is Scenario["dynamic"] {
-  return isRecord(value)
-    && isNonNegativeInteger(value.triggerTime)
-    && Array.isArray(value.blockedCells)
-    && value.blockedCells.every(isCell)
-    && Array.isArray(value.failedRobots)
-    && value.failedRobots.every(isString)
-    && Array.isArray(value.tasks)
-    && value.tasks.every(isTask);
-}
-
-function isTask(value: unknown): value is Task {
-  if (!isRecord(value)
-    || !isString(value.id)
-    || !isString(value.title)
-    || !isFiniteNumber(value.priority)
-    || !isOptionalFiniteNumber(value.releaseTime)
-    || !isOptionalFiniteNumber(value.deadline)
-  ) {
-    return false;
-  }
-
-  if (value.type === "inspection") {
-    return Array.isArray(value.targets) && value.targets.every(isCell);
-  }
-  if (value.type === "delivery") {
-    return isCell(value.pickup) && isCell(value.dropoff) && isFiniteNumber(value.demand);
-  }
-  if (value.type === "emergency") {
-    return isCell(value.target);
-  }
-  return false;
-}
-
-function assertScenarioCellsInside(scenario: Scenario): void {
-  const cells = [
-    ...scenario.obstacles,
-    ...(scenario.shelves ?? []).flatMap((shelf) => [shelf.cell, shelf.serviceCell]),
-    ...scenario.zones.warehouse,
-    ...scenario.zones.inspection,
-    ...scenario.zones.delivery,
-    ...(scenario.zones.charging ?? []),
-    ...scenario.robots.map((robot) => robot.start),
-    ...scenario.dynamic.blockedCells,
-    ...scenario.tasks.flatMap(taskWaypoints),
-    ...scenario.dynamic.tasks.flatMap(taskWaypoints)
-  ];
-  const outOfBounds = cells.find((cell) => cell[0] < 0 || cell[0] >= scenario.width || cell[1] < 0 || cell[1] >= scenario.height);
-  if (outOfBounds) {
-    throw new Error(`坐标超出地图范围：(${outOfBounds[0]}, ${outOfBounds[1]})`);
-  }
-}
-
-function diagnoseScenario(scenario: Scenario): string[] {
-  const blocked = new Set([...scenario.obstacles, ...scenario.dynamic.blockedCells].map(cellKey));
-  return [
-    ...duplicateDiagnostics("机器人 ID", scenario.robots.map((robot) => robot.id)),
-    ...duplicateDiagnostics("任务 ID", [...scenario.tasks, ...scenario.dynamic.tasks].map((task) => task.id)),
-    ...blockedPointDiagnostics(scenario, blocked)
-  ];
-}
-
-function duplicateDiagnostics(label: string, values: string[]): string[] {
-  const seen = new Set<string>();
-  const duplicates: string[] = [];
-  for (const value of values) {
-    if (seen.has(value) && !duplicates.includes(value)) duplicates.push(value);
-    seen.add(value);
-  }
-  return duplicates.map((value) => `${label} 重复：${value}`);
-}
-
-function blockedPointDiagnostics(scenario: Scenario, blocked: Set<string>): string[] {
-  const points = [
-    ...scenario.robots.map((robot) => ({ label: `机器人 ${robot.id} 起点`, cell: robot.start })),
-    ...[...scenario.tasks, ...scenario.dynamic.tasks].flatMap((task) =>
-      taskWaypoints(task).map((cell, index) => ({ label: `任务 ${task.id} 目标 ${index + 1}`, cell }))
-    )
-  ];
-  return points
-    .filter((point) => blocked.has(cellKey(point.cell)))
-    .map((point) => `${point.label} 位于障碍或封锁单元：(${point.cell[0]}, ${point.cell[1]})`);
-}
-
-function isCell(value: unknown): value is Cell {
-  return Array.isArray(value)
-    && value.length === 2
-    && isNonNegativeInteger(value[0])
-    && isNonNegativeInteger(value[1]);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isString(value: unknown): value is string {
-  return typeof value === "string";
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function isOptionalFiniteNumber(value: unknown): value is number | undefined {
-  return value === undefined || isFiniteNumber(value);
-}
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return Number.isInteger(value) && typeof value === "number" && value >= 0;
 }
 
 async function responseError(response: Response, prefix: string): Promise<never> {

@@ -7,11 +7,20 @@ from pydantic import BaseModel
 
 from backend.app.main import app
 from backend.app import schemas
-from backend.app.limits import MAX_TASK_SERVICE_TIME
+from backend.app.limits import (
+    MAX_SCENARIO_AXIS_LENGTH,
+    MAX_SCENARIO_CELL_COUNT,
+    MAX_SCENARIO_CHARGE_TIME,
+    MAX_SCENARIO_ROBOTS,
+    MAX_SCENARIO_TASKS,
+    MAX_TASK_SERVICE_TIME,
+    MAX_TASK_TARGETS,
+)
 
 
 FRONTEND_TYPES = Path("frontend/src/domain/types.ts")
 FRONTEND_MAIN = Path("frontend/src/main.tsx")
+FRONTEND_SCENARIO_IMPORT = Path("frontend/src/domain/scenarioImport.ts")
 BACKEND_DISPATCH = Path("backend/app/dispatch.py")
 
 
@@ -79,8 +88,8 @@ def _frontend_string_literal_union(type_name: str) -> set[str]:
     return set(re.findall(r'"([^"]+)"', match.group("body")))
 
 
-def _frontend_numeric_constant(name: str) -> int:
-    text = FRONTEND_MAIN.read_text(encoding="utf-8")
+def _frontend_numeric_constant(name: str, source: Path = FRONTEND_MAIN) -> int:
+    text = source.read_text(encoding="utf-8")
     match = re.search(rf"const {re.escape(name)} = (?P<value>\d[\d_]*);", text)
     assert match is not None, f"Missing frontend numeric constant: {name}"
     return int(match.group("value").replace("_", ""))
@@ -244,8 +253,21 @@ def test_frontend_assignment_replan_window_constants_match_backend_schema() -> N
     assert schema["maximum"] == _frontend_numeric_constant("MAX_ASSIGNMENT_REPLAN_WINDOW")
 
 
-def test_frontend_service_time_limit_matches_backend_limit() -> None:
-    assert _frontend_numeric_constant("MAX_TASK_SERVICE_TIME") == MAX_TASK_SERVICE_TIME
+def test_frontend_scenario_import_limits_match_backend_limits() -> None:
+    expected = {
+        "MAX_SCENARIO_AXIS_LENGTH": MAX_SCENARIO_AXIS_LENGTH,
+        "MAX_SCENARIO_CELL_COUNT": MAX_SCENARIO_CELL_COUNT,
+        "MAX_SCENARIO_ROBOTS": MAX_SCENARIO_ROBOTS,
+        "MAX_SCENARIO_TASKS": MAX_SCENARIO_TASKS,
+        "MAX_TASK_TARGETS": MAX_TASK_TARGETS,
+        "MAX_TASK_SERVICE_TIME": MAX_TASK_SERVICE_TIME,
+        "MAX_SCENARIO_CHARGE_TIME": MAX_SCENARIO_CHARGE_TIME,
+    }
+
+    assert {
+        name: _frontend_numeric_constant(name, FRONTEND_SCENARIO_IMPORT)
+        for name in expected
+    } == expected
 
 
 def test_frontend_recovery_action_union_matches_backend_schema() -> None:
