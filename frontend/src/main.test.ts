@@ -225,6 +225,7 @@ describe("warehouse shelf map", () => {
       unresolvedConflictAlert: null,
       safetyIntervention: null,
       contextMenu: null,
+      historicalPlayback: false,
       canManageBlocks: false,
       onOpenContextMenu: () => undefined,
       onCloseContextMenu: () => undefined,
@@ -259,6 +260,7 @@ describe("warehouse shelf map", () => {
       unresolvedConflictAlert: null,
       safetyIntervention: null,
       contextMenu: null,
+      historicalPlayback: false,
       canManageBlocks: false,
       onOpenContextMenu: () => undefined,
       onCloseContextMenu: () => undefined,
@@ -296,6 +298,7 @@ describe("warehouse shelf map", () => {
       unresolvedConflictAlert: null,
       safetyIntervention: null,
       contextMenu: null,
+      historicalPlayback: false,
       canManageBlocks: false,
       onOpenContextMenu: () => undefined,
       onCloseContextMenu: () => undefined,
@@ -303,6 +306,52 @@ describe("warehouse shelf map", () => {
     }));
 
     expect(markup).toContain("cell robot-cell failed-robot-cell");
+  });
+
+  it("does not render current runtime overlays during historical playback", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const robot = scenario.robots[0];
+    const result: DispatchResult = {
+      ...buildMapTestResult(scenario),
+      extraBlocked: [[3, 3]],
+      unavailableRobotIds: [robot.id]
+    };
+    const markup = renderToStaticMarkup(createElement(MapBoard, {
+      scenario,
+      result,
+      robotStates: [{
+        robotId: robot.id,
+        name: robot.name,
+        position: robot.start,
+        status: "failed",
+        battery: robot.battery,
+        load: robot.load,
+        moveTicks: robot.moveTicks ?? 1,
+        currentTaskId: null
+      }],
+      shelfStates: [
+        { shelfId: "S02", cell: [3, 3], serviceCell: [3, 2], status: "occupied" }
+      ],
+      sessionCurrentTime: 1,
+      time: 0,
+      routeHintsEnabled: false,
+      selectedRobotId: "",
+      onSelectRobot: () => undefined,
+      mapPickTarget: null,
+      onPickCell: () => undefined,
+      unresolvedConflictAlert: null,
+      safetyIntervention: null,
+      contextMenu: null,
+      historicalPlayback: true,
+      canManageBlocks: false,
+      onOpenContextMenu: () => undefined,
+      onCloseContextMenu: () => undefined,
+      onRunContextAction: () => undefined
+    }));
+
+    expect(markup).not.toContain("blocked shelf-cell");
+    expect(markup).not.toContain("shelf-stocked");
+    expect(markup).not.toContain("failed-robot-cell");
   });
 });
 

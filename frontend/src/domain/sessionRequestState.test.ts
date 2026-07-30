@@ -4,6 +4,8 @@ import { ApiRequestError } from "./apiError";
 import {
   canMutateOnlineSession,
   classifySessionRequestFailure,
+  historicalPlaybackNotice,
+  historicalRuntimeOverlay,
   isHistoricalPlayback
 } from "./sessionRequestState";
 
@@ -91,5 +93,48 @@ describe("online mutation availability", () => {
     expect(isHistoricalPlayback(5, 5)).toBe(false);
     expect(isHistoricalPlayback(6, 5)).toBe(false);
     expect(isHistoricalPlayback(0, null)).toBe(false);
+  });
+});
+
+describe("historical playback state", () => {
+  const currentOverlay = {
+    robotStates: [{
+      robotId: "R1",
+      name: "机器人 1",
+      position: [2, 1] as [number, number],
+      status: "failed" as const,
+      battery: 80,
+      load: 1,
+      moveTicks: 1,
+      currentTaskId: null
+    }],
+    shelfStates: [{
+      shelfId: "S1",
+      cell: [3, 3] as [number, number],
+      serviceCell: [3, 2] as [number, number],
+      status: "occupied" as const
+    }],
+    extraBlocked: [[4, 4] as [number, number]],
+    unavailableRobotIds: ["R1"]
+  };
+
+  it("removes current-only runtime state during historical playback", () => {
+    expect(historicalRuntimeOverlay(currentOverlay, true)).toEqual({
+      robotStates: [],
+      shelfStates: [],
+      extraBlocked: [],
+      unavailableRobotIds: []
+    });
+  });
+
+  it("preserves current runtime state at the latest tick", () => {
+    expect(historicalRuntimeOverlay(currentOverlay, false)).toEqual(currentOverlay);
+  });
+
+  it("provides the exact task-queue notice only for historical playback", () => {
+    expect(historicalPlaybackNotice(true)).toBe(
+      "历史回放仅提供路径、事件和指标；返回最新 T 查看实时状态。"
+    );
+    expect(historicalPlaybackNotice(false)).toBeNull();
   });
 });

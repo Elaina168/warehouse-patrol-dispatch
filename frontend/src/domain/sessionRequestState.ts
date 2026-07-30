@@ -1,4 +1,5 @@
 import { ApiRequestError } from "./apiError";
+import type { Cell, RobotRuntimeState, ShelfRuntimeState } from "./types";
 
 export type SessionOperation = "tick" | "mutation";
 export type ApiStatus = "checking" | "online" | "offline" | "error";
@@ -18,11 +19,37 @@ export type MutationAvailabilityInput = {
   sessionCurrentTime: number | null;
 };
 
+export type RuntimeOverlay = {
+  robotStates: RobotRuntimeState[];
+  shelfStates: ShelfRuntimeState[];
+  extraBlocked: Cell[];
+  unavailableRobotIds: string[];
+};
+
 export function isHistoricalPlayback(
   displayTime: number,
   sessionCurrentTime: number | null
 ): boolean {
   return sessionCurrentTime !== null && displayTime < sessionCurrentTime;
+}
+
+export function historicalRuntimeOverlay(
+  current: RuntimeOverlay,
+  historicalPlayback: boolean
+): RuntimeOverlay {
+  if (!historicalPlayback) return current;
+  return {
+    robotStates: [],
+    shelfStates: [],
+    extraBlocked: [],
+    unavailableRobotIds: []
+  };
+}
+
+export function historicalPlaybackNotice(historicalPlayback: boolean): string | null {
+  return historicalPlayback
+    ? "历史回放仅提供路径、事件和指标；返回最新 T 查看实时状态。"
+    : null;
 }
 
 export function canMutateOnlineSession(input: MutationAvailabilityInput): boolean {

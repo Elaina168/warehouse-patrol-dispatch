@@ -9,6 +9,9 @@ import {
 import {
   canMutateOnlineSession,
   classifySessionRequestFailure,
+  historicalPlaybackNotice,
+  historicalRuntimeOverlay,
+  isHistoricalPlayback,
   runOnlineMutation
 } from "./domain/sessionRequestState";
 import { buildShelfCellPresentations, buildWarehouseDeliveryCandidates } from "./domain/inventory";
@@ -179,6 +182,8 @@ function App() {
   const sessionRequestCoordinator = sessionRequestCoordinatorRef.current;
 
   const scenario = importedScenario ?? scenarios[0];
+  const historicalPlayback = isHistoricalPlayback(time, session?.currentTime ?? null);
+  const historyNotice = historicalPlaybackNotice(historicalPlayback);
 
   const liveMetrics = useMemo(
     () => result ? buildLiveMetrics(result, time, session?.taskStates, session?.metricsHistory) : null,
@@ -186,8 +191,10 @@ function App() {
   );
 
   const taskSnapshots = useMemo(
-    () => result ? sortTaskSnapshotsForDisplay(buildTaskSnapshots(result, time, session?.taskStates)) : [],
-    [result, session?.taskStates, time]
+    () => result && !historicalPlayback
+      ? sortTaskSnapshotsForDisplay(buildTaskSnapshots(result, time, session?.taskStates))
+      : [],
+    [historicalPlayback, result, session?.taskStates, time]
   );
 
   const taskGroups = useMemo(
@@ -229,8 +236,13 @@ function App() {
     }
   }
 
-  const safetyStatus = safetyStallLabel(session?.safetyStall ?? null)
-    ?? safetyInterventionLabel(session?.safetyIntervention ?? null);
+  const visibleSafetyIntervention = session?.safetyIntervention?.time === time
+    ? session.safetyIntervention
+    : null;
+  const safetyStatus = historicalPlayback
+    ? safetyInterventionLabel(visibleSafetyIntervention)
+    : safetyStallLabel(session?.safetyStall ?? null)
+      ?? safetyInterventionLabel(session?.safetyIntervention ?? null);
 
   useEffect(() => {
     return () => {
@@ -779,8 +791,9 @@ function App() {
                     mapPickTarget={mapPickTarget}
                     onPickCell={pickManualTaskCell}
                     unresolvedConflictAlert={shouldDisplayConflictMarker(latestConflictAlert, latestConflictResolved) ? latestConflictAlert : null}
-                    safetyIntervention={session?.safetyIntervention ?? null}
+                    safetyIntervention={historicalPlayback ? visibleSafetyIntervention : session?.safetyIntervention ?? null}
                     contextMenu={mapContextMenu}
+                    historicalPlayback={historicalPlayback}
                     canManageBlocks={onlineMutationEnabled}
                     onOpenContextMenu={setMapContextMenu}
                     onCloseContextMenu={() => setMapContextMenu(null)}
@@ -812,7 +825,9 @@ function App() {
 
                 <section className="map-side-section">
                   <h2>重规划解释</h2>
-                  {replanStatus ? (
+                  {historicalPlayback ? (
+                    <p className="history-playback-notice">{historyNotice}</p>
+                  ) : replanStatus ? (
                     <ReplanStatusPanel
                       status={replanStatus}
                       robotStates={session?.robotStates ?? []}
@@ -1029,7 +1044,14 @@ function App() {
             </div>
           </Panel>
           <Panel title="任务队列" className={RIGHTBAR_TASK_QUEUE_CLASS}>
-            {result ? (
+            {result && historicalPlayback && session ? (
+              <div className="history-playback-notice">
+                <p>{historyNotice}</p>
+                <button type="button" onClick={() => setTime(session.currentTime)}>
+                  返回最新 T
+                </button>
+              </div>
+            ) : result ? (
               <div className="task-queue-columns">
                 <section className="task-queue-column">
                   <h3>未完成</h3>
@@ -1242,6 +1264,7 @@ export function MapBoard({
   unresolvedConflictAlert,
   safetyIntervention,
   contextMenu,
+  historicalPlayback,
   canManageBlocks,
   onOpenContextMenu,
   onCloseContextMenu,
@@ -1261,14 +1284,27 @@ export function MapBoard({
   unresolvedConflictAlert: ConflictAlert | null;
   safetyIntervention: Conflict | null;
   contextMenu: MapContextMenuState | null;
+  historicalPlayback: boolean;
   canManageBlocks: boolean;
   onOpenContextMenu: (context: MapContextMenuState) => void;
   onCloseContextMenu: () => void;
   onRunContextAction: () => void;
 }) {
+  const runtimeOverlay = useMemo(
+    () => historicalRuntimeOverlay({
+      robotStates,
+      shelfStates,
+      extraBlocked: result.extraBlocked,
+      unavailableRobotIds: result.unavailableRobotIds
+    }, historicalPlayback),
+    [historicalPlayback, result.extraBlocked, result.unavailableRobotIds, robotStates, shelfStates]
+  );
   const obstacles = useMemo(() => new Set(scenario.obstacles.map(cellKey)), [scenario.obstacles]);
-  const blocked = useMemo(() => new Set(result.extraBlocked.map(cellKey)), [result.extraBlocked]);
-  const unavailableRobots = useMemo(() => new Set(result.unavailableRobotIds), [result.unavailableRobotIds]);
+  const blocked = useMemo(() => new Set(runtimeOverlay.extraBlocked.map(cellKey)), [runtimeOverlay.extraBlocked]);
+  const unavailableRobots = useMemo(
+    () => new Set(runtimeOverlay.unavailableRobotIds),
+    [runtimeOverlay.unavailableRobotIds]
+  );
   const taskLabelTasks = useMemo(
     () => filterInitialScenarioTaskLabels(result.tasks, scenario),
     [result.tasks, scenario]
@@ -1280,13 +1316,19 @@ export function MapBoard({
     [scenario.zones]
   );
   const shelfCellPresentations = useMemo(
-    () => buildShelfCellPresentations(scenario.shelves ?? [], shelfStates),
-    [scenario.shelves, shelfStates]
+    () => buildShelfCellPresentations(scenario.shelves ?? [], runtimeOverlay.shelfStates),
+    [runtimeOverlay.shelfStates, scenario.shelves]
   );
-  const useRuntimeRobotSnapshot = shouldUseRuntimeRobotSnapshot(time, sessionCurrentTime, robotStates);
+  const useRuntimeRobotSnapshot = shouldUseRuntimeRobotSnapshot(
+    time,
+    sessionCurrentTime,
+    runtimeOverlay.robotStates
+  );
   const occupied = useMemo(
-    () => useRuntimeRobotSnapshot ? getCellsFromRobotStates(robotStates) : getCellsOnPaths(result.paths, time),
-    [result.paths, robotStates, time, useRuntimeRobotSnapshot]
+    () => useRuntimeRobotSnapshot
+      ? getCellsFromRobotStates(runtimeOverlay.robotStates)
+      : getCellsOnPaths(result.paths, time),
+    [result.paths, runtimeOverlay.robotStates, time, useRuntimeRobotSnapshot]
   );
   const occupiedKeys = useMemo(
     () => new Set([...occupied.values()].map(cellKey)),
@@ -1306,8 +1348,13 @@ export function MapBoard({
     );
   }, [result.conflicts, result.conflictStates, result.paths, safetyIntervention, time, unresolvedConflictAlert]);
   const routeArrows = useMemo(
-    () => buildActiveRouteArrows(result, time, useRuntimeRobotSnapshot ? robotStates : [], routeHintsEnabled),
-    [result, robotStates, routeHintsEnabled, time, useRuntimeRobotSnapshot]
+    () => buildActiveRouteArrows(
+      result,
+      time,
+      useRuntimeRobotSnapshot ? runtimeOverlay.robotStates : [],
+      routeHintsEnabled
+    ),
+    [result, routeHintsEnabled, runtimeOverlay.robotStates, time, useRuntimeRobotSnapshot]
   );
   const visibleRouteArrows = useMemo(
     () => filterActiveRouteArrows(routeArrows, taskCells),
@@ -1329,9 +1376,17 @@ export function MapBoard({
       const shelfPresentation = shelfCellPresentations.get(key);
       const robot = robotId ? scenario.robots.find((item) => item.id === robotId) : null;
       const robotColor = robotId ? robotColors.get(robotId) : undefined;
-      const runtimeState = useRuntimeRobotSnapshot && robotId ? robotStates.find((item) => item.robotId === robotId) : null;
+      const runtimeState = useRuntimeRobotSnapshot && robotId
+        ? runtimeOverlay.robotStates.find((item) => item.robotId === robotId)
+        : null;
       const robotState = robot && robotId
-        ? getDisplayRobotState(robot, result.paths[robotId] ?? [robot.start], time, result.unavailableRobotIds, runtimeState ?? null)
+        ? getDisplayRobotState(
+          robot,
+          result.paths[robotId] ?? [robot.start],
+          time,
+          runtimeOverlay.unavailableRobotIds,
+          runtimeState ?? null
+        )
         : null;
       const currentTask = robotId ? getCurrentTaskLabel(result, robotId, time, runtimeState?.currentTaskId) : null;
       const classNames = [
