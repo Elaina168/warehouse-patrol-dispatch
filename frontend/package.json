@@ -22,5 +22,8 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "postcss": "8.5.18"
   }
 }

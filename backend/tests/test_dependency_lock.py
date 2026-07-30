@@ -1,0 +1,47 @@
+from pathlib import Path
+
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _read_exact_pins(path: Path) -> dict[str, str]:
+    pins: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        requirement = Requirement(line)
+        specifiers = tuple(requirement.specifier)
+        assert requirement.url is None, f"{path}: 不允许 URL 依赖: {line}"
+        assert requirement.marker is None, f"{path}: 不允许条件依赖: {line}"
+        assert len(specifiers) == 1, f"{path}: 依赖必须是单一精确版本: {line}"
+        assert specifiers[0].operator == "==", (
+            f"{path}: 依赖必须使用 == 精确锁定: {line}"
+        )
+
+        normalized_name = canonicalize_name(requirement.name)
+        assert normalized_name not in pins, f"{path}: 依赖名称重复: {line}"
+        pins[normalized_name] = specifiers[0].version
+    return pins
+
+
+def test_backend_lock_preserves_all_direct_exact_versions() -> None:
+    direct_pins = _read_exact_pins(PROJECT_ROOT / "backend" / "requirements.txt")
+    lock_pins = _read_exact_pins(
+        PROJECT_ROOT / "backend" / "requirements.lock.txt"
+    )
+
+    mismatches = {
+        name: {
+            "direct": direct_version,
+            "lock": lock_pins.get(name),
+        }
+        for name, direct_version in direct_pins.items()
+        if lock_pins.get(name) != direct_version
+    }
+
+    assert not mismatches, f"后端直接依赖与锁文件不一致: {mismatches}"

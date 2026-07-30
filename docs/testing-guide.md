@@ -63,6 +63,17 @@ http://127.0.0.1:8011/health
 .\.venv\Scripts\python.exe -m pytest backend\tests\test_config.py backend\tests\test_health.py -q
 ```
 
+依赖锁与安全审计：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider backend\tests\test_dependency_lock.py
+.\.venv\Scripts\python.exe -m pip check
+& 'C:\nvm4w\nodejs\npm.cmd' --prefix frontend ls postcss --all
+& 'C:\nvm4w\nodejs\npm.cmd' --prefix frontend audit --registry=https://registry.npmjs.org
+```
+
+后端 lock 必须保留 `backend/requirements.txt` 中每个直接依赖的同一精确版本，`pip check` 必须无依赖冲突；前端审计不得保留 high 或 critical 漏洞。`backend/requirements.lock.txt` 只在有意升级依赖并完成全量前后端验证后刷新，不应因日常安装而改写。
+
 ## 3. 页面区域
 
 页面顶部状态条显示：

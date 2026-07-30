@@ -118,7 +118,9 @@ npm run backend:dev
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r backend\requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements.lock.txt
 ```
+
+`backend/requirements.txt` 是后端直接依赖及其版本的权威来源；`backend/requirements.lock.txt` 是从已完成全量验证的虚拟环境生成的运行、测试和传递依赖精确锁。日常或新环境安装使用 lock。只有在有意更新直接依赖、重建并验证完整环境后，才可用该环境的 `pip freeze --all` 刷新 lock；刷新时排除 `pip` 自身，并重新运行完整前后端检查。
 
 如果 `.venv` 目录存在但缺少 `Scripts\python.exe`，应将其视为未安装完成的生成目录，重新创建虚拟环境并安装锁定的后端依赖；不要修改项目脚本绕过该检查。
