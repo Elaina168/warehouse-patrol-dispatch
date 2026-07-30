@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { ApiRequestError } from "./apiError";
-import { classifySessionRequestFailure } from "./sessionRequestState";
+import {
+  canMutateOnlineSession,
+  classifySessionRequestFailure,
+  isHistoricalPlayback
+} from "./sessionRequestState";
 
 describe("session request failure classification", () => {
   it("keeps mutation business errors online without pausing playback", () => {
@@ -56,5 +60,36 @@ describe("session request failure classification", () => {
         dispatchStatus: "error",
         pausePlayback: true
       });
+  });
+});
+
+describe("online mutation availability", () => {
+  const available = {
+    hasSession: true,
+    dispatchStatus: "ready" as const,
+    tickInFlight: false,
+    displayTime: 5,
+    sessionCurrentTime: 5
+  };
+
+  it("allows mutations only at the latest ready session tick", () => {
+    expect(canMutateOnlineSession(available)).toBe(true);
+  });
+
+  it.each([
+    { name: "no session", input: { ...available, hasSession: false } },
+    { name: "dispatch loading", input: { ...available, dispatchStatus: "loading" as const } },
+    { name: "dispatch error", input: { ...available, dispatchStatus: "error" as const } },
+    { name: "tick in flight", input: { ...available, tickInFlight: true } },
+    { name: "historical display", input: { ...available, displayTime: 4 } }
+  ])("blocks mutations for $name", ({ input }) => {
+    expect(canMutateOnlineSession(input)).toBe(false);
+  });
+
+  it("treats only an earlier display tick as historical", () => {
+    expect(isHistoricalPlayback(4, 5)).toBe(true);
+    expect(isHistoricalPlayback(5, 5)).toBe(false);
+    expect(isHistoricalPlayback(6, 5)).toBe(false);
+    expect(isHistoricalPlayback(0, null)).toBe(false);
   });
 });

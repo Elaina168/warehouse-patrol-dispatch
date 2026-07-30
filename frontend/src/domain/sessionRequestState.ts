@@ -10,6 +10,36 @@ export type SessionFailureDecision = {
   pausePlayback: boolean;
 };
 
+export type MutationAvailabilityInput = {
+  hasSession: boolean;
+  dispatchStatus: DispatchStatus;
+  tickInFlight: boolean;
+  displayTime: number;
+  sessionCurrentTime: number | null;
+};
+
+export function isHistoricalPlayback(
+  displayTime: number,
+  sessionCurrentTime: number | null
+): boolean {
+  return sessionCurrentTime !== null && displayTime < sessionCurrentTime;
+}
+
+export function canMutateOnlineSession(input: MutationAvailabilityInput): boolean {
+  return input.hasSession
+    && input.dispatchStatus === "ready"
+    && !input.tickInFlight
+    && !isHistoricalPlayback(input.displayTime, input.sessionCurrentTime);
+}
+
+export async function runOnlineMutation<T>(
+  enabled: boolean,
+  request: () => Promise<T>
+): Promise<T | undefined> {
+  if (!enabled) return undefined;
+  return request();
+}
+
 export function classifySessionRequestFailure(
   error: unknown,
   operation: SessionOperation

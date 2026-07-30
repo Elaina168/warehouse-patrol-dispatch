@@ -6,7 +6,11 @@ import {
   deleteSession,
   resetSession
 } from "./domain/sessionApi";
-import { classifySessionRequestFailure } from "./domain/sessionRequestState";
+import {
+  canMutateOnlineSession,
+  classifySessionRequestFailure,
+  runOnlineMutation
+} from "./domain/sessionRequestState";
 import { buildShelfCellPresentations, buildWarehouseDeliveryCandidates } from "./domain/inventory";
 import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./domain/view";
 import { scenarios } from "./domain/scenarios";
@@ -196,6 +200,13 @@ function App() {
     [result, session]
   );
   const runtimeActionTime = getRuntimeActionTime(time, session?.currentTime ?? null);
+  const onlineMutationEnabled = canMutateOnlineSession({
+    hasSession: session !== null,
+    dispatchStatus,
+    tickInFlight,
+    displayTime: time,
+    sessionCurrentTime: session?.currentTime ?? null
+  });
   const reachedConflictAlert = useMemo(
     () => result ? selectLatestConflictAlert(result.conflicts, time) : null,
     [result, time]
@@ -353,14 +364,33 @@ function App() {
   }, [dispatchStatus, playbackRate, playing, session, tickInFlight, time]);
 
   useEffect(() => {
-    if (!playing || !randomGeneratorEnabled || !session || !result || dispatchStatus === "loading") return;
+    if (
+      !playing
+      || !randomGeneratorEnabled
+      || !session
+      || !result
+      || tickInFlight
+      || !onlineMutationEnabled
+    ) return;
     if (!shouldGenerateRandomTaskAtTime(time, session.currentTime, lastRandomTaskTime, randomTaskInterval)) return;
     setLastRandomTaskTime(time);
     void pushGeneratedTask();
-  }, [dispatchStatus, lastRandomTaskTime, playing, randomGeneratorEnabled, randomTaskInterval, result, session, time]);
+  }, [
+    dispatchStatus,
+    lastRandomTaskTime,
+    onlineMutationEnabled,
+    playing,
+    randomGeneratorEnabled,
+    randomTaskInterval,
+    result,
+    session,
+    tickInFlight,
+    time
+  ]);
 
   async function submitManualTask(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!onlineMutationEnabled) return;
     if (!session || !result) return;
 
     const task = buildManualTask(manualTask, result.tasks, runtimeActionTime, scenario);
@@ -381,6 +411,7 @@ function App() {
   }
 
   async function enqueueTask(task: Task) {
+    if (!onlineMutationEnabled) return;
     if (!session) return;
     await updateSession(() =>
       fetch(`${API_BASE}/api/sessions/${session.sessionId}/tasks`, {
@@ -392,6 +423,7 @@ function App() {
   }
 
   async function pushGeneratedTask() {
+    if (!onlineMutationEnabled) return;
     if (!result) return;
     const task = buildRandomGeneratedTask(
       result.tasks,
@@ -406,6 +438,7 @@ function App() {
   }
 
   async function blockCell(cell: Cell) {
+    if (!onlineMutationEnabled) return;
     if (!session) return;
     await updateSession(() =>
       fetch(`${API_BASE}/api/sessions/${session.sessionId}/blocked-cells`, {
@@ -417,6 +450,7 @@ function App() {
   }
 
   async function unblockCell(cell: Cell) {
+    if (!onlineMutationEnabled) return;
     if (!session) return;
     await updateSession(() =>
       fetch(`${API_BASE}/api/sessions/${session.sessionId}/blocked-cells/remove`, {
@@ -428,6 +462,7 @@ function App() {
   }
 
   async function recoverBlockedCell(cell: Cell) {
+    if (!onlineMutationEnabled) return;
     if (!session) return;
     await updateSession(() =>
       fetch(`${API_BASE}/api/sessions/${session.sessionId}/blocked-cells/remove`, {
@@ -439,6 +474,7 @@ function App() {
   }
 
   async function failRobot(robotId: string) {
+    if (!onlineMutationEnabled) return;
     if (!session) return;
     await updateSession(() =>
       fetch(`${API_BASE}/api/sessions/${session.sessionId}/failed-robots`, {
@@ -450,6 +486,7 @@ function App() {
   }
 
   async function restoreRobot(robotId: string) {
+    if (!onlineMutationEnabled) return;
     if (!session) return;
     await updateSession(() =>
       fetch(`${API_BASE}/api/sessions/${session.sessionId}/failed-robots/restore`, {
@@ -461,6 +498,7 @@ function App() {
   }
 
   async function recoverRobot(robotId: string) {
+    if (!onlineMutationEnabled) return;
     await restoreRobot(robotId);
   }
 
@@ -528,27 +566,29 @@ function App() {
   }
 
   async function updateSession(request: () => Promise<Response>) {
-    const requestGeneration = sessionRequestCoordinator.currentGeneration();
-    setDispatchStatus("loading");
-    setDispatchError(null);
-    setOperationError(null);
-    try {
-      const response = await sessionRequestCoordinator.enqueue(request);
-      if (!response.ok) throw await responseError(response, "session update failed");
-      const payload = (await response.json()) as SessionResult;
-      if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
-      applySessionPayload(payload);
-      setRouteHintsEnabled(routeHintsAfterSessionUpdate);
-    } catch (error) {
-      if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
-      const decision = classifySessionRequestFailure(error, "mutation");
-      const message = error instanceof Error ? error.message : "unknown error";
-      if (decision.pausePlayback) setPlaying(false);
-      setApiStatus(decision.apiStatus);
-      setDispatchStatus(decision.dispatchStatus);
-      setDispatchError(message);
-      setOperationError(message);
-    }
+    await runOnlineMutation(onlineMutationEnabled, async () => {
+      const requestGeneration = sessionRequestCoordinator.currentGeneration();
+      setDispatchStatus("loading");
+      setDispatchError(null);
+      setOperationError(null);
+      try {
+        const response = await sessionRequestCoordinator.enqueue(request);
+        if (!response.ok) throw await responseError(response, "session update failed");
+        const payload = (await response.json()) as SessionResult;
+        if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
+        applySessionPayload(payload);
+        setRouteHintsEnabled(routeHintsAfterSessionUpdate);
+      } catch (error) {
+        if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
+        const decision = classifySessionRequestFailure(error, "mutation");
+        const message = error instanceof Error ? error.message : "unknown error";
+        if (decision.pausePlayback) setPlaying(false);
+        setApiStatus(decision.apiStatus);
+        setDispatchStatus(decision.dispatchStatus);
+        setDispatchError(message);
+        setOperationError(message);
+      }
+    });
   }
 
   function togglePlayback() {
@@ -741,7 +781,7 @@ function App() {
                     unresolvedConflictAlert={shouldDisplayConflictMarker(latestConflictAlert, latestConflictResolved) ? latestConflictAlert : null}
                     safetyIntervention={session?.safetyIntervention ?? null}
                     contextMenu={mapContextMenu}
-                    canManageBlocks={session !== null && dispatchStatus === "ready"}
+                    canManageBlocks={onlineMutationEnabled}
                     onOpenContextMenu={setMapContextMenu}
                     onCloseContextMenu={() => setMapContextMenu(null)}
                     onRunContextAction={() => void runMapContextAction()}
@@ -880,7 +920,7 @@ function App() {
                     />
                   )}
                 {manualTaskError ? <p className="empty-state">{manualTaskError}</p> : null}
-                <button className="wide-action" type="submit" disabled={!session || dispatchStatus === "loading"}>
+                <button className="wide-action" type="submit" disabled={!onlineMutationEnabled}>
                   <Plus size={16} />
                   推入任务队列
                 </button>
@@ -998,7 +1038,7 @@ function App() {
                       <TaskQueueItem
                         key={snapshot.task.id}
                         snapshot={snapshot}
-                        disabled={dispatchStatus === "loading"}
+                        disabled={!onlineMutationEnabled}
                         onRecoverBlockedCell={recoverBlockedCell}
                         onRecoverRobot={recoverRobot}
                       />
@@ -1012,7 +1052,7 @@ function App() {
                       <TaskQueueItem
                         key={snapshot.task.id}
                         snapshot={snapshot}
-                        disabled={dispatchStatus === "loading"}
+                        disabled={!onlineMutationEnabled}
                         onRecoverBlockedCell={recoverBlockedCell}
                         onRecoverRobot={recoverRobot}
                       />

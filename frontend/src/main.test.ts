@@ -64,9 +64,30 @@ import {
   taskTimingFields
 } from "./main";
 import { scenarios } from "./domain/scenarios";
+import { runOnlineMutation } from "./domain/sessionRequestState";
 import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, ShelfRuntimeState, Task, TaskType } from "./domain/types";
 
 describe("session request coordination", () => {
+  it("does not call a blocked online mutation request", async () => {
+    let calls = 0;
+
+    await runOnlineMutation(false, async () => {
+      calls += 1;
+    });
+
+    expect(calls).toBe(0);
+  });
+
+  it("calls an enabled online mutation request exactly once", async () => {
+    let calls = 0;
+
+    await runOnlineMutation(true, async () => {
+      calls += 1;
+    });
+
+    expect(calls).toBe(1);
+  });
+
   it("runs reset after older mutations and rejects their stale responses", async () => {
     const coordinator = createSessionRequestCoordinator();
     let releaseOlderMutation: (() => void) | undefined;
