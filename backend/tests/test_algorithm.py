@@ -4,7 +4,7 @@ import backend.app.dispatch as dispatch_module
 import backend.app.main as main_module
 from backend.app.dispatch import build_paths, build_paths_for_order, path_planning_candidate_score, task_completion_times
 from backend.app.main import app
-from backend.app.planning_diagnostics import PathCandidateDiagnostics
+from backend.app.planning_diagnostics import PathCandidateDiagnostics, PlanningDiagnostics
 from backend.app.schemas import Assignment, DispatchOptions, Scenario, TaskFailureDetail
 from backend.tests.helpers import scenario_payload, seeded_pressure_scenario
 
@@ -1641,18 +1641,20 @@ def _lane_scale_scenario(label: str, robot_count: int, tasks_per_robot: int) -> 
 
 def test_dispatch_handles_deterministic_scale_pressure_family() -> None:
     cases = [
-        ("small", 3, 2, 12),
-        ("medium", 5, 2, 18),
-        ("large", 8, 2, 27),
+        ("small", 3, 2, 12, 1, 99),
+        ("medium", 5, 2, 18, 1, 168),
+        ("large", 8, 2, 27, 1, 217),
     ]
     previous_distance = 0
     previous_task_count = 0
 
-    for label, robot_count, tasks_per_robot, expected_task_count in cases:
+    for label, robot_count, tasks_per_robot, expected_task_count, expected_candidate_count, expected_expanded_state_count in cases:
         scenario = _lane_scale_scenario(label, robot_count, tasks_per_robot)
+        planning_diagnostics = PlanningDiagnostics()
         result = dispatch_module.run_dispatch(
             scenario,
             DispatchOptions(avoidConflicts=True, includeDynamic=True, assignmentReplanWindow=120),
+            planning_diagnostics=planning_diagnostics,
         )
 
         assert len(result.tasks) == expected_task_count
@@ -1663,7 +1665,10 @@ def test_dispatch_handles_deterministic_scale_pressure_family() -> None:
         assert result.metrics.conflictCount == 0
         assert result.metrics.totalDistance > previous_distance
         assert result.metrics.assignedTaskCount > previous_task_count
-        assert result.metrics.replanTimeMs < 1000
+        assert isinstance(result.metrics.replanTimeMs, float)
+        assert result.metrics.replanTimeMs >= 0
+        assert planning_diagnostics.path_candidate_count == expected_candidate_count
+        assert planning_diagnostics.timed_astar_expanded_state_count == expected_expanded_state_count
         assert set(result.paths) == {robot.id for robot in scenario.robots}
         assert {task.id for task in scenario.dynamic.tasks}.issubset(
             {task.id for assignment in result.assignments for task in assignment.tasks}
@@ -1674,17 +1679,19 @@ def test_dispatch_handles_deterministic_scale_pressure_family() -> None:
 
 def test_dispatch_handles_fixed_seed_pressure_family() -> None:
     cases = [
-        ("seed-17", 17, 4, 12),
-        ("seed-29", 29, 6, 20),
-        ("seed-31", 31, 8, 24),
+        ("seed-17", 17, 4, 12, 1, 624),
+        ("seed-29", 29, 6, 20, 1, 785),
+        ("seed-31", 31, 8, 24, 1, 759),
     ]
     previous_task_count = 0
 
-    for label, seed, robot_count, task_count in cases:
+    for label, seed, robot_count, task_count, expected_candidate_count, expected_expanded_state_count in cases:
         scenario = seeded_pressure_scenario(label, seed, robot_count, task_count)
+        planning_diagnostics = PlanningDiagnostics()
         result = dispatch_module.run_dispatch(
             scenario,
             DispatchOptions(avoidConflicts=True, includeDynamic=True, assignmentReplanWindow=120),
+            planning_diagnostics=planning_diagnostics,
         )
         expected_task_count = task_count + len(scenario.dynamic.tasks)
         assigned_task_ids = {task.id for assignment in result.assignments for task in assignment.tasks}
@@ -1697,7 +1704,10 @@ def test_dispatch_handles_fixed_seed_pressure_family() -> None:
         assert result.conflicts == []
         assert result.metrics.conflictCount == 0
         assert result.metrics.totalDistance > 0
-        assert result.metrics.replanTimeMs < 2000
+        assert isinstance(result.metrics.replanTimeMs, float)
+        assert result.metrics.replanTimeMs >= 0
+        assert planning_diagnostics.path_candidate_count == expected_candidate_count
+        assert planning_diagnostics.timed_astar_expanded_state_count == expected_expanded_state_count
         assert result.dynamicTriggerTime == 8
         assert result.extraBlocked == []
         assert set(result.paths) == {robot.id for robot in scenario.robots}

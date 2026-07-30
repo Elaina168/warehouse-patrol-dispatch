@@ -427,7 +427,7 @@ http://127.0.0.1:8011/health
 2. 31/43 案例出现 `goalFullyReserved` 拒绝且不再以 exhausted 搜索遍历完整时域。
 3. 55 案例保持首个候选成功。
 4. 只在相同机器和无并发重型任务下比较前后 `medianReplanTimeMs`、P95 和扩展状态数。
-5. 日常 pytest 不断言真实墙钟阈值。
+5. 日常 pytest 不断言真实墙钟阈值。`test_dispatch_handles_deterministic_scale_pressure_family`、`test_dispatch_handles_fixed_seed_pressure_family`、`test_seeded_pressure_experiment_returns_compact_performance_cases` 和 `test_seeded_pressure_experiment_can_run_extended_stability_cases` 只验证固定输入的分配、冲突、失败、案例标签/数量及 `replanTimeMs` 的类型和非负域；前两个直接调度测试还固定已有规划诊断。`planningTimeBudgetMs == 2000` 仅保留为实验 API 元数据。真实耗时上限、分布和前后比较只属于本节的离线重复基准证据，不作为日常 pytest 的通过/失败条件。
 
 命令会在 `output/algorithm-boundary-benchmark` 下创建一个 UTC 时间戳结果目录。最终目录必须同时包含 `results.json`、`runs.csv` 和 `case-summaries.csv`；`runs.csv` 与 `case-summaries.csv` 使用 UTF-8 with BOM，可直接按 UTF-8 打开。默认九个案例为 `scale-r4-t15`、`scale-r8-t27`、`scale-r12-t39`、`density-r8-t31`、`density-r8-t43`、`density-r8-t55`、`bottleneck-r4-t4`、`bottleneck-r6-t6`、`bottleneck-r8-t8`，各运行五次。
 
