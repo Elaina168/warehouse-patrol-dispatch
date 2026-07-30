@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -10,6 +13,7 @@ PROJECT_PWSH = REPOSITORY_ROOT / ".tools" / "powershell" / "pwsh.exe"
 MANIFEST_HELPER = REPOSITORY_ROOT / "scripts" / "dev-process-manifest.ps1"
 STOP_SCRIPT = REPOSITORY_ROOT / "scripts" / "stop-dev.ps1"
 START_SCRIPT = REPOSITORY_ROOT / "scripts" / "start-dev.ps1"
+TEST_ALL_SCRIPT = REPOSITORY_ROOT / "scripts" / "test-all.ps1"
 
 
 def run_powershell(script: str) -> dict[str, object]:
@@ -49,6 +53,110 @@ def run_powershell_marked_result(script: str) -> dict[str, object]:
         if line.startswith("RESULT:"):
             return json.loads(line.removeprefix("RESULT:"))
     raise AssertionError(f"PowerShell did not emit a marked result:\n{completed.stdout}")
+
+
+def write_fake_npm_shim(path: Path) -> None:
+    path.write_text(
+        "\r\n".join(
+            [
+                "@echo off",
+                "chcp 65001 >nul",
+                'echo %*>> "%TEST_ALL_NPM_LOG%"',
+                'if "%TEST_ALL_FAIL_STAGE%"=="%2" exit /b 7',
+                "exit /b 0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def run_test_all(
+    shim_path: Path,
+    log_path: Path,
+    failed_stage: str = "",
+    native_error_action_preference: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["TEST_ALL_NPM_LOG"] = str(log_path)
+    environment["TEST_ALL_FAIL_STAGE"] = failed_stage
+    command = [
+        str(PROJECT_PWSH),
+        "-NoLogo",
+        "-NoProfile",
+    ]
+    if native_error_action_preference:
+        command.extend(
+            [
+                "-Command",
+                (
+                    "$PSNativeCommandUseErrorActionPreference = $true; "
+                    f"& '{TEST_ALL_SCRIPT}' -NpmPath '{shim_path}'; "
+                    "exit $LASTEXITCODE"
+                ),
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "-File",
+                str(TEST_ALL_SCRIPT),
+                "-NpmPath",
+                str(shim_path),
+            ]
+        )
+    return subprocess.run(
+        command,
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+    )
+
+
+def test_all_runs_complete_checks_in_order(tmp_path: Path) -> None:
+    shim_path = tmp_path / "fake-npm.cmd"
+    log_path = tmp_path / "npm.log"
+    write_fake_npm_shim(shim_path)
+
+    completed = run_test_all(shim_path, log_path)
+
+    assert completed.returncode == 0
+    assert log_path.read_text(encoding="utf-8").splitlines() == [
+        "run frontend:build",
+        "run frontend:test",
+        "run backend:test",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failed_stage", "expected_log_lines"),
+    [
+        ("frontend:build", ["run frontend:build"]),
+        ("frontend:test", ["run frontend:build", "run frontend:test"]),
+        ("backend:test", ["run frontend:build", "run frontend:test", "run backend:test"]),
+    ],
+)
+def test_all_stops_at_failed_check_and_propagates_exit_code(
+    tmp_path: Path,
+    failed_stage: str,
+    expected_log_lines: list[str],
+) -> None:
+    shim_path = tmp_path / "fake-npm.cmd"
+    log_path = tmp_path / "npm.log"
+    write_fake_npm_shim(shim_path)
+
+    completed = run_test_all(
+        shim_path,
+        log_path,
+        failed_stage,
+        native_error_action_preference=True,
+    )
+
+    assert completed.returncode == 7
+    assert log_path.read_text(encoding="utf-8").splitlines() == expected_log_lines
 
 
 def test_stop_scope_has_no_port_based_kill_path() -> None:

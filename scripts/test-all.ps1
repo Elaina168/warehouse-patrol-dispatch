@@ -1,4 +1,20 @@
+param([string]$NpmPath)
+
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\env.ps1"
-& $env:PROJECT_NPM --prefix frontend run build
-& "$PSScriptRoot\..\.venv\Scripts\python.exe" -m pytest backend/tests
+
+$npm = if ($NpmPath) { $NpmPath } else { $env:PROJECT_NPM }
+foreach ($scriptName in @("frontend:build", "frontend:test", "backend:test")) {
+  try {
+    & $npm run $scriptName
+  } catch {
+    if ($LASTEXITCODE -ne 0) {
+      exit $LASTEXITCODE
+    }
+    throw
+  }
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+}
+exit 0

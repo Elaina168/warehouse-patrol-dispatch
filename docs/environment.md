@@ -91,7 +91,7 @@ npm run backend:dev
 .\scripts\test-all.ps1
 ```
 
-或：
+或（两条命令均按相同顺序运行 `frontend:build`、`frontend:test` 和 `backend:test`）：
 
 ```powershell
 & 'C:\nvm4w\nodejs\npm.cmd' run check

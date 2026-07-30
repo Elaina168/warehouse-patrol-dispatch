@@ -365,7 +365,7 @@ Run all checks:
 & 'C:\nvm4w\nodejs\npm.cmd' run check
 ```
 
-Equivalent script:
+This script runs the same three checks as `npm run check` in the same order:
 
 ```powershell
 .\scripts\test-all.ps1
