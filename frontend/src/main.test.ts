@@ -57,6 +57,8 @@ import {
   createManualTaskForm,
   createSessionRequestCoordinator,
   MapBoard,
+  LiveMetricsPanel,
+  OperationalErrorNotice,
   resetSessionConflictState,
   RIGHTBAR_EVENT_LOG_CLASS,
   RIGHTBAR_TASK_QUEUE_CLASS,
@@ -75,7 +77,8 @@ describe("session request coordination", () => {
     const state = {
       apiStatus: "checking",
       dispatchStatus: "loading",
-      dispatchError: null as string | null
+      dispatchError: null as string | null,
+      operationError: null as string | null
     };
     applySessionRequestFailure(new ApiRequestError(422, "session reset failed: invalid request"), {
       setApiStatus: (status) => {
@@ -86,14 +89,21 @@ describe("session request coordination", () => {
       },
       setDispatchError: (message) => {
         state.dispatchError = message;
+      },
+      setOperationError: (message: string) => {
+        state.operationError = message;
       }
     });
 
     expect(state).toEqual({
       apiStatus: "online",
       dispatchStatus: "error",
-      dispatchError: "session reset failed: invalid request"
+      dispatchError: "session reset failed: invalid request",
+      operationError: "session reset failed: invalid request"
     });
+
+    expect(renderToStaticMarkup(createElement(OperationalErrorNotice, { message: state.operationError })))
+      .toContain("session reset failed: invalid request");
   });
 
   it("does not call a blocked online mutation request", async () => {
@@ -742,7 +752,9 @@ describe("live metrics", () => {
       }
     ];
 
-    expect(buildLiveMetrics(result, 2, runtimeStates).liveDeadlineMissCount).toBe(0);
+    const metrics = buildLiveMetrics(result, 2, runtimeStates);
+    if (!metrics) throw new Error("当前指标不应缺失");
+    expect(metrics.liveDeadlineMissCount).toBe(0);
   });
 
   it("keeps completed session deadline misses visible from backend history", () => {
@@ -807,10 +819,12 @@ describe("live metrics", () => {
       }
     ];
 
-    expect(buildLiveMetrics(result, 2, runtimeStates, metricsHistory).liveDeadlineMissCount).toBe(1);
+    const metrics = buildLiveMetrics(result, 2, runtimeStates, metricsHistory);
+    if (!metrics) throw new Error("当前指标不应缺失");
+    expect(metrics.liveDeadlineMissCount).toBe(1);
   });
 
-  it("replays task status from the selected time instead of the latest backend status", () => {
+  it("uses the selected snapshot and marks expired metric history unavailable without leaking current task state", () => {
     const task: DispatchResult["tasks"][number] = {
       id: "RUNNING",
       type: "inspection",
@@ -883,6 +897,26 @@ describe("live metrics", () => {
       liveDeadlineMissCount: 1,
       replanTimeMs: 17
     });
+
+    const unavailableMetrics = buildLiveMetrics(result, 1, runtimeStates, metricsHistory, false);
+    expect(unavailableMetrics).toBeNull();
+
+    const snapshotMarkup = renderToStaticMarkup(createElement(LiveMetricsPanel, {
+      time: 2,
+      metrics,
+      historicalMetricsUnavailable: false
+    }));
+    expect(snapshotMarkup).toContain("已完成任务");
+    expect(snapshotMarkup).toContain("1 个");
+
+    const unavailableMarkup = renderToStaticMarkup(createElement(LiveMetricsPanel, {
+      time: 1,
+      metrics: unavailableMetrics,
+      historicalMetricsUnavailable: true
+    }));
+    expect(unavailableMarkup).toContain("历史指标不可用");
+    expect(unavailableMarkup).not.toContain("已完成任务");
+    expect(unavailableMarkup).not.toContain("0 个");
   });
 
   it("does not show future failure details while a replayed task is still active", () => {

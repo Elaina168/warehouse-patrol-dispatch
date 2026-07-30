@@ -155,12 +155,15 @@ export function applySessionRequestFailure(
     setApiStatus: (status: "checking" | "online" | "offline" | "error") => void;
     setDispatchStatus: (status: "loading" | "ready" | "error") => void;
     setDispatchError: (message: string) => void;
+    setOperationError: (message: string) => void;
   }
 ): void {
   const decision = classifySessionRequestFailure(error, "mutation");
+  const message = error instanceof Error ? error.message : "unknown error";
   setters.setApiStatus(decision.apiStatus);
   setters.setDispatchStatus("error");
-  setters.setDispatchError(error instanceof Error ? error.message : "unknown error");
+  setters.setDispatchError(message);
+  setters.setOperationError(message);
 }
 
 function App() {
@@ -204,9 +207,10 @@ function App() {
   const historyNotice = historicalPlaybackNotice(historicalPlayback);
 
   const liveMetrics = useMemo(
-    () => result ? buildLiveMetrics(result, time, session?.taskStates, session?.metricsHistory) : null,
-    [result, session?.metricsHistory, session?.taskStates, time]
+    () => result ? buildLiveMetrics(result, time, session?.taskStates, session?.metricsHistory, !historicalPlayback) : null,
+    [historicalPlayback, result, session?.metricsHistory, session?.taskStates, time]
   );
+  const historicalMetricsUnavailable = historicalPlayback && result !== null && liveMetrics === null;
 
   const taskSnapshots = useMemo(
     () => result && !historicalPlayback
@@ -361,7 +365,7 @@ function App() {
       })
       .catch((error) => {
         if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
-        applySessionRequestFailure(error, { setApiStatus, setDispatchStatus, setDispatchError });
+        applySessionRequestFailure(error, { setApiStatus, setDispatchStatus, setDispatchError, setOperationError });
       });
 
     return () => {
@@ -591,7 +595,7 @@ function App() {
       applySessionPayload(payload);
     } catch (error) {
       if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
-      applySessionRequestFailure(error, { setApiStatus, setDispatchStatus, setDispatchError });
+      applySessionRequestFailure(error, { setApiStatus, setDispatchStatus, setDispatchError, setOperationError });
     }
   }
 
@@ -824,18 +828,11 @@ function App() {
                 <section className="map-side-section">
                   <h2>指标</h2>
                   {result ? (
-                    <>
-                      <div className="metrics-grid map-metrics-grid">
-                        <Metric label="当前时间" value={simulationTimeLabel(time)} />
-                        <Metric label="已完成任务" value={`${liveMetrics?.completedTaskCount ?? 0} 个`} />
-                        <Metric label="执行中任务" value={`${liveMetrics?.activeTaskCount ?? 0} 个`} />
-                        <Metric label="等待任务" value={`${liveMetrics?.pendingTaskCount ?? 0} 个`} />
-                        <Metric label="当前路程" value={`${liveMetrics?.travelledDistance ?? 0} 格`} />
-                        <Metric label="当前冲突" value={`${liveMetrics?.activeConflictCount ?? 0} 次`} />
-                        <Metric label="已超期任务" value={`${liveMetrics?.liveDeadlineMissCount ?? 0} 个`} />
-                        <Metric label="重规划" value={`${liveMetrics?.replanTimeMs ?? 0} ms`} />
-                      </div>
-                    </>
+                    <LiveMetricsPanel
+                      time={time}
+                      metrics={liveMetrics}
+                      historicalMetricsUnavailable={historicalMetricsUnavailable}
+                    />
                   ) : (
                     <EmptyState status={dispatchStatus} error={dispatchError} />
                   )}
@@ -1029,7 +1026,7 @@ function App() {
               <p className="session-note">
                 {playing ? "仿真运行中" : "仿真已暂停"} · {tickInFlight ? "后端 tick 同步中" : dispatchStatus === "loading" ? "等待重规划结果" : "调度结果已同步"}
               </p>
-              {operationError ? <p className="session-note">{operationError}</p> : null}
+              <OperationalErrorNotice message={operationError} />
             </Panel>
           </section>
 
@@ -1126,6 +1123,33 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
+export function LiveMetricsPanel({
+  time,
+  metrics,
+  historicalMetricsUnavailable
+}: {
+  time: number;
+  metrics: LiveMetrics | null;
+  historicalMetricsUnavailable: boolean;
+}) {
+  if (historicalMetricsUnavailable) {
+    return <p className="history-playback-notice">历史指标不可用：所选时间早于指标保留窗口。</p>;
+  }
+  if (!metrics) return null;
+  return (
+    <div className="metrics-grid map-metrics-grid">
+      <Metric label="当前时间" value={simulationTimeLabel(time)} />
+      <Metric label="已完成任务" value={`${metrics.completedTaskCount} 个`} />
+      <Metric label="执行中任务" value={`${metrics.activeTaskCount} 个`} />
+      <Metric label="等待任务" value={`${metrics.pendingTaskCount} 个`} />
+      <Metric label="当前路程" value={`${metrics.travelledDistance} 格`} />
+      <Metric label="当前冲突" value={`${metrics.activeConflictCount} 次`} />
+      <Metric label="已超期任务" value={`${metrics.liveDeadlineMissCount} 个`} />
+      <Metric label="重规划" value={`${metrics.replanTimeMs} ms`} />
+    </div>
+  );
+}
+
 function ReplanStatusPanel({
   status,
   robotStates,
@@ -1197,6 +1221,10 @@ function CoordinateInput({
       </button>
     </fieldset>
   );
+}
+
+export function OperationalErrorNotice({ message }: { message: string | null }) {
+  return message ? <p className="session-note">{message}</p> : null;
 }
 
 function EmptyState({ status, error }: { status: string; error: string | null }) {
@@ -1685,8 +1713,9 @@ export function buildLiveMetrics(
   result: DispatchResult,
   time: number,
   runtimeStates: SessionResult["taskStates"] | undefined,
-  metricsHistory?: SessionResult["metricsHistory"]
-): LiveMetrics {
+  metricsHistory?: SessionResult["metricsHistory"],
+  allowDerivedMetrics = true
+): LiveMetrics | null {
   const snapshots = buildTaskSnapshots(result, time, runtimeStates);
   const backendSnapshot = getVisibleMetricsHistory(metricsHistory, time).at(-1);
   if (backendSnapshot) {
@@ -1700,6 +1729,7 @@ export function buildLiveMetrics(
       replanTimeMs: backendSnapshot.replanTimeMs
     };
   }
+  if (!allowDerivedMetrics) return null;
   return {
     completedTaskCount: snapshots.filter((snapshot) => snapshot.status === "done").length,
     activeTaskCount: snapshots.filter((snapshot) => snapshot.status === "active").length,
