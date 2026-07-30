@@ -71,6 +71,19 @@ def write_fake_npm_shim(path: Path) -> None:
     )
 
 
+def write_non_native_failure_shim(path: Path) -> None:
+    path.write_text(
+        "\r\n".join(
+            [
+                '& $env:ComSpec /c exit 9',
+                'throw "injected non-native npm failure"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def run_test_all(
     shim_path: Path,
     log_path: Path,
@@ -132,15 +145,19 @@ def test_all_runs_complete_checks_in_order(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("failed_stage", "expected_log_lines"),
+    ("native_error_action_preference", "failed_stage", "expected_log_lines"),
     [
-        ("frontend:build", ["run frontend:build"]),
-        ("frontend:test", ["run frontend:build", "run frontend:test"]),
-        ("backend:test", ["run frontend:build", "run frontend:test", "run backend:test"]),
+        (False, "frontend:build", ["run frontend:build"]),
+        (False, "frontend:test", ["run frontend:build", "run frontend:test"]),
+        (False, "backend:test", ["run frontend:build", "run frontend:test", "run backend:test"]),
+        (True, "frontend:build", ["run frontend:build"]),
+        (True, "frontend:test", ["run frontend:build", "run frontend:test"]),
+        (True, "backend:test", ["run frontend:build", "run frontend:test", "run backend:test"]),
     ],
 )
 def test_all_stops_at_failed_check_and_propagates_exit_code(
     tmp_path: Path,
+    native_error_action_preference: bool,
     failed_stage: str,
     expected_log_lines: list[str],
 ) -> None:
@@ -152,11 +169,23 @@ def test_all_stops_at_failed_check_and_propagates_exit_code(
         shim_path,
         log_path,
         failed_stage,
-        native_error_action_preference=True,
+        native_error_action_preference=native_error_action_preference,
     )
 
     assert completed.returncode == 7
     assert log_path.read_text(encoding="utf-8").splitlines() == expected_log_lines
+
+
+def test_all_reraises_non_native_npm_failure_despite_stale_exit_code(tmp_path: Path) -> None:
+    shim_path = tmp_path / "fake-npm.ps1"
+    log_path = tmp_path / "npm.log"
+    write_non_native_failure_shim(shim_path)
+
+    completed = run_test_all(shim_path, log_path)
+
+    assert completed.returncode == 1
+    assert "injected non-native npm failure" in completed.stderr
+    assert not log_path.exists()
 
 
 def test_stop_scope_has_no_port_based_kill_path() -> None:

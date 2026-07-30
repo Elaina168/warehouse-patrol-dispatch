@@ -8,7 +8,7 @@ foreach ($scriptName in @("frontend:build", "frontend:test", "backend:test")) {
   try {
     & $npm run $scriptName
   } catch {
-    if ($LASTEXITCODE -ne 0) {
+    if ($_.Exception -is [System.Management.Automation.NativeCommandExitException]) {
       exit $LASTEXITCODE
     }
     throw
