@@ -4,6 +4,7 @@ import json
 import multiprocessing
 import re
 import time
+from pathlib import Path
 
 import pytest
 
@@ -774,6 +775,139 @@ def test_algorithm_benchmark_replaces_partial_report_and_removes_it_after_final(
 
     write_final_report(tmp_path, BenchmarkReport.create({}, [first_run, second_run]))
     assert partial_path.exists() is False
+
+
+def _install_final_report_publish_failure(
+    monkeypatch,
+    target_path: Path,
+) -> tuple[dict[str, bool], str]:
+    real_open = Path.open
+    real_replace = Path.replace
+    failure_message = f"{target_path.name} publish failed"
+    failure_state = {"raised": False}
+
+    def fail_direct_final_write(path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if Path(path) == target_path and "w" in mode:
+            failure_state["raised"] = True
+            raise OSError(failure_message)
+        return real_open(path, *args, **kwargs)
+
+    def fail_staged_final_publish(source, target):
+        if Path(target) == target_path and source.suffix == ".tmp":
+            failure_state["raised"] = True
+            raise OSError(failure_message)
+        return real_replace(source, target)
+
+    monkeypatch.setattr(Path, "open", fail_direct_final_write)
+    monkeypatch.setattr(Path, "replace", fail_staged_final_publish)
+    return failure_state, failure_message
+
+
+def _assert_no_final_report_transaction_files(output_path: Path) -> None:
+    assert not [
+        path
+        for path in output_path.iterdir()
+        if path.suffix in {".tmp", ".backup"}
+    ]
+
+
+def test_algorithm_final_report_rollback_on_runs_publish_failure_preserves_existing_bundle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    report = BenchmarkReport.create({}, [_benchmark_run("scale-r4-t15", 1)])
+    write_partial_report(tmp_path, report)
+    partial_path = tmp_path / "results.partial.json"
+    partial_content = partial_path.read_bytes()
+    original_files = {
+        "results.json": b"old results",
+        "runs.csv": b"old runs",
+        "case-summaries.csv": b"old summaries",
+    }
+    for file_name, content in original_files.items():
+        (tmp_path / file_name).write_bytes(content)
+
+    target_path = tmp_path / "runs.csv"
+    failure_state, failure_message = _install_final_report_publish_failure(
+        monkeypatch,
+        target_path,
+    )
+    with pytest.raises(OSError) as exc_info:
+        write_final_report(tmp_path, report)
+
+    assert failure_state["raised"] is True
+    assert failure_message in str(exc_info.value)
+    assert str(target_path.resolve()) in str(exc_info.value)
+    assert {
+        file_name: (tmp_path / file_name).read_bytes()
+        for file_name in original_files
+    } == original_files
+    assert partial_path.read_bytes() == partial_content
+    _assert_no_final_report_transaction_files(tmp_path)
+
+
+def test_algorithm_final_report_rollback_on_case_summaries_publish_failure_preserves_existing_bundle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    report = BenchmarkReport.create({}, [_benchmark_run("scale-r4-t15", 1)])
+    write_partial_report(tmp_path, report)
+    partial_path = tmp_path / "results.partial.json"
+    partial_content = partial_path.read_bytes()
+    original_files = {
+        "results.json": b"old results",
+        "runs.csv": b"old runs",
+        "case-summaries.csv": b"old summaries",
+    }
+    for file_name, content in original_files.items():
+        (tmp_path / file_name).write_bytes(content)
+
+    target_path = tmp_path / "case-summaries.csv"
+    failure_state, failure_message = _install_final_report_publish_failure(
+        monkeypatch,
+        target_path,
+    )
+    with pytest.raises(OSError) as exc_info:
+        write_final_report(tmp_path, report)
+
+    assert failure_state["raised"] is True
+    assert failure_message in str(exc_info.value)
+    assert str(target_path.resolve()) in str(exc_info.value)
+    assert {
+        file_name: (tmp_path / file_name).read_bytes()
+        for file_name in original_files
+    } == original_files
+    assert partial_path.read_bytes() == partial_content
+    _assert_no_final_report_transaction_files(tmp_path)
+
+
+def test_algorithm_final_report_rollback_on_case_summaries_publish_failure_exposes_no_bundle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    report = BenchmarkReport.create({}, [_benchmark_run("scale-r4-t15", 1)])
+    write_partial_report(tmp_path, report)
+    partial_path = tmp_path / "results.partial.json"
+    partial_content = partial_path.read_bytes()
+    target_path = tmp_path / "case-summaries.csv"
+    failure_state, failure_message = _install_final_report_publish_failure(
+        monkeypatch,
+        target_path,
+    )
+
+    with pytest.raises(OSError) as exc_info:
+        write_final_report(tmp_path, report)
+
+    assert failure_state["raised"] is True
+    assert failure_message in str(exc_info.value)
+    assert str(target_path.resolve()) in str(exc_info.value)
+    assert not any(
+        (tmp_path / file_name).exists()
+        for file_name in ("results.json", "runs.csv", "case-summaries.csv")
+    )
+    assert partial_path.read_bytes() == partial_content
+    _assert_no_final_report_transaction_files(tmp_path)
 
 
 @pytest.mark.parametrize(
