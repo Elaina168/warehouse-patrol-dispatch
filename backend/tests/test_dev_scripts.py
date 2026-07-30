@@ -9,6 +9,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_PWSH = REPOSITORY_ROOT / ".tools" / "powershell" / "pwsh.exe"
 MANIFEST_HELPER = REPOSITORY_ROOT / "scripts" / "dev-process-manifest.ps1"
 STOP_SCRIPT = REPOSITORY_ROOT / "scripts" / "stop-dev.ps1"
+START_SCRIPT = REPOSITORY_ROOT / "scripts" / "start-dev.ps1"
 
 
 def run_powershell(script: str) -> dict[str, object]:
@@ -27,6 +28,27 @@ def run_powershell(script: str) -> dict[str, object]:
         encoding="utf-8",
     )
     return json.loads(completed.stdout)
+
+
+def run_powershell_marked_result(script: str) -> dict[str, object]:
+    completed = subprocess.run(
+        [
+            str(PROJECT_PWSH),
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            script,
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    for line in reversed(completed.stdout.splitlines()):
+        if line.startswith("RESULT:"):
+            return json.loads(line.removeprefix("RESULT:"))
+    raise AssertionError(f"PowerShell did not emit a marked result:\n{completed.stdout}")
 
 
 def test_stop_scope_has_no_port_based_kill_path() -> None:
@@ -108,4 +130,200 @@ try {{
         "failedEntries": 1,
         "successfulCalls": 1,
         "successfulEntries": 0,
+    }
+
+
+def test_start_lifecycle_records_started_processes_and_cleans_them_up() -> None:
+    result = run_powershell_marked_result(
+        f"""
+. '{MANIFEST_HELPER}'
+$manifestPath = Join-Path ([System.IO.Path]::GetTempPath()) ("dev-processes-" + [guid]::NewGuid().ToString() + ".json")
+$startedRoles = [System.Collections.Generic.List[string]]::new()
+$stoppedProcessIds = [System.Collections.Generic.List[int]]::new()
+$recordedEntries = [System.Collections.Generic.List[object]]::new()
+$currentProcess = Get-Process -Id $PID
+$startedAtUtc = $currentProcess.StartTime.ToUniversalTime().ToString('O')
+
+try {{
+  $hooks = @{{
+    ManifestPath = $manifestPath
+    StopCallback = {{
+      param($processId)
+      $stoppedProcessIds.Add($processId)
+      foreach ($entry in @((Read-DevProcessManifest -ManifestPath $manifestPath).processes)) {{
+        $recordedEntries.Add([pscustomobject]@{{
+          role = $entry.role
+          pid = $entry.pid
+          startedAtUtc = $entry.startedAtUtc
+        }})
+      }}
+    }}
+    TestLocalPortOccupied = {{ param($port) $false }}
+    TestHttpReady = {{ param($url) $true }}
+    StartManagedProcess = {{
+      param($role, $filePath, $arguments, $workingDirectory)
+      $startedRoles.Add($role)
+      [pscustomobject]@{{ Id = $PID }}
+    }}
+    ExitAfterStartup = $true
+  }}
+
+  & '{START_SCRIPT}' -NoBrowser -TestHooks $hooks
+  $remainingEntries = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
+  Write-Output ("RESULT:" + ([ordered]@{{
+    roles = @($startedRoles)
+    stoppedProcessIds = @($stoppedProcessIds)
+    recordedEntries = @($recordedEntries)
+    currentPid = $PID
+    startedAtUtc = $startedAtUtc
+    remainingEntries = $remainingEntries
+  }} | ConvertTo-Json -Depth 4 -Compress))
+}} finally {{
+  foreach ($path in @($manifestPath, "$manifestPath.tmp")) {{
+    if (Test-Path -LiteralPath $path) {{
+      Remove-Item -LiteralPath $path -Force
+    }}
+  }}
+}}
+"""
+    )
+
+    assert result["roles"] == ["backend", "frontend"]
+    assert result["stoppedProcessIds"] == [result["currentPid"], result["currentPid"]]
+    assert result["remainingEntries"] == 0
+    assert result["recordedEntries"] == [
+        {"role": "backend", "pid": result["currentPid"], "startedAtUtc": result["startedAtUtc"]},
+        {"role": "frontend", "pid": result["currentPid"], "startedAtUtc": result["startedAtUtc"]},
+        {"role": "backend", "pid": result["currentPid"], "startedAtUtc": result["startedAtUtc"]},
+        {"role": "frontend", "pid": result["currentPid"], "startedAtUtc": result["startedAtUtc"]},
+    ]
+
+
+def test_start_reuses_compatible_backend_without_recording_or_stopping_it() -> None:
+    result = run_powershell_marked_result(
+        f"""
+. '{MANIFEST_HELPER}'
+$manifestPath = Join-Path ([System.IO.Path]::GetTempPath()) ("dev-processes-" + [guid]::NewGuid().ToString() + ".json")
+$startedRoles = [System.Collections.Generic.List[string]]::new()
+$stoppedRoles = [System.Collections.Generic.List[string]]::new()
+
+try {{
+  $hooks = @{{
+    ManifestPath = $manifestPath
+    StopCallback = {{
+      param($processId)
+      foreach ($entry in @((Read-DevProcessManifest -ManifestPath $manifestPath).processes | Where-Object {{ $_.pid -eq $processId }})) {{
+        $stoppedRoles.Add($entry.role)
+      }}
+    }}
+    TestLocalPortOccupied = {{ param($port) $port -eq 8011 }}
+    TestBackendCompatible = {{ param($port) $true }}
+    TestHttpReady = {{ param($url) $true }}
+    StartManagedProcess = {{
+      param($role, $filePath, $arguments, $workingDirectory)
+      $startedRoles.Add($role)
+      [pscustomobject]@{{ Id = $PID }}
+    }}
+    ExitAfterStartup = $true
+  }}
+
+  & '{START_SCRIPT}' -NoBrowser -TestHooks $hooks
+  Write-Output ("RESULT:" + ([ordered]@{{
+    startedRoles = @($startedRoles)
+    stoppedRoles = @($stoppedRoles)
+  }} | ConvertTo-Json -Compress))
+}} finally {{
+  foreach ($path in @($manifestPath, "$manifestPath.tmp")) {{
+    if (Test-Path -LiteralPath $path) {{
+      Remove-Item -LiteralPath $path -Force
+    }}
+  }}
+}}
+"""
+    )
+
+    assert result == {"startedRoles": ["frontend"], "stoppedRoles": ["frontend"]}
+
+
+def test_start_rejects_occupied_frontend_without_stopping_processes() -> None:
+    result = run_powershell_marked_result(
+        f"""
+$manifestPath = Join-Path ([System.IO.Path]::GetTempPath()) ("dev-processes-" + [guid]::NewGuid().ToString() + ".json")
+$startedRoles = [System.Collections.Generic.List[string]]::new()
+$stopCalls = [System.Collections.Generic.List[int]]::new()
+
+try {{
+  $hooks = @{{
+    ManifestPath = $manifestPath
+    StopCallback = {{ param($processId) $stopCalls.Add($processId) }}
+    TestLocalPortOccupied = {{ param($port) $true }}
+    TestBackendCompatible = {{ param($port) $true }}
+    StartManagedProcess = {{ param($role, $filePath, $arguments, $workingDirectory) $startedRoles.Add($role) }}
+  }}
+  try {{
+    & '{START_SCRIPT}' -NoBrowser -TestHooks $hooks
+  }} catch {{
+    $errorMessage = $_.Exception.Message
+  }}
+  Write-Output ("RESULT:" + ([ordered]@{{
+    errorMessage = $errorMessage
+    startedRoles = @($startedRoles)
+    stopCalls = @($stopCalls)
+  }} | ConvertTo-Json -Compress))
+}} finally {{
+  foreach ($path in @($manifestPath, "$manifestPath.tmp")) {{
+    if (Test-Path -LiteralPath $path) {{
+      Remove-Item -LiteralPath $path -Force
+    }}
+  }}
+}}
+"""
+    )
+
+    assert result == {
+        "errorMessage": "Frontend port 5174 is occupied. Close the process using this port before starting the frontend.",
+        "startedRoles": [],
+        "stopCalls": [],
+    }
+
+
+def test_start_rejects_incompatible_backend_without_stopping_processes() -> None:
+    result = run_powershell_marked_result(
+        f"""
+$manifestPath = Join-Path ([System.IO.Path]::GetTempPath()) ("dev-processes-" + [guid]::NewGuid().ToString() + ".json")
+$startedRoles = [System.Collections.Generic.List[string]]::new()
+$stopCalls = [System.Collections.Generic.List[int]]::new()
+
+try {{
+  $hooks = @{{
+    ManifestPath = $manifestPath
+    StopCallback = {{ param($processId) $stopCalls.Add($processId) }}
+    TestLocalPortOccupied = {{ param($port) $port -eq 8011 }}
+    TestBackendCompatible = {{ param($port) $false }}
+    StartManagedProcess = {{ param($role, $filePath, $arguments, $workingDirectory) $startedRoles.Add($role) }}
+  }}
+  try {{
+    & '{START_SCRIPT}' -NoBrowser -TestHooks $hooks
+  }} catch {{
+    $errorMessage = $_.Exception.Message
+  }}
+  Write-Output ("RESULT:" + ([ordered]@{{
+    errorMessage = $errorMessage
+    startedRoles = @($startedRoles)
+    stopCalls = @($stopCalls)
+  }} | ConvertTo-Json -Compress))
+}} finally {{
+  foreach ($path in @($manifestPath, "$manifestPath.tmp")) {{
+    if (Test-Path -LiteralPath $path) {{
+      Remove-Item -LiteralPath $path -Force
+    }}
+  }}
+}}
+"""
+    )
+
+    assert result == {
+        "errorMessage": "Backend port 8011 is occupied by an incompatible service. Close the process using this port before starting the project.",
+        "startedRoles": [],
+        "stopCalls": [],
     }

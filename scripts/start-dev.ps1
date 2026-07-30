@@ -1,6 +1,7 @@
 param(
   [switch]$NoBrowser,
-  [switch]$ValidateOnly
+  [switch]$ValidateOnly,
+  [hashtable]$TestHooks
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,12 +27,43 @@ if ($ValidateOnly) {
   exit 0
 }
 
-Stop-RecordedProcessTree
+function Invoke-RecordedProcessCleanup {
+  if ($TestHooks -and $TestHooks.ContainsKey("ManifestPath")) {
+    if ($TestHooks.ContainsKey("StopCallback")) {
+      Stop-RecordedProcessTree -ManifestPath $TestHooks.ManifestPath -StopCallback $TestHooks.StopCallback
+      return
+    }
+    Stop-RecordedProcessTree -ManifestPath $TestHooks.ManifestPath
+    return
+  }
 
-$startedProcesses = New-Object System.Collections.Generic.List[System.Diagnostics.Process]
+  Stop-RecordedProcessTree
+}
+
+function Add-StartedProcessToManifest {
+  param(
+    [string]$Role,
+    [int]$ProcessId
+  )
+
+  if ($TestHooks -and $TestHooks.ContainsKey("ManifestPath")) {
+    Add-DevProcessManifestEntry -Role $Role -ProcessId $ProcessId -ManifestPath $TestHooks.ManifestPath
+    return
+  }
+
+  Add-DevProcessManifestEntry -Role $Role -ProcessId $ProcessId
+}
+
+Invoke-RecordedProcessCleanup
+
+$startedProcesses = New-Object System.Collections.Generic.List[object]
 
 function Test-HttpReady {
   param([string]$Url)
+
+  if ($TestHooks -and $TestHooks.ContainsKey("TestHttpReady")) {
+    return & $TestHooks.TestHttpReady $Url
+  }
 
   try {
     $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 2
@@ -44,6 +76,10 @@ function Test-HttpReady {
 function Test-BackendCompatible {
   param([int]$Port)
 
+  if ($TestHooks -and $TestHooks.ContainsKey("TestBackendCompatible")) {
+    return & $TestHooks.TestBackendCompatible $Port
+  }
+
   try {
     $openapi = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/openapi.json" -TimeoutSec 2
     return $openapi.Content.Contains("/api/sessions")
@@ -54,6 +90,10 @@ function Test-BackendCompatible {
 
 function Test-LocalPortOccupied {
   param([int]$Port)
+
+  if ($TestHooks -and $TestHooks.ContainsKey("TestLocalPortOccupied")) {
+    return & $TestHooks.TestLocalPortOccupied $Port
+  }
 
   $client = [System.Net.Sockets.TcpClient]::new()
   try {
@@ -76,6 +116,17 @@ function Start-ManagedProcess {
     [string]$Arguments,
     [string]$WorkingDirectory
   )
+
+  if ($TestHooks -and $TestHooks.ContainsKey("StartManagedProcess")) {
+    $process = & $TestHooks.StartManagedProcess $Name $FilePath $Arguments $WorkingDirectory
+    if ($null -eq $process) {
+      throw "Failed to start $Name."
+    }
+    $startedProcesses.Add($process)
+    Add-StartedProcessToManifest -Role $Name -ProcessId $process.Id
+    Write-Host "$Name started. PID=$($process.Id)"
+    return
+  }
 
   $psi = [System.Diagnostics.ProcessStartInfo]::new()
   $psi.FileName = $FilePath
@@ -106,13 +157,13 @@ function Start-ManagedProcess {
   $process.BeginOutputReadLine()
   $process.BeginErrorReadLine()
   $startedProcesses.Add($process)
-  Add-DevProcessManifestEntry -Role $Name -ProcessId $process.Id
+  Add-StartedProcessToManifest -Role $Name -ProcessId $process.Id
   Write-Host "$Name started. PID=$($process.Id)"
 }
 
 function Stop-StartedProcesses {
   if ($startedProcesses.Count -gt 0) {
-    Stop-RecordedProcessTree
+    Invoke-RecordedProcessCleanup
   }
 }
 
@@ -180,6 +231,10 @@ try {
   Write-Host "Frontend: $frontendUrl"
   Write-Host "Backend:  $backendHealthUrl"
   Write-Host "Press Ctrl+C in this terminal to stop both services."
+
+  if ($TestHooks -and $TestHooks.ContainsKey("ExitAfterStartup") -and $TestHooks.ExitAfterStartup) {
+    return
+  }
 
   while ($true) {
     foreach ($process in $startedProcesses) {
