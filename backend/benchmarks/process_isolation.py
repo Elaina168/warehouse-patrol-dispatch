@@ -150,6 +150,7 @@ def run_isolated_process(
     process_started = False
     execution: IsolatedExecution | None = None
     parent_error: tuple[str, str, str] | None = None
+    pending_exception: BaseException | None = None
     try:
         pickle.dumps((worker_callable, worker_args))
         context = multiprocessing.get_context("spawn")
@@ -196,18 +197,24 @@ def run_isolated_process(
                 raise ValueError("子进程返回了未知的隔离执行结果载荷")
     except Exception as exc:
         parent_error = (type(exc).__name__, str(exc), traceback.format_exc())
-
-    try:
-        _cleanup_isolated_resources(
-            process,
-            (parent_connection, child_connection),
-            process_started=process_started,
-            force_stop=execution is None or execution.outcome == "timeout",
-        )
-    except BenchmarkInfrastructureError:
-        if parent_error is not None:
-            _write_traceback(parent_error[2])
-        raise
+    except BaseException as exc:
+        pending_exception = exc
+    finally:
+        try:
+            _cleanup_isolated_resources(
+                process,
+                (parent_connection, child_connection),
+                process_started=process_started,
+                force_stop=execution is None or execution.outcome == "timeout",
+            )
+        except BenchmarkInfrastructureError as cleanup_error:
+            if parent_error is not None:
+                _write_traceback(parent_error[2])
+            if pending_exception is not None:
+                raise cleanup_error from pending_exception
+            raise
+    if pending_exception is not None:
+        raise pending_exception
     if parent_error is not None:
         _write_traceback(parent_error[2])
         return IsolatedExecution(

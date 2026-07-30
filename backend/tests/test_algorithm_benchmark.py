@@ -8,6 +8,7 @@ import time
 import pytest
 
 from backend.benchmarks import algorithm_boundary as algorithm_boundary_module
+from backend.benchmarks import process_isolation as process_isolation_module
 from backend.benchmarks import runner as runner_module
 from backend.benchmarks.algorithm_boundary import main, parse_args
 from backend.benchmarks.reporting import write_final_report, write_partial_report
@@ -44,12 +45,118 @@ class _UnpicklableBenchmarkWorker:
         raise RuntimeError("worker serialization failed")
 
 
+class _InterruptingConnection:
+    def __init__(self, exception: BaseException) -> None:
+        self._exception = exception
+        self.closed = False
+
+    def poll(self, timeout_seconds: float) -> bool:
+        raise self._exception
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _CleanlyStoppingProcess:
+    def __init__(self, *args, **kwargs) -> None:
+        self.terminate_called = False
+        self.join_called = False
+        self.closed = False
+        self._alive = True
+
+    def start(self) -> None:
+        pass
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    def terminate(self) -> None:
+        self.terminate_called = True
+        self._alive = False
+
+    def join(self, timeout_seconds: float) -> None:
+        self.join_called = True
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _InterruptingContext:
+    def __init__(self, parent_connection, child_connection, process) -> None:
+        self._parent_connection = parent_connection
+        self._child_connection = child_connection
+        self._process = process
+
+    def Pipe(self, *, duplex: bool):
+        assert duplex is False
+        return self._parent_connection, self._child_connection
+
+    def Process(self, **kwargs):
+        return self._process
+
+
 def _active_child_pids() -> set[int]:
     return {
         process.pid
         for process in multiprocessing.active_children()
         if process.pid is not None
     }
+
+
+def test_isolated_algorithm_benchmark_cleans_resources_on_keyboard_interrupt(
+    monkeypatch,
+) -> None:
+    cancellation = KeyboardInterrupt("stop benchmark")
+    parent_connection = _InterruptingConnection(cancellation)
+    child_connection = _InterruptingConnection(cancellation)
+    process = _CleanlyStoppingProcess()
+    context = _InterruptingContext(parent_connection, child_connection, process)
+    monkeypatch.setattr(
+        process_isolation_module.multiprocessing,
+        "get_context",
+        lambda method: context,
+    )
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        process_isolation_module.run_isolated_process(
+            _sleeping_benchmark_worker,
+            ("scale-r4-t15", 1),
+            5,
+        )
+
+    assert raised.value is cancellation
+    assert process.terminate_called
+    assert process.join_called
+    assert parent_connection.closed
+    assert child_connection.closed
+
+
+def test_isolated_algorithm_benchmark_cleans_resources_on_system_exit(
+    monkeypatch,
+) -> None:
+    cancellation = SystemExit("stop benchmark")
+    parent_connection = _InterruptingConnection(cancellation)
+    child_connection = _InterruptingConnection(cancellation)
+    process = _CleanlyStoppingProcess()
+    context = _InterruptingContext(parent_connection, child_connection, process)
+    monkeypatch.setattr(
+        process_isolation_module.multiprocessing,
+        "get_context",
+        lambda method: context,
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        process_isolation_module.run_isolated_process(
+            _sleeping_benchmark_worker,
+            ("scale-r4-t15", 1),
+            5,
+        )
+
+    assert raised.value is cancellation
+    assert process.terminate_called
+    assert process.join_called
+    assert parent_connection.closed
+    assert child_connection.closed
 
 
 def _benchmark_run(case_id: str, run_index: int, **updates) -> BenchmarkRun:

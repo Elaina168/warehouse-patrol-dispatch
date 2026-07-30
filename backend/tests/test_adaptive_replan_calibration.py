@@ -17,6 +17,7 @@ from backend.app.sessions import list_sessions
 from backend.app.validation import validate_scenario
 from backend.benchmarks import adaptive_runner as adaptive_runner_module
 from backend.benchmarks import adaptive_reporting as adaptive_reporting_module
+from backend.benchmarks import process_isolation as process_isolation_module
 from backend.benchmarks import (
     adaptive_replan_calibration as cli_module,
 )
@@ -57,6 +58,82 @@ from backend.benchmarks.scenarios import (
     benchmark_cases,
     build_benchmark_scenario,
 )
+
+
+class _CancellationConnection:
+    def __init__(self, cancellation: BaseException) -> None:
+        self._cancellation = cancellation
+        self.closed = False
+
+    def poll(self, timeout_seconds: float) -> bool:
+        raise self._cancellation
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _UnstoppableProcess:
+    def __init__(self, *args, **kwargs) -> None:
+        self.terminate_called = False
+        self.kill_called = False
+
+    def start(self) -> None:
+        pass
+
+    def is_alive(self) -> bool:
+        return True
+
+    def terminate(self) -> None:
+        self.terminate_called = True
+
+    def kill(self) -> None:
+        self.kill_called = True
+
+    def join(self, timeout_seconds: float) -> None:
+        pass
+
+
+class _CancellationContext:
+    def __init__(self, parent_connection, child_connection, process) -> None:
+        self._parent_connection = parent_connection
+        self._child_connection = child_connection
+        self._process = process
+
+    def Pipe(self, *, duplex: bool):
+        assert duplex is False
+        return self._parent_connection, self._child_connection
+
+    def Process(self, **kwargs):
+        return self._process
+
+
+def test_isolated_adaptive_cancellation_cleanup_failure_takes_precedence(
+    monkeypatch,
+) -> None:
+    cancellation = KeyboardInterrupt("stop calibration")
+    parent_connection = _CancellationConnection(cancellation)
+    child_connection = _CancellationConnection(cancellation)
+    process = _UnstoppableProcess()
+    context = _CancellationContext(parent_connection, child_connection, process)
+    monkeypatch.setattr(
+        process_isolation_module.multiprocessing,
+        "get_context",
+        lambda method: context,
+    )
+
+    with pytest.raises(BaseException) as raised:
+        process_isolation_module.run_isolated_process(
+            build_calibration_runtime_task,
+            (),
+            5,
+        )
+
+    assert isinstance(raised.value, BenchmarkInfrastructureError)
+    assert raised.value.__context__ is cancellation or raised.value.__cause__ is cancellation
+    assert process.terminate_called
+    assert process.kill_called
+    assert parent_connection.closed
+    assert child_connection.closed
 
 
 def _public_robot_positions(
