@@ -118,6 +118,61 @@ def test_scenario_charge_time_limit_accepts_10000_and_rejects_10001() -> None:
         schemas.Scenario.model_validate({**payload, "chargeTime": 10_001})
 
 
+def test_session_time_fields_accept_10000_and_reject_10001() -> None:
+    task_payload = _inspection_task(0)
+    scenario = scenario_payload()
+
+    assert schemas.Task.model_validate(
+        {**task_payload, "releaseTime": 10_000}
+    ).releaseTime == 10_000
+    with pytest.raises(ValidationError):
+        schemas.Task.model_validate({**task_payload, "releaseTime": 10_001})
+
+    scenario["dynamic"]["triggerTime"] = 10_000
+    assert schemas.Scenario.model_validate(scenario).dynamic.triggerTime == 10_000
+    scenario["dynamic"]["triggerTime"] = 10_001
+    with pytest.raises(ValidationError):
+        schemas.Scenario.model_validate(scenario)
+
+
+def test_session_apis_reject_release_time_above_session_limit() -> None:
+    client = TestClient(app)
+    invalid_scenario = scenario_payload()
+    invalid_scenario["tasks"][0]["releaseTime"] = 10_001
+
+    create_response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": invalid_scenario,
+            "options": {"avoidConflicts": True, "includeDynamic": True},
+        },
+    )
+    assert create_response.status_code == 422
+
+    valid_response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": scenario_payload(),
+            "options": {"avoidConflicts": True, "includeDynamic": True},
+        },
+    )
+    assert valid_response.status_code == 200
+    session_id = valid_response.json()["sessionId"]
+    add_response = client.post(
+        f"/api/sessions/{session_id}/tasks",
+        json={
+            "task": {
+                **_inspection_task(99),
+                "releaseTime": 10_001,
+            }
+        },
+    )
+
+    assert add_response.status_code == 422
+    payload = client.get(f"/api/sessions/{session_id}").json()
+    assert all(task["id"] != "L99" for task in payload["result"]["tasks"])
+
+
 def test_replan_window_experiment_batch_limit_accepts_1_and_32() -> None:
     payload = {
         "scenario": scenario_payload(),

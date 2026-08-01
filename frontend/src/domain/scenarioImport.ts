@@ -8,6 +8,7 @@ export const MAX_SCENARIO_TASKS = 128;
 export const MAX_TASK_TARGETS = 64;
 export const MAX_TASK_SERVICE_TIME = 10_000;
 export const MAX_SCENARIO_CHARGE_TIME = 10_000;
+export const MAX_SESSION_CURRENT_TIME = 10_000;
 
 type ImportedShelf = Omit<Shelf, "initialOccupied"> & {
   initialOccupied?: boolean;
@@ -120,7 +121,7 @@ function isCapabilityList(value: unknown): value is TaskType[] {
 
 function isDynamicEvent(value: unknown): value is Scenario["dynamic"] {
   return isRecord(value)
-    && isIntegerInRange(value.triggerTime, 0, Number.POSITIVE_INFINITY)
+    && isIntegerInRange(value.triggerTime, 0, MAX_SESSION_CURRENT_TIME)
     && Array.isArray(value.blockedCells)
     && value.blockedCells.length <= MAX_SCENARIO_CELL_COUNT
     && value.blockedCells.every(isCell)
@@ -137,7 +138,7 @@ function isTask(value: unknown): value is Task {
     || !isString(value.id)
     || !isString(value.title)
     || !isIntegerInRange(value.priority, 0, 5)
-    || !isNullableOptionalInteger(value.releaseTime, 0, Number.POSITIVE_INFINITY)
+    || !isNullableOptionalInteger(value.releaseTime, 0, MAX_SESSION_CURRENT_TIME)
     || !isNullableOptionalInteger(value.deadline, 0, Number.POSITIVE_INFINITY)
     || !isNullableOptionalInteger(value.serviceTime, 0, MAX_TASK_SERVICE_TIME)
     || !isNullableOptionalCell(value.pickup)

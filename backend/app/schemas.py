@@ -9,6 +9,7 @@ from backend.app.limits import (
     MAX_SCENARIO_CELL_COUNT,
     MAX_SCENARIO_ROBOTS,
     MAX_SCENARIO_TASKS,
+    MAX_SESSION_CURRENT_TIME,
     MAX_TASK_SERVICE_TIME,
     MAX_TASK_TARGETS,
 )
@@ -16,6 +17,7 @@ from backend.app.limits import (
 Cell = tuple[int, int]
 NonNegativeInt = Annotated[int, Field(ge=0)]
 PositiveInt = Annotated[int, Field(gt=0)]
+SessionTimeInt = Annotated[int, Field(ge=0, le=MAX_SESSION_CURRENT_TIME)]
 TaskServiceTimeInt = Annotated[int, Field(ge=0, le=MAX_TASK_SERVICE_TIME)]
 ChargeTimeInt = Annotated[int, Field(ge=1, le=MAX_SCENARIO_CHARGE_TIME)]
 ScenarioAxisInt = Annotated[int, Field(gt=0, le=MAX_SCENARIO_AXIS_LENGTH)]
@@ -46,7 +48,7 @@ class Task(ApiModel):
     type: TaskType
     title: str
     priority: PriorityInt
-    releaseTime: NonNegativeInt | None = None
+    releaseTime: SessionTimeInt | None = None
     deadline: NonNegativeInt | None = None
     serviceTime: TaskServiceTimeInt | None = None
     targets: list[Cell] | None = Field(default=None, max_length=MAX_TASK_TARGETS)
@@ -76,7 +78,7 @@ class Robot(ApiModel):
 
 
 class DynamicEvent(ApiModel):
-    triggerTime: NonNegativeInt
+    triggerTime: SessionTimeInt
     blockedCells: list[Cell] = Field(max_length=MAX_SCENARIO_CELL_COUNT)
     failedRobots: list[str] = Field(max_length=MAX_SCENARIO_ROBOTS)
     tasks: list[Task] = Field(max_length=MAX_SCENARIO_TASKS)

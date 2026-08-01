@@ -112,6 +112,16 @@ describe("scenario import contract", () => {
     expect(() => parseScenario(scenario)).toThrow("JSON 必须是 Scenario 对象");
   });
 
+  it("rejects release and dynamic trigger times above the session limit", () => {
+    const lateTask = structuredClone(buildScenario());
+    lateTask.tasks[0].releaseTime = 10_001;
+    expect(() => parseScenario(lateTask)).toThrow("JSON 必须是 Scenario 对象");
+
+    const lateDynamic = structuredClone(buildScenario());
+    lateDynamic.dynamic.triggerTime = 10_001;
+    expect(() => parseScenario(lateDynamic)).toThrow("JSON 必须是 Scenario 对象");
+  });
+
   it.each(["width", "height"] as const)("rejects %s above 64", (axis) => {
     const scenario = buildScenario();
     scenario[axis] = 65;

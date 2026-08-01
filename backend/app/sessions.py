@@ -11,7 +11,11 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from backend.app.limits import MAX_PLANNED_PATH_TICKS, MAX_SCENARIO_TASKS
+from backend.app.limits import (
+    MAX_PLANNED_PATH_TICKS,
+    MAX_SCENARIO_TASKS,
+    MAX_SESSION_CURRENT_TIME,
+)
 from backend.app.dispatch import (
     ASSIGNMENT_REPLAN_WINDOW,
     astar,
@@ -81,7 +85,6 @@ SESSION_TTL_SECONDS = 60 * 60
 MAX_SESSIONS = 50
 MAX_METRICS_HISTORY_SNAPSHOTS = 600
 MAX_SESSION_EVENT_NOTES = 120
-MAX_SESSION_CURRENT_TIME = 10_000
 MAX_SESSION_TASKS = MAX_SCENARIO_TASKS
 
 
