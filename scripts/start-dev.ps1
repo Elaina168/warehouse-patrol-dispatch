@@ -188,8 +188,40 @@ function Start-ManagedProcess {
 }
 
 function Stop-StartedProcesses {
-  if ($startedProcesses.Count -gt 0) {
+  if ($startedProcesses.Count -eq 0) {
+    return
+  }
+
+  $cleanupErrors = [System.Collections.Generic.List[Exception]]::new()
+  try {
     Invoke-RecordedProcessCleanup
+  } catch {
+    $cleanupErrors.Add($_.Exception)
+  }
+
+  foreach ($process in $startedProcesses) {
+    if ($null -eq $process) {
+      continue
+    }
+    try {
+      if ($TestHooks -and $TestHooks.ContainsKey("StopOwnedProcess")) {
+        & $TestHooks.StopOwnedProcess $process
+      } elseif ($process -is [System.Diagnostics.Process]) {
+        Stop-NewlyStartedProcessTree -Process $process
+      }
+    } catch {
+      $cleanupErrors.Add($_.Exception)
+    }
+  }
+
+  if ($cleanupErrors.Count -eq 1) {
+    throw $cleanupErrors[0]
+  }
+  if ($cleanupErrors.Count -gt 1) {
+    throw [AggregateException]::new(
+      "Failed to clean up one or more started development processes.",
+      [Exception[]]@($cleanupErrors)
+    )
   }
 }
 

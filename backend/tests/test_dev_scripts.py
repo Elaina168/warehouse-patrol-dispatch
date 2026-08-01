@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -230,31 +231,77 @@ $mismatched = [pscustomobject]@{{ role = 'test'; pid = $PID; startedAtUtc = '200
 
 try {{
   $called = [System.Collections.Generic.List[int]]::new()
+  $state = [pscustomobject]@{{
+    allProcessObjects = $true
+    failedProcess = $null
+    successfulProcess = $null
+  }}
   Write-DevProcessManifest -Manifest ([pscustomobject]@{{ version = 1; processes = @($mismatched) }}) -ManifestPath $manifestPath
-  Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{ param($processId) $called.Add($processId) }}
+  Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{
+    param($ownedProcess)
+    $state.allProcessObjects = $state.allProcessObjects -and ($ownedProcess -is [System.Diagnostics.Process])
+    if ($ownedProcess -is [System.Diagnostics.Process]) {{
+      $called.Add($ownedProcess.Id)
+    }}
+  }}
   $mismatchedCalls = @($called).Count
   $mismatchedEntries = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
 
   Write-DevProcessManifest -Manifest ([pscustomobject]@{{ version = 1; processes = @($matching) }}) -ManifestPath $manifestPath
   $failureDiagnostics = @(
-    Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{ param($processId) throw "injected failure for $processId" }} 3>&1 |
+    Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{
+      param($ownedProcess)
+      $state.allProcessObjects = $state.allProcessObjects -and ($ownedProcess -is [System.Diagnostics.Process])
+      if ($ownedProcess -is [System.Diagnostics.Process]) {{
+        $state.failedProcess = $ownedProcess
+        throw "injected failure for $($ownedProcess.Id)"
+      }}
+      throw "injected failure for $ownedProcess"
+    }} 3>&1 |
       ForEach-Object {{ $_.Message }}
   )
   $failedEntries = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
 
   Write-DevProcessManifest -Manifest ([pscustomobject]@{{ version = 1; processes = @($matching) }}) -ManifestPath $manifestPath
-  Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{ param($processId) $called.Add($processId) }}
+  Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{
+    param($ownedProcess)
+    $state.allProcessObjects = $state.allProcessObjects -and ($ownedProcess -is [System.Diagnostics.Process])
+    if ($ownedProcess -is [System.Diagnostics.Process]) {{
+      $state.successfulProcess = $ownedProcess
+      $called.Add($ownedProcess.Id)
+    }}
+  }}
   $successfulCalls = @($called).Count
   $successfulEntries = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
 
+  $failedProcessClosed = if ($null -eq $state.failedProcess) {{
+    $false
+  }} else {{
+    try {{
+      $handle = $state.failedProcess.SafeHandle
+      $null -eq $handle -or $handle.IsClosed
+    }} catch {{ $true }}
+  }}
+  $successfulProcessClosed = if ($null -eq $state.successfulProcess) {{
+    $false
+  }} else {{
+    try {{
+      $handle = $state.successfulProcess.SafeHandle
+      $null -eq $handle -or $handle.IsClosed
+    }} catch {{ $true }}
+  }}
+
   [ordered]@{{
+    allProcessObjects = $state.allProcessObjects
     mismatchedCalls = $mismatchedCalls
     mismatchedEntries = $mismatchedEntries
     failedEntries = $failedEntries
+    failedProcessClosed = $failedProcessClosed
     failureDiagnostics = @($failureDiagnostics)
     currentPid = $PID
     successfulCalls = $successfulCalls
     successfulEntries = $successfulEntries
+    successfulProcessClosed = $successfulProcessClosed
   }} | ConvertTo-Json -Compress
 }} finally {{
   foreach ($path in @($manifestPath, "$manifestPath.tmp")) {{
@@ -267,15 +314,18 @@ try {{
     )
 
     assert result == {
+        "allProcessObjects": True,
         "mismatchedCalls": 0,
         "mismatchedEntries": 1,
         "failedEntries": 1,
+        "failedProcessClosed": True,
         "failureDiagnostics": [
             f"Failed to stop recorded development process role=test pid={result['currentPid']}: injected failure for {result['currentPid']}"
         ],
         "currentPid": result["currentPid"],
         "successfulCalls": 1,
         "successfulEntries": 0,
+        "successfulProcessClosed": True,
     }
 
 
@@ -289,7 +339,7 @@ $absent = [pscustomobject]@{{ role = 'stale'; pid = 2147483647; startedAtUtc = '
 try {{
   $called = [System.Collections.Generic.List[int]]::new()
   Write-DevProcessManifest -Manifest ([pscustomobject]@{{ version = 1; processes = @($absent) }}) -ManifestPath $manifestPath
-  Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{ param($processId) $called.Add($processId) }}
+  Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{ param($ownedProcess) $called.Add($ownedProcess.Id) }}
   [ordered]@{{
     stopCalls = @($called).Count
     remainingEntries = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
@@ -307,6 +357,359 @@ try {{
     assert result == {"stopCalls": 0, "remainingEntries": 0}
 
 
+def test_manifest_descendant_capture_holds_exact_process_handles(tmp_path: Path) -> None:
+    leaf_script = tmp_path / "leaf.ps1"
+    child_script = tmp_path / "child.ps1"
+    root_script = tmp_path / "root.ps1"
+    child_pid_path = tmp_path / "child.pid"
+    grandchild_pid_path = tmp_path / "grandchild.pid"
+    leaf_script.write_text("Start-Sleep -Seconds 60\n", encoding="utf-8")
+    child_script.write_text(
+        """
+param([string]$LeafPath, [string]$GrandchildPidPath)
+$grandchild = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') `
+  -ArgumentList @('-NoLogo', '-NoProfile', '-File', $LeafPath) `
+  -WindowStyle Hidden `
+  -PassThru
+[System.IO.File]::WriteAllText($GrandchildPidPath, [string]$grandchild.Id, [System.Text.Encoding]::UTF8)
+$grandchild.WaitForExit()
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    root_script.write_text(
+        """
+param(
+  [string]$ChildPath,
+  [string]$LeafPath,
+  [string]$ChildPidPath,
+  [string]$GrandchildPidPath
+)
+$child = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') `
+  -ArgumentList @(
+    '-NoLogo', '-NoProfile', '-File', $ChildPath,
+    '-LeafPath', $LeafPath,
+    '-GrandchildPidPath', $GrandchildPidPath
+  ) `
+  -WindowStyle Hidden `
+  -PassThru
+[System.IO.File]::WriteAllText($ChildPidPath, [string]$child.Id, [System.Text.Encoding]::UTF8)
+$child.WaitForExit()
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    root_process = subprocess.Popen(
+        [
+            str(PROJECT_PWSH),
+            "-NoLogo",
+            "-NoProfile",
+            "-File",
+            str(root_script),
+            "-ChildPath",
+            str(child_script),
+            "-LeafPath",
+            str(leaf_script),
+            "-ChildPidPath",
+            str(child_pid_path),
+            "-GrandchildPidPath",
+            str(grandchild_pid_path),
+        ],
+        cwd=REPOSITORY_ROOT,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while (
+            (not child_pid_path.exists() or not grandchild_pid_path.exists())
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        assert child_pid_path.exists(), "child process did not start"
+        assert grandchild_pid_path.exists(), "grandchild process did not start"
+        child_pid = int(child_pid_path.read_text(encoding="utf-8-sig"))
+        grandchild_pid = int(grandchild_pid_path.read_text(encoding="utf-8-sig"))
+
+        result = run_powershell(
+            f"""
+. '{MANIFEST_HELPER}'
+$root = Get-Process -Id {root_process.pid} -ErrorAction Stop
+$null = $root.SafeHandle
+$descendants = @(Get-DevProcessDescendants -RootProcess $root)
+try {{
+  [ordered]@{{
+    processIds = @($descendants | ForEach-Object {{ $_.Id }} | Sort-Object)
+    openHandleCount = @(
+      $descendants | Where-Object {{
+        $null -ne $_.SafeHandle -and -not $_.SafeHandle.IsClosed
+      }}
+    ).Count
+  }} | ConvertTo-Json -Compress
+}} finally {{
+  foreach ($process in $descendants) {{ $process.Close() }}
+  $root.Close()
+}}
+"""
+        )
+
+        process_ids = result["processIds"]
+        assert isinstance(process_ids, list)
+        assert child_pid in process_ids
+        assert grandchild_pid in process_ids
+        assert result["openHandleCount"] == len(process_ids)
+
+        manifest_path = tmp_path / "dev-processes.json"
+        stop_result = run_powershell(
+            f"""
+. '{MANIFEST_HELPER}'
+Add-DevProcessManifestEntry `
+  -Role 'test-tree' `
+  -ProcessId {root_process.pid} `
+  -ManifestPath '{manifest_path}'
+Stop-RecordedProcessTree -ManifestPath '{manifest_path}'
+[ordered]@{{
+  aliveProcessIds = @(
+    @({root_process.pid}, {child_pid}, {grandchild_pid}) | Where-Object {{
+      $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue)
+    }}
+  )
+  remainingEntries = @(
+    (Read-DevProcessManifest -ManifestPath '{manifest_path}').processes
+  ).Count
+}} | ConvertTo-Json -Compress
+"""
+        )
+        assert stop_result == {"aliveProcessIds": [], "remainingEntries": 0}
+    finally:
+        subprocess.run(
+            ["taskkill", "/PID", str(root_process.pid), "/T", "/F"],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            check=False,
+        )
+        try:
+            root_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            root_process.kill()
+            root_process.wait(timeout=5)
+
+
+def test_manifest_descendant_rows_reject_stale_parent_pid_reuse() -> None:
+    result = run_powershell(
+        f"""
+. '{MANIFEST_HELPER}'
+$rootCreated = [DateTimeOffset]::Parse('2026-08-01T00:00:00Z').UtcDateTime
+$rows = @(
+  [pscustomobject]@{{ ProcessId = 100; ParentProcessId = 1; CreationDate = $rootCreated }},
+  [pscustomobject]@{{ ProcessId = 200; ParentProcessId = 100; CreationDate = $rootCreated.AddSeconds(-2) }},
+  [pscustomobject]@{{ ProcessId = 201; ParentProcessId = 200; CreationDate = $rootCreated.AddSeconds(-1) }},
+  [pscustomobject]@{{ ProcessId = 300; ParentProcessId = 100; CreationDate = $rootCreated.AddSeconds(1) }},
+  [pscustomobject]@{{ ProcessId = 301; ParentProcessId = 300; CreationDate = $rootCreated.AddSeconds(2) }}
+)
+$descendants = @(Get-DevProcessDescendantRows `
+  -ProcessRows $rows `
+  -RootProcessId 100 `
+  -RootCreationDate $rootCreated)
+[ordered]@{{
+  processIds = @($descendants | ForEach-Object {{ $_.row.ProcessId }})
+  depths = @($descendants | ForEach-Object {{ $_.depth }})
+}} | ConvertTo-Json -Compress
+"""
+    )
+
+    assert result == {"processIds": [300, 301], "depths": [1, 2]}
+
+
+def test_manifest_add_waits_for_concurrent_stop_transaction(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "dev-processes.json"
+    stop_entered_path = tmp_path / "stop-entered"
+    release_stop_path = tmp_path / "release-stop"
+    old_process = subprocess.Popen(
+        [str(PROJECT_PWSH), "-NoLogo", "-NoProfile", "-Command", "Start-Sleep -Seconds 60"],
+        cwd=REPOSITORY_ROOT,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    new_process = subprocess.Popen(
+        [str(PROJECT_PWSH), "-NoLogo", "-NoProfile", "-Command", "Start-Sleep -Seconds 60"],
+        cwd=REPOSITORY_ROOT,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    stopper: subprocess.Popen[str] | None = None
+    adder: subprocess.Popen[str] | None = None
+    try:
+        run_powershell(
+            f"""
+. '{MANIFEST_HELPER}'
+Add-DevProcessManifestEntry -Role 'backend' -ProcessId {old_process.pid} -ManifestPath '{manifest_path}'
+@{{ seeded = $true }} | ConvertTo-Json -Compress
+"""
+        )
+        stopper = subprocess.Popen(
+            [
+                str(PROJECT_PWSH),
+                "-NoLogo",
+                "-NoProfile",
+                "-Command",
+                f"""
+. '{MANIFEST_HELPER}'
+Stop-RecordedProcessTree -ManifestPath '{manifest_path}' -StopCallback {{
+  param($ownedProcess)
+  Set-Content -LiteralPath '{stop_entered_path}' -Value 'entered' -Encoding UTF8
+  while (-not (Test-Path -LiteralPath '{release_stop_path}')) {{
+    Start-Sleep -Milliseconds 20
+  }}
+}}
+""",
+            ],
+            cwd=REPOSITORY_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        deadline = time.monotonic() + 5
+        while not stop_entered_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert stop_entered_path.exists(), "concurrent stop did not enter its transaction"
+
+        adder = subprocess.Popen(
+            [
+                str(PROJECT_PWSH),
+                "-NoLogo",
+                "-NoProfile",
+                "-Command",
+                f"""
+. '{MANIFEST_HELPER}'
+Add-DevProcessManifestEntry -Role 'frontend' -ProcessId {new_process.pid} -ManifestPath '{manifest_path}'
+""",
+            ],
+            cwd=REPOSITORY_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        add_deadline = time.monotonic() + 2
+        while adder.poll() is None and time.monotonic() < add_deadline:
+            time.sleep(0.02)
+        assert adder.poll() is None, "manifest add escaped the active stop transaction"
+
+        release_stop_path.write_text("release", encoding="utf-8")
+        stopper_stdout, stopper_stderr = stopper.communicate(timeout=10)
+        adder_stdout, adder_stderr = adder.communicate(timeout=10)
+        assert stopper.returncode == 0, f"{stopper_stdout}\n{stopper_stderr}"
+        assert adder.returncode == 0, f"{adder_stdout}\n{adder_stderr}"
+
+        result = run_powershell(
+            f"""
+. '{MANIFEST_HELPER}'
+$entries = @((Read-DevProcessManifest -ManifestPath '{manifest_path}').processes)
+[ordered]@{{
+  count = $entries.Count
+  role = if ($entries.Count -eq 1) {{ $entries[0].role }} else {{ $null }}
+  pid = if ($entries.Count -eq 1) {{ $entries[0].pid }} else {{ $null }}
+}} | ConvertTo-Json -Compress
+"""
+        )
+        assert result == {"count": 1, "role": "frontend", "pid": new_process.pid}
+    finally:
+        release_stop_path.write_text("release", encoding="utf-8")
+        for process in (stopper, adder):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+        for process in (old_process, new_process):
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+
+def test_start_finally_stops_exact_owned_processes_when_manifest_loses_entries() -> None:
+    result = run_powershell_marked_result(
+        f"""
+. '{MANIFEST_HELPER}'
+$manifestPath = Join-Path ([System.IO.Path]::GetTempPath()) ("dev-processes-" + [guid]::NewGuid().ToString() + ".json")
+$childProcessIds = [System.Collections.Generic.List[int]]::new()
+$children = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+
+try {{
+  $hooks = @{{
+    ManifestPath = $manifestPath
+    StopCallback = {{ param($ownedProcess) throw "manifest cleanup must not own removed PID=$($ownedProcess.Id)" }}
+    TestLocalPortOccupied = {{ param($port) $false }}
+    TestHttpReady = {{
+      param($url)
+      Write-DevProcessManifest `
+        -Manifest ([pscustomobject]@{{ version = 1; processes = @() }}) `
+        -ManifestPath $manifestPath
+      return $true
+    }}
+    StartManagedProcess = {{
+      param($role, $filePath, $arguments, $workingDirectory)
+      $child = Start-Process `
+        -FilePath (Join-Path $PSHOME 'pwsh.exe') `
+        -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 60') `
+        -WorkingDirectory $workingDirectory `
+        -WindowStyle Hidden `
+        -PassThru
+      $children.Add($child)
+      $childProcessIds.Add($child.Id)
+      return $child
+    }}
+    ExitAfterStartup = $true
+  }}
+
+  & '{START_SCRIPT}' -NoBrowser -TestHooks $hooks
+  $aliveCount = @(
+    $childProcessIds | Where-Object {{
+      $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue)
+    }}
+  ).Count
+  $closedHandleCount = @(
+    $children | Where-Object {{
+      try {{
+        $handle = $_.SafeHandle
+        $null -eq $handle -or $handle.IsClosed
+      }} catch {{
+        $true
+      }}
+    }}
+  ).Count
+  Write-Output ("RESULT:" + ([ordered]@{{
+    childCount = $childProcessIds.Count
+    aliveCount = $aliveCount
+    closedHandleCount = $closedHandleCount
+    manifestEntryCount = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
+  }} | ConvertTo-Json -Compress))
+}} finally {{
+  foreach ($processId in $childProcessIds) {{
+    $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+    if ($null -ne $process) {{
+      $process.Kill($true)
+      $process.WaitForExit(5000)
+      $process.Close()
+    }}
+  }}
+  foreach ($path in @($manifestPath, "$manifestPath.tmp")) {{
+    if (Test-Path -LiteralPath $path) {{
+      Remove-Item -LiteralPath $path -Force
+    }}
+  }}
+}}
+"""
+    )
+
+    assert result == {
+        "childCount": 2,
+        "aliveCount": 0,
+        "closedHandleCount": 2,
+        "manifestEntryCount": 0,
+    }
+
+
 def test_start_lifecycle_records_started_processes_and_cleans_them_up() -> None:
     result = run_powershell_marked_result(
         f"""
@@ -322,8 +725,8 @@ try {{
   $hooks = @{{
     ManifestPath = $manifestPath
     StopCallback = {{
-      param($processId)
-      $stoppedProcessIds.Add($processId)
+      param($ownedProcess)
+      $stoppedProcessIds.Add($ownedProcess.Id)
       foreach ($entry in @((Read-DevProcessManifest -ManifestPath $manifestPath).processes)) {{
         $recordedEntries.Add([pscustomobject]@{{
           role = $entry.role
@@ -384,7 +787,7 @@ $state = [pscustomobject]@{{ child = $null; childPid = $null; rollbackReceivedEx
 try {{
   $hooks = @{{
     ManifestPath = $manifestPath
-    StopCallback = {{ param($processId) throw "manifest cleanup must not own unrecorded PID=$processId" }}
+    StopCallback = {{ param($ownedProcess) throw "manifest cleanup must not own unrecorded PID=$($ownedProcess.Id)" }}
     TestLocalPortOccupied = {{ param($port) $false }}
     StartManagedProcess = {{
       param($role, $filePath, $arguments, $workingDirectory)
@@ -472,7 +875,7 @@ $state = [pscustomobject]@{{ process = Get-Process -Id $PID }}
 try {{
   $hooks = @{{
     ManifestPath = $manifestPath
-    StopCallback = {{ param($processId) throw "manifest cleanup must not run for PID=$processId" }}
+    StopCallback = {{ param($ownedProcess) throw "manifest cleanup must not run for PID=$($ownedProcess.Id)" }}
     TestLocalPortOccupied = {{ param($port) $false }}
     StartManagedProcess = {{
       param($role, $filePath, $arguments, $workingDirectory)
@@ -528,8 +931,8 @@ try {{
   $hooks = @{{
     ManifestPath = $manifestPath
     StopCallback = {{
-      param($processId)
-      foreach ($entry in @((Read-DevProcessManifest -ManifestPath $manifestPath).processes | Where-Object {{ $_.pid -eq $processId }})) {{
+      param($ownedProcess)
+      foreach ($entry in @((Read-DevProcessManifest -ManifestPath $manifestPath).processes | Where-Object {{ $_.pid -eq $ownedProcess.Id }})) {{
         $stoppedRoles.Add($entry.role)
       }}
     }}
@@ -572,7 +975,7 @@ $stopCalls = [System.Collections.Generic.List[int]]::new()
 try {{
   $hooks = @{{
     ManifestPath = $manifestPath
-    StopCallback = {{ param($processId) $stopCalls.Add($processId) }}
+    StopCallback = {{ param($ownedProcess) $stopCalls.Add($ownedProcess.Id) }}
     TestLocalPortOccupied = {{ param($port) $true }}
     TestBackendCompatible = {{ param($port) $true }}
     StartManagedProcess = {{ param($role, $filePath, $arguments, $workingDirectory) $startedRoles.Add($role) }}
@@ -614,7 +1017,7 @@ $stopCalls = [System.Collections.Generic.List[int]]::new()
 try {{
   $hooks = @{{
     ManifestPath = $manifestPath
-    StopCallback = {{ param($processId) $stopCalls.Add($processId) }}
+    StopCallback = {{ param($ownedProcess) $stopCalls.Add($ownedProcess.Id) }}
     TestLocalPortOccupied = {{ param($port) $port -eq 8011 }}
     TestBackendCompatible = {{ param($port) $false }}
     StartManagedProcess = {{ param($role, $filePath, $arguments, $workingDirectory) $startedRoles.Add($role) }}
