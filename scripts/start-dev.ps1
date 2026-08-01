@@ -54,6 +54,34 @@ function Add-StartedProcessToManifest {
   Add-DevProcessManifestEntry -Role $Role -ProcessId $ProcessId
 }
 
+function Add-ManagedProcessOwnership {
+  param(
+    [string]$Role,
+    [object]$Process
+  )
+
+  $startedProcesses.Add($Process)
+  try {
+    Add-StartedProcessToManifest -Role $Role -ProcessId $Process.Id
+  } catch {
+    $manifestError = $_.Exception
+    $null = $startedProcesses.Remove($Process)
+    try {
+      if ($TestHooks -and $TestHooks.ContainsKey("RollbackStartedProcess")) {
+        Stop-NewlyStartedProcessTree -Process $Process -StopCallback $TestHooks.RollbackStartedProcess
+      } else {
+        Stop-NewlyStartedProcessTree -Process $Process
+      }
+    } catch {
+      throw [AggregateException]::new(
+        "Failed to register and roll back newly started process role=$Role pid=$($Process.Id).",
+        [Exception[]]@($manifestError, $_.Exception)
+      )
+    }
+    throw $manifestError
+  }
+}
+
 Invoke-RecordedProcessCleanup
 
 $startedProcesses = New-Object System.Collections.Generic.List[object]
@@ -122,8 +150,7 @@ function Start-ManagedProcess {
     if ($null -eq $process) {
       throw "Failed to start $Name."
     }
-    $startedProcesses.Add($process)
-    Add-StartedProcessToManifest -Role $Name -ProcessId $process.Id
+    Add-ManagedProcessOwnership -Role $Name -Process $process
     Write-Host "$Name started. PID=$($process.Id)"
     return
   }
@@ -156,8 +183,7 @@ function Start-ManagedProcess {
 
   $process.BeginOutputReadLine()
   $process.BeginErrorReadLine()
-  $startedProcesses.Add($process)
-  Add-StartedProcessToManifest -Role $Name -ProcessId $process.Id
+  Add-ManagedProcessOwnership -Role $Name -Process $process
   Write-Host "$Name started. PID=$($process.Id)"
 }
 

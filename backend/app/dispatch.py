@@ -665,8 +665,12 @@ def join_paths(base: list[Cell], segment: list[Cell]) -> list[Cell]:
     return [*base, *segment[1:]]
 
 
-def _can_append_ticks(path: list[Cell], tick_count: int) -> bool:
-    return tick_count >= 0 and len(path) - 1 + tick_count <= MAX_PLANNED_PATH_TICKS
+def _can_append_ticks(
+    path: list[Cell],
+    tick_count: int,
+    max_planned_path_ticks: int = MAX_PLANNED_PATH_TICKS,
+) -> bool:
+    return tick_count >= 0 and len(path) - 1 + tick_count <= max_planned_path_ticks
 
 
 def _path_tick_budget_failure(task_id: str) -> PathPlanFailure:
@@ -692,8 +696,13 @@ def _join_energy_checked_segment(
     base: list[Cell],
     segment: list[Cell],
     battery: int,
+    max_planned_path_ticks: int = MAX_PLANNED_PATH_TICKS,
 ) -> tuple[list[Cell], int, bool]:
-    if not _can_append_ticks(base, max(0, len(segment) - 1)):
+    if not _can_append_ticks(
+        base,
+        max(0, len(segment) - 1),
+        max_planned_path_ticks,
+    ):
         return base, battery, False
     movement_cost = path_movement_count(segment)
     if movement_cost > battery:
@@ -726,6 +735,7 @@ def plan_robot_path(
     charging_visits: list[ChargingVisit] | None = None,
     active_charging_visit: ChargingVisit | None = None,
     candidate_diagnostics: PathCandidateDiagnostics | None = None,
+    max_planned_path_ticks: int = MAX_PLANNED_PATH_TICKS,
 ) -> tuple[list[Cell], bool, PathPlanFailure | None]:
     path = [start]
     cursor = start
@@ -739,7 +749,7 @@ def plan_robot_path(
         and active_charging_visit.completionTime > 0
     ):
         active_charge_ticks = active_charging_visit.completionTime
-        if not _can_append_ticks(path, active_charge_ticks):
+        if not _can_append_ticks(path, active_charge_ticks, max_planned_path_ticks):
             failure = _path_tick_budget_failure(tasks[0].id) if tasks else None
             return path, True, failure
         path.extend([cursor] * active_charge_ticks)
@@ -748,7 +758,7 @@ def plan_robot_path(
     for task_index, task in enumerate(tasks):
         release_time = task_release_time(task)
         release_wait_ticks = max(0, release_time - (len(path) - 1))
-        if not _can_append_ticks(path, release_wait_ticks):
+        if not _can_append_ticks(path, release_wait_ticks, max_planned_path_ticks):
             return path, True, _path_tick_budget_failure(task.id)
         path.extend([cursor] * release_wait_ticks)
         charge_decision = task_charge_decision(
@@ -776,7 +786,7 @@ def plan_robot_path(
                         extra_blocked,
                         move_ticks,
                         candidate_diagnostics=candidate_diagnostics,
-                        path_end_time=MAX_PLANNED_PATH_TICKS,
+                        path_end_time=max_planned_path_ticks,
                     )
                 except _TimedPathBudgetExceeded:
                     return path, True, _path_tick_budget_failure(task.id)
@@ -788,14 +798,19 @@ def plan_robot_path(
             if not segment:
                 return path, True, None
             segment_tick_count = max(0, len(segment) - 1)
-            if not _can_append_ticks(path, segment_tick_count):
+            if not _can_append_ticks(path, segment_tick_count, max_planned_path_ticks):
                 return path, True, _path_tick_budget_failure(task.id)
-            path, battery, joined = _join_energy_checked_segment(path, segment, battery)
+            path, battery, joined = _join_energy_checked_segment(
+                path,
+                segment,
+                battery,
+                max_planned_path_ticks,
+            )
             if not joined:
                 return path, True, None
             cursor = charge_station
             arrival_time = len(path) - 1
-            if not _can_append_ticks(path, scenario.chargeTime):
+            if not _can_append_ticks(path, scenario.chargeTime, max_planned_path_ticks):
                 return path, True, _path_tick_budget_failure(task.id)
             path.extend([cursor] * scenario.chargeTime)
             charging_visits.append(
@@ -825,7 +840,7 @@ def plan_robot_path(
                         segment_blocked,
                         move_ticks,
                         candidate_diagnostics=candidate_diagnostics,
-                        path_end_time=MAX_PLANNED_PATH_TICKS,
+                        path_end_time=max_planned_path_ticks,
                     )
                 except _TimedPathBudgetExceeded:
                     return path, True, _path_tick_budget_failure(task.id)
@@ -837,9 +852,14 @@ def plan_robot_path(
             if not segment:
                 return path, True, None
             segment_tick_count = max(0, len(segment) - 1)
-            if not _can_append_ticks(path, segment_tick_count):
+            if not _can_append_ticks(path, segment_tick_count, max_planned_path_ticks):
                 return path, True, _path_tick_budget_failure(task.id)
-            path, battery, joined = _join_energy_checked_segment(path, segment, battery)
+            path, battery, joined = _join_energy_checked_segment(
+                path,
+                segment,
+                battery,
+                max_planned_path_ticks,
+            )
             if not joined:
                 return path, True, None
             cursor = waypoint
@@ -853,13 +873,13 @@ def plan_robot_path(
             if nearest_station is None or battery < nearest_station[1]:
                 return path, True, None
         service_ticks = task_service_time(task)
-        if not _can_append_ticks(path, service_ticks):
+        if not _can_append_ticks(path, service_ticks, max_planned_path_ticks):
             return path, True, _path_tick_budget_failure(task.id)
         path.extend([cursor] * service_ticks)
         next_tasks = tasks[task_index + 1 : task_index + 2]
         next_waypoints = task_waypoints(next_tasks[0]) if next_tasks else []
         if next_waypoints and same_cell(cursor, next_waypoints[0]):
-            if not _can_append_ticks(path, 1):
+            if not _can_append_ticks(path, 1, max_planned_path_ticks):
                 return path, True, _path_tick_budget_failure(next_tasks[0].id)
             path.append(cursor)
     return path, False, None
@@ -935,6 +955,7 @@ def append_parking_step(
     horizon_padding: int = 12,
     candidate_diagnostics: PathCandidateDiagnostics | None = None,
     task_id: str | None = None,
+    max_planned_path_ticks: int = MAX_PLANNED_PATH_TICKS,
 ) -> tuple[list[Cell], bool, PathPlanFailure | None]:
     if not path:
         return path, False, None
@@ -963,7 +984,7 @@ def append_parking_step(
                 blocked_cells_at_time(extra_blocked, delayed_blocked, delayed_block_time, start_time),
                 move_ticks,
                 candidate_diagnostics=candidate_diagnostics,
-                path_end_time=MAX_PLANNED_PATH_TICKS,
+                path_end_time=max_planned_path_ticks,
             )
         except _TimedPathBudgetExceeded:
             parking_budget_exhausted = True
@@ -973,7 +994,11 @@ def append_parking_step(
         arrival_time = start_time + len(segment) - 1
         if not can_hold_cell(candidate, arrival_time + 1, reservations, horizon_padding):
             continue
-        if not _can_append_ticks(path, max(0, len(segment) - 1)):
+        if not _can_append_ticks(
+            path,
+            max(0, len(segment) - 1),
+            max_planned_path_ticks,
+        ):
             parking_budget_exhausted = True
             continue
         parking_candidate_found = True
@@ -981,6 +1006,7 @@ def append_parking_step(
             path,
             segment,
             battery,
+            max_planned_path_ticks,
         )
         if not joined:
             continue
@@ -1009,6 +1035,7 @@ def plan_idle_robot_parking_path(
     delayed_blocked: list[Cell] | None = None,
     horizon_padding: int = 12,
     candidate_diagnostics: PathCandidateDiagnostics | None = None,
+    max_planned_path_ticks: int = MAX_PLANNED_PATH_TICKS,
 ) -> list[Cell]:
     blocked_cells = merge_cells(extra_blocked, delayed_blocked or [])
     blocked = make_blocked_set(scenario, blocked_cells)
@@ -1032,7 +1059,7 @@ def plan_idle_robot_parking_path(
                 blocked_cells,
                 move_ticks,
                 candidate_diagnostics=candidate_diagnostics,
-                path_end_time=MAX_PLANNED_PATH_TICKS,
+                path_end_time=max_planned_path_ticks,
             )
         except _TimedPathBudgetExceeded:
             continue
@@ -1047,6 +1074,7 @@ def plan_idle_robot_parking_path(
             [start],
             path,
             battery,
+            max_planned_path_ticks,
         )
         if not joined:
             continue
@@ -1163,6 +1191,7 @@ def build_paths_for_order(
     delayed_block_time: int | None = None,
     active_charging_visits: dict[str, ChargingVisit] | None = None,
     candidate_diagnostics: PathCandidateDiagnostics | None = None,
+    max_planned_path_ticks: int = MAX_PLANNED_PATH_TICKS,
 ) -> PathPlanningCandidate:
     reservations = Reservations()
     paths: dict[str, list[Cell]] = {}
@@ -1197,6 +1226,7 @@ def build_paths_for_order(
                 delayed_blocked,
                 horizon_padding,
                 candidate_diagnostics,
+                max_planned_path_ticks,
             )
             failed = False
         else:
@@ -1215,6 +1245,7 @@ def build_paths_for_order(
                 charging_visits,
                 active_charging_visits.get(robot.id),
                 candidate_diagnostics,
+                max_planned_path_ticks,
             )
             if path_plan_failure is not None:
                 failure_details[path_plan_failure.taskId] = path_plan_failure.detail
@@ -1240,6 +1271,7 @@ def build_paths_for_order(
                 horizon_padding,
                 candidate_diagnostics,
                 task_id=assigned[-1].id,
+                max_planned_path_ticks=max_planned_path_ticks,
             )
             if parking_failure is not None:
                 failure_details[parking_failure.taskId] = parking_failure.detail
@@ -1293,6 +1325,7 @@ def build_paths(
     include_charging_visits: bool = False,
     active_charging_visits: dict[str, ChargingVisit] | None = None,
     planning_diagnostics: PlanningDiagnostics | None = None,
+    max_planned_path_ticks: int = MAX_PLANNED_PATH_TICKS,
 ) -> (
     tuple[dict[str, list[Cell]], list[str]]
     | tuple[
@@ -1338,6 +1371,7 @@ def build_paths(
             delayed_block_time,
             active_charging_visits,
             candidate_diagnostics,
+            max_planned_path_ticks,
         )
         score = path_planning_candidate_score(candidate, assignments)
         if candidate_diagnostics is not None:
@@ -2131,6 +2165,7 @@ def run_dispatch(
     replan_window_decision: ReplanWindowDecision | None = None,
     active_charging_visits: dict[str, ChargingVisit] | None = None,
     planning_diagnostics: PlanningDiagnostics | None = None,
+    max_planned_path_ticks: int = MAX_PLANNED_PATH_TICKS,
 ) -> DispatchResult:
     avoid_conflicts = options.avoidConflicts
     include_dynamic = options.includeDynamic
@@ -2217,6 +2252,7 @@ def run_dispatch(
         True,
         active_charging_visits,
         planning_diagnostics,
+        max_planned_path_ticks,
     )
     assigned_task_ids = {
         task.id

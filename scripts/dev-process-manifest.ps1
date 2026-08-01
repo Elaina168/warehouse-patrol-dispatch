@@ -98,6 +98,49 @@ function Add-DevProcessManifestEntry {
   Write-DevProcessManifest -Manifest $manifest -ManifestPath $ManifestPath
 }
 
+function Stop-NewlyStartedProcessTree {
+  param(
+    [Parameter(Mandatory = $true)]
+    [System.Diagnostics.Process]$Process,
+
+    [scriptblock]$StopCallback = {
+      param([System.Diagnostics.Process]$StartedProcess)
+      if (-not $StartedProcess.HasExited) {
+        $StartedProcess.Kill($true)
+      }
+    },
+
+    [int]$WaitTimeoutMilliseconds = 5000
+  )
+
+  $stopError = $null
+  try {
+    & $StopCallback $Process
+    if (-not $Process.WaitForExit($WaitTimeoutMilliseconds)) {
+      throw "Timed out waiting for newly started process tree PID=$($Process.Id) to stop."
+    }
+  } catch {
+    $stopError = $_.Exception
+  } finally {
+    try {
+      $Process.Close()
+    } catch {
+      if ($null -eq $stopError) {
+        $stopError = $_.Exception
+      } else {
+        $stopError = [AggregateException]::new(
+          "Failed to stop and close newly started process PID=$($Process.Id).",
+          [Exception[]]@($stopError, $_.Exception)
+        )
+      }
+    }
+  }
+
+  if ($null -ne $stopError) {
+    throw $stopError
+  }
+}
+
 function Stop-RecordedProcessTree {
   param(
     [string]$ManifestPath = $script:DevProcessManifestPath,
@@ -113,6 +156,7 @@ function Stop-RecordedProcessTree {
 
   $manifest = Read-DevProcessManifest -ManifestPath $ManifestPath
   $remainingEntries = [System.Collections.Generic.List[object]]::new()
+  $stopFailures = [System.Collections.Generic.List[object]]::new()
 
   foreach ($entry in @($manifest.processes)) {
     if ($null -eq (Get-Process -Id ([int]$entry.pid) -ErrorAction SilentlyContinue)) {
@@ -128,9 +172,17 @@ function Stop-RecordedProcessTree {
       & $StopCallback ([int]$entry.pid)
     } catch {
       $remainingEntries.Add($entry)
+      $stopFailures.Add([pscustomobject]@{
+          role = [string]$entry.role
+          pid = [int]$entry.pid
+          message = $_.Exception.Message
+        })
     }
   }
 
   $manifest.processes = @($remainingEntries)
   Write-DevProcessManifest -Manifest $manifest -ManifestPath $ManifestPath
+  foreach ($failure in $stopFailures) {
+    Write-Warning "Failed to stop recorded development process role=$($failure.role) pid=$($failure.pid): $($failure.message)"
+  }
 }

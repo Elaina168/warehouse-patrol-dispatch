@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from backend.app.limits import MAX_SCENARIO_TASKS
+from backend.app.limits import MAX_PLANNED_PATH_TICKS, MAX_SCENARIO_TASKS
 from backend.app.dispatch import (
     ASSIGNMENT_REPLAN_WINDOW,
     astar,
@@ -854,6 +854,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
                     replan_window_decision=evaluation.decision,
                     active_charging_visits=_relative_active_charging_visits(session),
                     planning_diagnostics=planning_diagnostics,
+                    max_planned_path_ticks=MAX_PLANNED_PATH_TICKS - session.current_time,
                 ),
                 task_lookup,
                 session.current_time,
@@ -1943,6 +1944,8 @@ def _session_task_completion_times(session: DispatchSession, result: DispatchRes
         for task in assignment.tasks:
             if task.id in completions:
                 cursor_index = max(cursor_index, completions[task.id] + 1)
+                continue
+            if task.id in result.failureReasons:
                 continue
             completed_before = session.task_waypoint_progress.get(task.id, 0)
             completed_count, cursor_index, completion_index = _completed_remaining_waypoints(

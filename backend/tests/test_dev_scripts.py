@@ -236,7 +236,10 @@ try {{
   $mismatchedEntries = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
 
   Write-DevProcessManifest -Manifest ([pscustomobject]@{{ version = 1; processes = @($matching) }}) -ManifestPath $manifestPath
-  Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{ param($processId) throw "injected failure for $processId" }}
+  $failureDiagnostics = @(
+    Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{ param($processId) throw "injected failure for $processId" }} 3>&1 |
+      ForEach-Object {{ $_.Message }}
+  )
   $failedEntries = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
 
   Write-DevProcessManifest -Manifest ([pscustomobject]@{{ version = 1; processes = @($matching) }}) -ManifestPath $manifestPath
@@ -248,6 +251,8 @@ try {{
     mismatchedCalls = $mismatchedCalls
     mismatchedEntries = $mismatchedEntries
     failedEntries = $failedEntries
+    failureDiagnostics = @($failureDiagnostics)
+    currentPid = $PID
     successfulCalls = $successfulCalls
     successfulEntries = $successfulEntries
   }} | ConvertTo-Json -Compress
@@ -265,6 +270,10 @@ try {{
         "mismatchedCalls": 0,
         "mismatchedEntries": 1,
         "failedEntries": 1,
+        "failureDiagnostics": [
+            f"Failed to stop recorded development process role=test pid={result['currentPid']}: injected failure for {result['currentPid']}"
+        ],
+        "currentPid": result["currentPid"],
         "successfulCalls": 1,
         "successfulEntries": 0,
     }
@@ -362,6 +371,149 @@ try {{
         {"role": "backend", "pid": result["currentPid"], "startedAtUtc": result["startedAtUtc"]},
         {"role": "frontend", "pid": result["currentPid"], "startedAtUtc": result["startedAtUtc"]},
     ]
+
+
+def test_start_rolls_back_exact_child_when_manifest_registration_fails() -> None:
+    result = run_powershell_marked_result(
+        f"""
+. '{MANIFEST_HELPER}'
+$manifestPath = Join-Path ([System.IO.Path]::GetTempPath()) ("dev-processes-" + [guid]::NewGuid().ToString() + ".json")
+$rollbackProcessIds = [System.Collections.Generic.List[int]]::new()
+$state = [pscustomobject]@{{ child = $null; childPid = $null; rollbackReceivedExactProcess = $false }}
+
+try {{
+  $hooks = @{{
+    ManifestPath = $manifestPath
+    StopCallback = {{ param($processId) throw "manifest cleanup must not own unrecorded PID=$processId" }}
+    TestLocalPortOccupied = {{ param($port) $false }}
+    StartManagedProcess = {{
+      param($role, $filePath, $arguments, $workingDirectory)
+      $state.child = Start-Process `
+        -FilePath (Join-Path $PSHOME 'pwsh.exe') `
+        -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 60') `
+        -WindowStyle Hidden `
+        -PassThru
+      $state.childPid = $state.child.Id
+      New-Item -ItemType Directory -Path "$manifestPath.tmp" | Out-Null
+      return $state.child
+    }}
+    RollbackStartedProcess = {{
+      param($process)
+      $state.rollbackReceivedExactProcess = [object]::ReferenceEquals($process, $state.child)
+      $rollbackProcessIds.Add($process.Id)
+      if (-not $process.HasExited) {{
+        $process.Kill($true)
+      }}
+    }}
+  }}
+
+  try {{
+    & '{START_SCRIPT}' -NoBrowser -TestHooks $hooks
+  }} catch {{
+    $errorMessage = $_.Exception.Message
+    $errorType = $_.Exception.GetType().FullName
+  }}
+
+  $childAliveAfterFinally = $null -ne (Get-Process -Id $state.childPid -ErrorAction SilentlyContinue)
+  try {{
+    $safeHandle = $state.child.SafeHandle
+    $handleClosed = $null -eq $safeHandle -or $safeHandle.IsClosed
+  }} catch {{
+    $handleClosed = $true
+  }}
+  $manifestEntryCount = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
+  Write-Output ("RESULT:" + ([ordered]@{{
+    childPid = $state.childPid
+    childAliveAfterFinally = $childAliveAfterFinally
+    handleClosed = $handleClosed
+    manifestEntryCount = $manifestEntryCount
+    rollbackProcessIds = @($rollbackProcessIds)
+    rollbackReceivedExactProcess = $state.rollbackReceivedExactProcess
+    errorType = $errorType
+    manifestErrorPreserved = $errorMessage.Contains("$manifestPath.tmp")
+  }} | ConvertTo-Json -Compress))
+}} finally {{
+  if ($null -ne $state.childPid) {{
+    $survivor = Get-Process -Id $state.childPid -ErrorAction SilentlyContinue
+    if ($null -ne $survivor) {{
+      $survivor.Kill($true)
+      $null = $survivor.WaitForExit(5000)
+      $survivor.Close()
+    }}
+  }}
+  foreach ($path in @($manifestPath, "$manifestPath.tmp")) {{
+    if (Test-Path -LiteralPath $path) {{
+      Remove-Item -LiteralPath $path -Recurse -Force
+    }}
+  }}
+}}
+"""
+    )
+
+    assert result == {
+        "childPid": result["childPid"],
+        "childAliveAfterFinally": False,
+        "handleClosed": True,
+        "manifestEntryCount": 0,
+        "rollbackProcessIds": [result["childPid"]],
+        "rollbackReceivedExactProcess": True,
+        "errorType": "System.NotSupportedException",
+        "manifestErrorPreserved": True,
+    }
+
+
+def test_start_preserves_manifest_and_rollback_failures_together() -> None:
+    result = run_powershell_marked_result(
+        f"""
+. '{MANIFEST_HELPER}'
+$manifestPath = Join-Path ([System.IO.Path]::GetTempPath()) ("dev-processes-" + [guid]::NewGuid().ToString() + ".json")
+$state = [pscustomobject]@{{ process = Get-Process -Id $PID }}
+
+try {{
+  $hooks = @{{
+    ManifestPath = $manifestPath
+    StopCallback = {{ param($processId) throw "manifest cleanup must not run for PID=$processId" }}
+    TestLocalPortOccupied = {{ param($port) $false }}
+    StartManagedProcess = {{
+      param($role, $filePath, $arguments, $workingDirectory)
+      New-Item -ItemType Directory -Path "$manifestPath.tmp" | Out-Null
+      return $state.process
+    }}
+    RollbackStartedProcess = {{ param($startedProcess) throw 'injected rollback failure' }}
+  }}
+
+  try {{
+    & '{START_SCRIPT}' -NoBrowser -TestHooks $hooks
+  }} catch {{
+    $exception = $_.Exception
+  }}
+
+  $innerMessages = @($exception.InnerExceptions | ForEach-Object {{ $_.Message }} | Where-Object {{ $null -ne $_ }})
+  Write-Output ("RESULT:" + ([ordered]@{{
+    exceptionType = $exception.GetType().FullName
+    innerExceptionCount = @($exception.InnerExceptions).Count
+    manifestFailurePresent = @($innerMessages | Where-Object {{ $_.Contains("$manifestPath.tmp") }}).Count -eq 1
+    rollbackFailurePresent = @($innerMessages | Where-Object {{ $_ -eq 'injected rollback failure' }}).Count -eq 1
+    manifestEntryCount = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
+  }} | ConvertTo-Json -Compress))
+}} finally {{
+  $state.process.Close()
+  foreach ($path in @($manifestPath, "$manifestPath.tmp")) {{
+    if (Test-Path -LiteralPath $path) {{
+      Remove-Item -LiteralPath $path -Recurse -Force
+    }}
+  }}
+}}
+"""
+    )
+
+    assert result == {
+        "exceptionType": "System.AggregateException",
+        "innerExceptionCount": 2,
+        "manifestFailurePresent": True,
+        "rollbackFailurePresent": True,
+        "manifestEntryCount": 0,
+    }
 
 
 def test_start_reuses_compatible_backend_without_recording_or_stopping_it() -> None:

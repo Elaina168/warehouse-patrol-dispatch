@@ -128,6 +128,7 @@ def test_isolated_algorithm_benchmark_cleans_resources_on_keyboard_interrupt(
     assert raised.value is cancellation
     assert process.terminate_called
     assert process.join_called
+    assert process.closed
     assert parent_connection.closed
     assert child_connection.closed
 
@@ -156,6 +157,7 @@ def test_isolated_algorithm_benchmark_cleans_resources_on_system_exit(
     assert raised.value is cancellation
     assert process.terminate_called
     assert process.join_called
+    assert process.closed
     assert parent_connection.closed
     assert child_connection.closed
 

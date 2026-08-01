@@ -165,6 +165,152 @@ def test_session_create_rejects_duplicate_robot_start() -> None:
     assert "机器人起点重复：(0, 0)" in response.json()["detail"]
 
 
+PATH_TICK_BUDGET_REASON = "规划路径超过最大时域 10000 tick"
+
+
+def _absolute_path_budget_session_scenario(
+    trigger_time: int,
+    service_time: int,
+    *,
+    include_followup: bool = False,
+) -> dict[str, Any]:
+    dynamic_tasks: list[dict[str, Any]] = [
+        {
+            "id": "OVERFLOW",
+            "type": "emergency",
+            "title": "绝对时域边界任务",
+            "priority": 5,
+            "releaseTime": trigger_time,
+            "serviceTime": service_time,
+            "target": [1, 0],
+        }
+    ]
+    if include_followup:
+        dynamic_tasks.append(
+            {
+                "id": "FOLLOWUP",
+                "type": "emergency",
+                "title": "预算失败后的后续任务",
+                "priority": 1,
+                "releaseTime": trigger_time,
+                "target": [2, 0],
+            }
+        )
+    return {
+        "id": f"absolute-path-budget-{trigger_time}",
+        "name": f"absolute-path-budget-{trigger_time}",
+        "description": "在线重规划必须使用剩余绝对路径预算。",
+        "width": 3,
+        "height": 1,
+        "obstacles": [],
+        "zones": {
+            "warehouse": [],
+            "inspection": [],
+            "delivery": [],
+            "charging": [],
+        },
+        "robots": [
+            {
+                "id": "R1",
+                "name": "R1",
+                "start": [0, 0],
+                "battery": 100,
+                "batteryCapacity": 100,
+                "load": 1,
+                "capabilities": ["emergency"],
+            }
+        ],
+        "tasks": [],
+        "dynamic": {
+            "triggerTime": trigger_time,
+            "blockedCells": [],
+            "failedRobots": [],
+            "tasks": dynamic_tasks,
+        },
+    }
+
+
+def _assert_online_path_budget_failure(payload: dict[str, Any]) -> None:
+    assert all(len(path) <= 10_001 for path in payload["result"]["paths"].values())
+    assert payload["result"]["failureReasons"] == {
+        "OVERFLOW": PATH_TICK_BUDGET_REASON,
+    }
+    assert payload["result"]["failureDetails"] == {
+        "OVERFLOW": {
+            "reason": PATH_TICK_BUDGET_REASON,
+            "category": "permanent",
+            "recoveryAction": "fixTaskDefinition",
+            "blockingCells": [],
+            "blockingRobotIds": [],
+        }
+    }
+    assert payload["result"]["metrics"]["failureCount"] == 1
+    overflow_state = next(
+        state for state in payload["taskStates"] if state["taskId"] == "OVERFLOW"
+    )
+    assert overflow_state["status"] == "unassigned"
+    assert overflow_state["failureReason"] == PATH_TICK_BUDGET_REASON
+    assert overflow_state["failureCategory"] == "permanent"
+    assert overflow_state["recoveryAction"] == "fixTaskDefinition"
+
+
+def test_session_replan_at_max_time_rejects_adjacent_dynamic_task_over_absolute_budget() -> None:
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _absolute_path_budget_session_scenario(10_000, 0),
+            "options": {"avoidConflicts": True, "includeDynamic": True},
+        },
+    )
+    assert create_response.status_code == 200
+
+    tick_response = client.post(
+        f"/api/sessions/{create_response.json()['sessionId']}/tick",
+        json={"currentTime": 10_000},
+    )
+
+    assert tick_response.status_code == 200
+    payload = tick_response.json()
+    assert payload["currentTime"] == 10_000
+    _assert_online_path_budget_failure(payload)
+
+
+def test_session_replan_caps_long_future_path_to_remaining_absolute_budget() -> None:
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": _absolute_path_budget_session_scenario(
+                4,
+                9_996,
+                include_followup=True,
+            ),
+            "options": {"avoidConflicts": True, "includeDynamic": True},
+        },
+    )
+    assert create_response.status_code == 200
+
+    tick_response = client.post(
+        f"/api/sessions/{create_response.json()['sessionId']}/tick",
+        json={"currentTime": 4},
+    )
+
+    assert tick_response.status_code == 200
+    payload = tick_response.json()
+    assert payload["currentTime"] == 4
+    _assert_online_path_budget_failure(payload)
+    followup_state = next(
+        state for state in payload["taskStates"] if state["taskId"] == "FOLLOWUP"
+    )
+    assert followup_state["status"] == "pending"
+    assert followup_state["failureReason"] is None
+    assert [task["id"] for task in payload["result"]["tasks"]] == [
+        "OVERFLOW",
+        "FOLLOWUP",
+    ]
+
+
 def test_first_execution_conflict_selects_earliest_future_conflict_deterministically() -> None:
     scenario = Scenario.model_validate(scenario_payload())
     result = _safety_test_result(
