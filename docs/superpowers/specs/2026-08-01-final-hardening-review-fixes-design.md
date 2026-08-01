@@ -51,9 +51,9 @@
 `astar_timed` 在设置了 `path_end_time` 时执行以下规则：
 
 1. 静态最早到达时间已经超过 `latest_arrival` 时，立即记录 `exhausted` 并抛出 `_TimedPathBudgetExceeded`。
-2. 目标在允许时域内没有未预留到达时刻时，预算受限调用报告预算超限；非预算受限调用保持 `goalFullyReserved` 返回。
+2. 目标在 `latest_arrival` 前没有未预留到达时刻、但在完整自然时域内存在未预留时刻时，可以证明限制来自剩余预算，立即报告预算超限；若完整自然时域内也没有未预留时刻，继续按 `goalFullyReserved` 返回普通不可达。
 3. 邻居扩展使用 `latest_arrival` 剪枝，不再把预算外状态压入堆。
-4. 搜索在预算边界耗尽且本次确实受预算限制时抛出 `_TimedPathBudgetExceeded`；普通自然时域耗尽仍返回空路径。
+4. 如果搜索在预算边界内耗尽，但静态距离和目标预留预检都不能证明原因仅为预算，则保守返回普通不可达，不再通过搜索预算外状态来区分。这样保留现有“永久预留或静态不可达不得误报为预算不足”的失败语义。
 
 调用方现有的 `_TimedPathBudgetExceeded` 捕获逻辑继续生成“规划路径超过最大时域 10000 tick”的任务失败，不改变外部 API。
 
@@ -64,7 +64,7 @@
 - 后端模型接受 10000、拒绝 10001 的 `releaseTime` 和 `triggerTime`；会话创建及运行时任务入口均不能保存越界数据。
 - 前端导入接受所有合法可选字段，并分别拒绝 Scenario、Zones、Shelf、Robot、DynamicEvent、Task 的未知字段；拒绝 10001 的释放/触发时间。
 - manifest 停止回调收到的是启动时间匹配的 `System.Diagnostics.Process` 对象；对象在成功和失败路径后都关闭；源码不再使用默认 `taskkill /PID` 停止已记录进程。
-- 时空 A* 在最早到达已超预算时零扩展失败；目标长期预留时扩展数受剩余预算限制，并继续返回路径预算失败分类。
+- 时空 A* 在最早到达已超预算时零扩展失败；目标只在预算后才解除预留时零扩展报告预算失败；完整自然时域永久预留仍保持普通不可达；其余搜索扩展数不得超过剩余预算允许的状态范围。
 
 定向测试通过后运行完整 `npm run check`、`pip check`、`git diff --check`，最后确认 5174/8011 无残留监听且 `.runtime/dev-processes.json` 为空。
 
