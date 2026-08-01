@@ -95,7 +95,7 @@ describe("scenario import contract", () => {
     expect(parsed.robots[0].capabilities).toBeUndefined();
   });
 
-  it.each<Array<[string, (scenario: Scenario) => void]>>([
+  it.each<[string, (scenario: Scenario) => void]>([
     ["Scenario", (scenario) => addUnknownField(scenario)],
     ["Zones", (scenario) => addUnknownField(scenario.zones)],
     ["Shelf", (scenario) => {
