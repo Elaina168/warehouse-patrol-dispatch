@@ -269,16 +269,27 @@ def astar_timed(
                     call_diagnostics.finish("exhausted", 0)
                 return []
             earliest_arrival = start_time + (len(static_path) - 1) * move_ticks
-        if earliest_arrival > natural_latest_arrival:
+        if earliest_arrival > latest_arrival:
             if call_diagnostics is not None:
                 call_diagnostics.finish("exhausted", 0)
+            if budget_limited:
+                raise _TimedPathBudgetExceeded
             return []
         if not has_unreserved_goal_arrival_time(
             goal,
             earliest_arrival,
-            natural_latest_arrival,
+            latest_arrival,
             reservations,
         ):
+            if budget_limited and has_unreserved_goal_arrival_time(
+                goal,
+                latest_arrival + 1,
+                natural_latest_arrival,
+                reservations,
+            ):
+                if call_diagnostics is not None:
+                    call_diagnostics.finish("exhausted", 0)
+                raise _TimedPathBudgetExceeded
             if call_diagnostics is not None:
                 call_diagnostics.finish("goalFullyReserved", 0)
             return []
@@ -314,7 +325,7 @@ def astar_timed(
         for next_cell in neighbors(current_cell, scenario, blocked, include_wait=True):
             duration = 1 if same_cell(next_cell, current_cell) else move_ticks
             next_time = current_time + duration
-            if next_time > natural_latest_arrival:
+            if next_time > latest_arrival:
                 continue
             reserved = (
                 is_reserved(next_cell, next_time, current_cell, reservations)
@@ -327,8 +338,7 @@ def astar_timed(
             tentative = current_g + duration
             if tentative >= best.get(next_key, math.inf):
                 continue
-            if next_time <= latest_arrival:
-                came_from[next_key] = current_key
+            came_from[next_key] = current_key
             best[next_key] = tentative
             heapq.heappush(
                 heap,

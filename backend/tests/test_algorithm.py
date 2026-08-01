@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pytest
 
 import backend.app.dispatch as dispatch_module
 import backend.app.main as main_module
@@ -3268,6 +3269,73 @@ def test_dispatch_api_caps_cumulative_valid_service_path_nodes() -> None:
     }
     assert payload["metrics"]["failureCount"] == 1
     assert all(len(path) <= 10_001 for path in payload["paths"].values())
+
+
+def test_timed_path_budget_rejects_static_lower_bound_without_expanding() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "timed-static-lower-bound",
+            "name": "timed-static-lower-bound",
+            "description": "静态最短路超过剩余预算时不得继续扩展时空状态。",
+            "width": 16,
+            "height": 16,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+            "robots": [],
+            "tasks": [],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+    diagnostics = PathCandidateDiagnostics(robot_order=["R1"])
+
+    with pytest.raises(dispatch_module._TimedPathBudgetExceeded):
+        dispatch_module.astar_timed(
+            scenario,
+            (0, 0),
+            (15, 15),
+            0,
+            dispatch_module.Reservations(),
+            candidate_diagnostics=diagnostics,
+            path_end_time=5,
+        )
+
+    assert diagnostics.timed_astar_calls[0].outcome == "exhausted"
+    assert diagnostics.timed_astar_calls[0].expanded_state_count == 0
+
+
+def test_timed_path_budget_rejects_goal_available_only_after_budget_without_expanding() -> None:
+    scenario = Scenario.model_validate(
+        {
+            "id": "timed-goal-after-budget",
+            "name": "timed-goal-after-budget",
+            "description": "目标只在预算结束后解除预留时不得搜索预算外状态。",
+            "width": 3,
+            "height": 1,
+            "obstacles": [],
+            "zones": {"warehouse": [], "inspection": [], "delivery": [], "charging": []},
+            "robots": [],
+            "tasks": [],
+            "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
+        }
+    )
+    reservations = dispatch_module.Reservations(
+        vertices={f"2,0@{time_index}" for time_index in range(2, 6)}
+    )
+    diagnostics = PathCandidateDiagnostics(robot_order=["R1"])
+
+    with pytest.raises(dispatch_module._TimedPathBudgetExceeded):
+        dispatch_module.astar_timed(
+            scenario,
+            (0, 0),
+            (2, 0),
+            0,
+            reservations,
+            candidate_diagnostics=diagnostics,
+            path_end_time=5,
+        )
+
+    assert diagnostics.timed_astar_calls[0].outcome == "exhausted"
+    assert diagnostics.timed_astar_calls[0].expanded_state_count == 0
 
 
 def test_timed_path_budget_keeps_permanent_reservation_exhaustion_generic() -> None:
