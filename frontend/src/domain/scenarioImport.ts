@@ -18,6 +18,21 @@ type ImportedScenario = Omit<Scenario, "shelves"> & {
   shelves?: ImportedShelf[];
 };
 
+const scenarioKeys = new Set([
+  "id", "name", "description", "width", "height", "obstacles", "zones",
+  "shelves", "robots", "tasks", "dynamic", "chargeTime"
+]);
+const zoneKeys = new Set(["warehouse", "inspection", "delivery", "charging"]);
+const shelfKeys = new Set(["id", "cell", "serviceCell", "initialOccupied"]);
+const robotKeys = new Set([
+  "id", "name", "start", "battery", "batteryCapacity", "load", "moveTicks", "capabilities"
+]);
+const dynamicEventKeys = new Set(["triggerTime", "blockedCells", "failedRobots", "tasks"]);
+const taskKeys = new Set([
+  "id", "type", "title", "priority", "releaseTime", "deadline", "serviceTime",
+  "targets", "pickup", "dropoff", "demand", "target"
+]);
+
 export function parseScenario(value: unknown): Scenario {
   if (!isScenario(value)) {
     throw new Error("JSON 必须是 Scenario 对象，并包含 id、name、description、width、height、obstacles、zones、robots、tasks、dynamic");
@@ -40,6 +55,7 @@ export function parseScenario(value: unknown): Scenario {
 
 function isScenario(value: unknown): value is ImportedScenario {
   if (!isRecord(value)
+    || !hasOnlyKeys(value, scenarioKeys)
     || !isString(value.id)
     || !isString(value.name)
     || !isString(value.description)
@@ -49,6 +65,7 @@ function isScenario(value: unknown): value is ImportedScenario {
     || !Array.isArray(value.obstacles)
     || !value.obstacles.every(isCell)
     || !isRecord(value.zones)
+    || !hasOnlyKeys(value.zones, zoneKeys)
     || !Array.isArray(value.zones.warehouse)
     || !value.zones.warehouse.every(isCell)
     || !Array.isArray(value.zones.inspection)
@@ -84,6 +101,7 @@ function isScenario(value: unknown): value is ImportedScenario {
 
 function isShelf(value: unknown): value is ImportedShelf {
   return isRecord(value)
+    && hasOnlyKeys(value, shelfKeys)
     && isString(value.id)
     && isCell(value.cell)
     && isCell(value.serviceCell)
@@ -92,6 +110,7 @@ function isShelf(value: unknown): value is ImportedShelf {
 
 function isRobot(value: unknown): value is Scenario["robots"][number] {
   if (!isRecord(value)
+    || !hasOnlyKeys(value, robotKeys)
     || !isString(value.id)
     || !isString(value.name)
     || !isCell(value.start)
@@ -121,6 +140,7 @@ function isCapabilityList(value: unknown): value is TaskType[] {
 
 function isDynamicEvent(value: unknown): value is Scenario["dynamic"] {
   return isRecord(value)
+    && hasOnlyKeys(value, dynamicEventKeys)
     && isIntegerInRange(value.triggerTime, 0, MAX_SESSION_CURRENT_TIME)
     && Array.isArray(value.blockedCells)
     && value.blockedCells.length <= MAX_SCENARIO_CELL_COUNT
@@ -135,6 +155,7 @@ function isDynamicEvent(value: unknown): value is Scenario["dynamic"] {
 
 function isTask(value: unknown): value is Task {
   if (!isRecord(value)
+    || !hasOnlyKeys(value, taskKeys)
     || !isString(value.id)
     || !isString(value.title)
     || !isIntegerInRange(value.priority, 0, 5)
@@ -286,6 +307,10 @@ function isCell(value: unknown): value is Cell {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowedKeys.has(key));
 }
 
 function isString(value: unknown): value is string {

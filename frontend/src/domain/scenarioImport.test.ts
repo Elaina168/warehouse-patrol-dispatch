@@ -45,6 +45,10 @@ function buildScenario(): Scenario {
   };
 }
 
+function addUnknownField(value: object): void {
+  (value as Record<string, unknown>).unknownField = true;
+}
+
 describe("scenario import contract", () => {
   it("accepts nullable task timing fields", () => {
     const scenario = buildScenario();
@@ -89,6 +93,28 @@ describe("scenario import contract", () => {
     expect(parsed.robots[0].batteryCapacity).toBeUndefined();
     expect(parsed.robots[0].moveTicks).toBeUndefined();
     expect(parsed.robots[0].capabilities).toBeUndefined();
+  });
+
+  it.each<Array<[string, (scenario: Scenario) => void]>>([
+    ["Scenario", (scenario) => addUnknownField(scenario)],
+    ["Zones", (scenario) => addUnknownField(scenario.zones)],
+    ["Shelf", (scenario) => {
+      scenario.shelves = [{
+        id: "S1",
+        cell: [4, 4],
+        serviceCell: [4, 3],
+        initialOccupied: false
+      }];
+      addUnknownField(scenario.shelves[0]);
+    }],
+    ["Robot", (scenario) => addUnknownField(scenario.robots[0])],
+    ["DynamicEvent", (scenario) => addUnknownField(scenario.dynamic)],
+    ["Task", (scenario) => addUnknownField(scenario.tasks[0])]
+  ])("rejects unknown fields in %s objects", (_, mutate) => {
+    const scenario = buildScenario();
+    mutate(scenario);
+
+    expect(() => parseScenario(scenario)).toThrow("JSON 必须是 Scenario 对象");
   });
 
   it.each([1.5, -1, 6])("rejects task priority %s outside the integer zero-to-five range", (priority) => {
