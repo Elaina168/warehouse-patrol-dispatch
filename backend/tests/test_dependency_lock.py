@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -61,3 +62,19 @@ def test_exact_pin_parser_rejects_wildcard_version(tmp_path: Path) -> None:
 
     with pytest.raises(AssertionError, match="必须是有效的 PEP 440 精确版本"):
         _read_exact_pins(requirements_path)
+
+
+def test_frontend_lock_preserves_reviewed_security_floors() -> None:
+    lock = json.loads(
+        (PROJECT_ROOT / "frontend" / "package-lock.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    packages = lock["packages"]
+
+    assert Version(packages["node_modules/postcss"]["version"]) >= Version(
+        "8.5.23"
+    )
+    assert Version(packages["node_modules/nanoid"]["version"]) >= Version(
+        "3.3.17"
+    )

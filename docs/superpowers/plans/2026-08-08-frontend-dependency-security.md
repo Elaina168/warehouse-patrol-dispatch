@@ -28,7 +28,7 @@
 - Consumes: `frontend/package-lock.json` 的 `packages` 映射。
 - Produces: `test_frontend_lock_preserves_reviewed_security_floors`。
 
-- [ ] **Step 1: 写入失败测试**
+- [x] **Step 1: 写入失败测试**
 
 ```python
 import json
@@ -46,7 +46,7 @@ def test_frontend_lock_preserves_reviewed_security_floors() -> None:
 
 该测试会在 `postcss 8.5.18` 或 `nanoid 3.3.12` 回退时失败。
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run:
 
@@ -67,7 +67,7 @@ Expected: FAIL，报告当前 lockfile 版本低于安全下限。
 **Interfaces:**
 - Produces: `postcss 8.5.23` 和安全的 `nanoid` 解析版本。
 
-- [ ] **Step 1: 更新 package override**
+- [x] **Step 1: 更新 package override**
 
 将：
 
@@ -81,7 +81,7 @@ Expected: FAIL，报告当前 lockfile 版本低于安全下限。
 "postcss": "8.5.23"
 ```
 
-- [ ] **Step 2: 使用官方 registry 刷新安装树和 lockfile**
+- [x] **Step 2: 使用官方 registry 刷新安装树和 lockfile**
 
 Run:
 
@@ -91,7 +91,7 @@ Run:
 
 Expected: `frontend/package-lock.json` 与 `node_modules` 同步更新，安装命令退出 0。
 
-- [ ] **Step 3: 验证 GREEN 和实际解析版本**
+- [x] **Step 3: 验证 GREEN 和实际解析版本**
 
 Run:
 
@@ -113,7 +113,7 @@ Expected: 依赖锁测试通过；实际树包含 `postcss 8.5.23` 和 `nanoid >
 - Consumes: 更新后的 package files 和安全下限测试。
 - Produces: 当前官方 registry 审计、构建、测试和差异证据。
 
-- [ ] **Step 1: 运行实时安全审计**
+- [x] **Step 1: 运行实时安全审计**
 
 Run:
 
@@ -123,7 +123,7 @@ Run:
 
 Expected: `found 0 vulnerabilities`，退出码 0。
 
-- [ ] **Step 2: 运行完整项目检查**
+- [x] **Step 2: 运行完整项目检查**
 
 Run:
 
@@ -135,7 +135,7 @@ git diff --check
 
 Expected: 前端构建、全部前后端测试、Python 依赖检查和补丁检查全部退出 0。
 
-- [ ] **Step 3: 检查最终范围**
+- [x] **Step 3: 检查最终范围**
 
 Run:
 
@@ -145,4 +145,3 @@ git diff -- frontend/package.json frontend/package-lock.json backend/tests/test_
 ```
 
 Expected: 依赖修复只修改两个 package 文件和安全下限回归；`output/` 保持未跟踪且不进入提交。
-
