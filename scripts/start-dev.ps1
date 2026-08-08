@@ -182,6 +182,9 @@ function Start-ManagedProcess {
       throw "Failed to start $Name."
     }
     Add-ManagedProcessOwnership -Role $Name -Process $process
+    if ($TestHooks.ContainsKey("BeginManagedProcessOutputRead")) {
+      & $TestHooks.BeginManagedProcessOutputRead $process
+    }
     Write-Host "$Name started. PID=$($process.Id)"
     return
   }
@@ -212,9 +215,13 @@ function Start-ManagedProcess {
     throw "Failed to start $Name."
   }
 
-  $process.BeginOutputReadLine()
-  $process.BeginErrorReadLine()
   Add-ManagedProcessOwnership -Role $Name -Process $process
+  if ($TestHooks -and $TestHooks.ContainsKey("BeginManagedProcessOutputRead")) {
+    & $TestHooks.BeginManagedProcessOutputRead $process
+  } else {
+    $process.BeginOutputReadLine()
+    $process.BeginErrorReadLine()
+  }
   Write-Host "$Name started. PID=$($process.Id)"
 }
 

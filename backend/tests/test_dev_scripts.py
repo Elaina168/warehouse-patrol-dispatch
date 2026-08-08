@@ -977,6 +977,76 @@ try {{
     ]
 
 
+def test_start_output_read_failure_cleans_process_owned_before_output_initialization() -> None:
+    result = run_powershell_marked_result(
+        f"""
+. '{MANIFEST_HELPER}'
+$manifestPath = Join-Path ([System.IO.Path]::GetTempPath()) ("dev-processes-" + [guid]::NewGuid().ToString() + ".json")
+$fakeProcess = [pscustomobject]@{{ Id = $PID }}
+$state = [pscustomobject]@{{
+  outputHookCalled = $false
+  ownershipVisibleDuringOutputInitialization = $false
+  stopReceivedExactProcess = $false
+}}
+
+try {{
+  $hooks = @{{
+    ManifestPath = $manifestPath
+    StopCallback = {{ param($ownedProcess) }}
+    StopOwnedProcess = {{
+      param($ownedProcess)
+      $state.stopReceivedExactProcess = [object]::ReferenceEquals($ownedProcess, $fakeProcess)
+    }}
+    TestLocalPortOccupied = {{ param($port) $false }}
+    TestHttpReady = {{ param($url) $true }}
+    StartManagedProcess = {{
+      param($role, $filePath, $arguments, $workingDirectory)
+      return $fakeProcess
+    }}
+    BeginManagedProcessOutputRead = {{
+      param($ownedProcess)
+      $state.outputHookCalled = $true
+      $state.ownershipVisibleDuringOutputInitialization = @(
+        (Read-DevProcessManifest -ManifestPath $manifestPath).processes |
+          Where-Object {{ $_.pid -eq $ownedProcess.Id }}
+      ).Count -eq 1
+      throw 'stream initialization failed'
+    }}
+    ExitAfterStartup = $true
+  }}
+
+  try {{
+    & '{START_SCRIPT}' -NoBrowser -TestHooks $hooks
+  }} catch {{
+    $errorMessage = $_.Exception.Message
+  }}
+
+  Write-Output ("RESULT:" + ([ordered]@{{
+    errorMessage = $errorMessage
+    outputHookCalled = $state.outputHookCalled
+    ownershipVisibleDuringOutputInitialization = $state.ownershipVisibleDuringOutputInitialization
+    stopReceivedExactProcess = $state.stopReceivedExactProcess
+    manifestEntryCount = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
+  }} | ConvertTo-Json -Compress))
+}} finally {{
+  foreach ($path in @($manifestPath, "$manifestPath.tmp")) {{
+    if (Test-Path -LiteralPath $path) {{
+      Remove-Item -LiteralPath $path -Force
+    }}
+  }}
+}}
+"""
+    )
+
+    assert result == {
+        "errorMessage": "stream initialization failed",
+        "outputHookCalled": True,
+        "ownershipVisibleDuringOutputInitialization": True,
+        "stopReceivedExactProcess": True,
+        "manifestEntryCount": 0,
+    }
+
+
 def test_start_rolls_back_exact_child_when_manifest_registration_fails() -> None:
     result = run_powershell_marked_result(
         f"""
