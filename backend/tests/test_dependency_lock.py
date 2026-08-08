@@ -78,3 +78,22 @@ def test_frontend_lock_preserves_reviewed_security_floors() -> None:
     assert Version(packages["node_modules/nanoid"]["version"]) >= Version(
         "3.3.17"
     )
+
+
+def test_frontend_has_no_root_package_self_dependency() -> None:
+    package = json.loads(
+        (PROJECT_ROOT / "frontend" / "package.json").read_text(encoding="utf-8")
+    )
+    lock = json.loads(
+        (PROJECT_ROOT / "frontend" / "package-lock.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert "warehouse-patrol-dispatch" not in package["dependencies"]
+    assert (
+        "warehouse-patrol-dispatch"
+        not in lock["packages"][""]["dependencies"]
+    )
+    assert "node_modules/warehouse-patrol-dispatch" not in lock["packages"]
+    assert ".." not in lock["packages"]

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Competition prototype and future full-stack app for warehouse logistics and patrol robot dispatch.",
+  "description": "Online multi-robot task-flow dispatch system for warehouse logistics and patrol scenarios.",
   "scripts": {
     "dev": ".\\.tools\\powershell\\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1",
     "dev:no-browser": ".\\.tools\\powershell\\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -NoBrowser",
