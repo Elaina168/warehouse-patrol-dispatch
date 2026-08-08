@@ -162,7 +162,7 @@ Completed and currently expected to remain in the project:
 - `scripts/test-all.ps1` and `npm run check` run `frontend:build`, `frontend:test`, and `backend:test` in that order. Reproducible backend installation uses `backend/requirements.lock.txt`.
 - Replan-window and scale experiment batches are limited to 32 entries, and replan windows must be unique. Algorithm report publication treats `results.json`, `runs.csv`, and `case-summaries.csv` as one rollback-protected bundle.
 - Benchmark isolation cleans child processes and Pipe endpoints even for cancellation `BaseException`, escalating from terminate through bounded join to kill and bounded join when needed. Real wall-clock measurements remain offline evidence rather than daily pytest gates, and dependency locks and audits have dedicated checks.
-- Current verification snapshot on 2026-08-01: frontend production build passed, frontend tests `154/154`, backend tests `616/616`.
+- Current verification snapshot on 2026-08-08: frontend production build passed, frontend tests `175/175`, backend tests `676/676`.
 
 Recently removed because they are not needed yet:
 
@@ -488,7 +488,7 @@ Before reporting implementation complete, run:
 & 'C:\nvm4w\nodejs\npm.cmd' run check
 ```
 
-Latest full verification snapshot on 2026-08-01: frontend production build passed, frontend tests `154/154`, backend tests `616/616`.
+Latest full verification snapshot on 2026-08-08: frontend production build passed, frontend tests `175/175`, backend tests `676/676`.
 
 For frontend behavior changes, also verify in a browser when practical:
 
