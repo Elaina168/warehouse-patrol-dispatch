@@ -4,8 +4,10 @@
     {
       "label": "Start project",
       "type": "shell",
-      "command": "powershell",
+      "command": "${workspaceFolder}\\.tools\\powershell\\pwsh.exe",
       "args": [
+        "-NoLogo",
+        "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
         "-File",
@@ -20,8 +22,10 @@
     {
       "label": "Stop project",
       "type": "shell",
-      "command": "powershell",
+      "command": "${workspaceFolder}\\.tools\\powershell\\pwsh.exe",
       "args": [
+        "-NoLogo",
+        "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
         "-File",
@@ -35,8 +39,10 @@
     {
       "label": "Check project",
       "type": "shell",
-      "command": "powershell",
+      "command": "${workspaceFolder}\\.tools\\powershell\\pwsh.exe",
       "args": [
+        "-NoLogo",
+        "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
         "-Command",

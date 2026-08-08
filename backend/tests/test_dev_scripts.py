@@ -11,6 +11,13 @@ import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_PWSH = REPOSITORY_ROOT / ".tools" / "powershell" / "pwsh.exe"
+WINDOWS_POWERSHELL = (
+    Path(os.environ["SystemRoot"])
+    / "System32"
+    / "WindowsPowerShell"
+    / "v1.0"
+    / "powershell.exe"
+)
 MANIFEST_HELPER = REPOSITORY_ROOT / "scripts" / "dev-process-manifest.ps1"
 STOP_SCRIPT = REPOSITORY_ROOT / "scripts" / "stop-dev.ps1"
 START_SCRIPT = REPOSITORY_ROOT / "scripts" / "start-dev.ps1"
@@ -128,6 +135,57 @@ def run_test_all(
         encoding="utf-8",
         env=environment,
     )
+
+
+def test_start_script_rejects_windows_powershell_before_manifest_changes() -> None:
+    manifest_path = REPOSITORY_ROOT / ".runtime" / "dev-processes.json"
+    before = manifest_path.read_bytes() if manifest_path.exists() else None
+
+    completed = subprocess.run(
+        [
+            str(WINDOWS_POWERSHELL),
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(START_SCRIPT),
+            "-ValidateOnly",
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    after = manifest_path.read_bytes() if manifest_path.exists() else None
+    assert completed.returncode != 0
+    assert "PowerShell 7" in completed.stdout + completed.stderr
+    assert after == before
+
+
+def test_manifest_helper_rejects_windows_powershell_when_loaded_directly() -> None:
+    completed = subprocess.run(
+        [
+            str(WINDOWS_POWERSHELL),
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            f". '{MANIFEST_HELPER}'; Write-Output 'MANIFEST_HELPER_LOADED'",
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert completed.returncode != 0
+    assert "PowerShell 7" in completed.stdout + completed.stderr
+    assert "MANIFEST_HELPER_LOADED" not in completed.stdout
 
 
 def test_all_runs_complete_checks_in_order(tmp_path: Path) -> None:

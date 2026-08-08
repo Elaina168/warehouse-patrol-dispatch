@@ -52,7 +52,7 @@
 在 VS Code 中打开 `D:\codex\summer` 后，运行：
 
 ```powershell
-.\scripts\start-dev.ps1
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
 脚本会自动：
@@ -63,16 +63,12 @@
 - 打开本地浏览器窗口到正式前端页面。
 - 按 `Ctrl+C` 时，只停止脚本拥有、已记录在 `.runtime/dev-processes.json` 且 PID 与 `startedAtUtc` 仍匹配的进程；复用的外部兼容后端不会被停止。
 
-如果 PowerShell 阻止脚本执行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
-```
+项目脚本仅支持仓库内的 PowerShell 7，不支持 Windows PowerShell 5.1。直接使用上述命令可以同时固定版本并绕过本机脚本执行策略限制。
 
 如果不想自动打开浏览器：
 
 ```powershell
-.\scripts\start-dev.ps1 -NoBrowser
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1 -NoBrowser
 ```
 
 ## VS Code 任务

@@ -1,3 +1,7 @@
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+  throw "PowerShell 7 or later is required. Run .\.tools\powershell\pwsh.exe instead of powershell.exe."
+}
+
 $ErrorActionPreference = "Stop"
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)

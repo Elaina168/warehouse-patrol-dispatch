@@ -36,10 +36,12 @@ Python 3.13.2
 
 ## 启动项目
 
+项目脚本唯一支持的 PowerShell 主版本是 PowerShell 7，并固定使用仓库内的 `.\.tools\powershell\pwsh.exe`。Windows PowerShell 5.1 不在兼容范围内。
+
 一键启动正式版前后端并打开浏览器：
 
 ```powershell
-.\scripts\start-dev.ps1
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
 前端地址：
@@ -57,7 +59,7 @@ http://127.0.0.1:8011/health
 停止开发服务：
 
 ```powershell
-.\scripts\stop-dev.ps1
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop-dev.ps1
 ```
 
 ### 开发进程所有权与端口
@@ -71,13 +73,13 @@ http://127.0.0.1:8011/health
 启动前端：
 
 ```powershell
-.\scripts\dev-frontend.ps1
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-frontend.ps1
 ```
 
 启动后端：
 
 ```powershell
-.\scripts\dev-backend.ps1
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-backend.ps1
 ```
 
 ## 浏览器跨域来源
@@ -94,7 +96,7 @@ npm run backend:dev
 ## 检查项目
 
 ```powershell
-.\scripts\test-all.ps1
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-all.ps1
 ```
 
 或（两条命令均按相同顺序运行 `frontend:build`、`frontend:test` 和 `backend:test`）：

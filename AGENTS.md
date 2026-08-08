@@ -309,7 +309,7 @@ Desired direction for that later phase:
   - Pydantic schemas: `backend/app/schemas.py`
   - Tests: `backend/tests/`
 - `scripts/`
-  - Windows PowerShell helper scripts for environment, start, stop, and checks.
+  - PowerShell 7 helper scripts for environment, start, stop, and checks.
 - `docs/`
   - Environment notes.
 
@@ -330,7 +330,7 @@ Use project-local PowerShell 7 for PowerShell commands:
 D:\codex\summer\.tools\powershell\pwsh.exe
 ```
 
-Do not rely on Windows PowerShell 5.1 for project scripts unless PowerShell 7 is unavailable. The npm `dev`, `dev:no-browser`, `dev:stop`, and `backend:dev` scripts call this project-local `pwsh.exe`.
+Windows PowerShell 5.1 is unsupported for project scripts. Always use the project-local PowerShell 7 executable; the npm `dev`, `dev:no-browser`, `dev:stop`, and `backend:dev` scripts already call it.
 
 Known working versions:
 
@@ -353,19 +353,19 @@ Backend virtual environment:
 Start the full project:
 
 ```powershell
-.\scripts\start-dev.ps1
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
 Start without opening a browser:
 
 ```powershell
-.\scripts\start-dev.ps1 -NoBrowser
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1 -NoBrowser
 ```
 
 Stop development services:
 
 ```powershell
-.\scripts\stop-dev.ps1
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop-dev.ps1
 ```
 
 Run all checks:
@@ -377,17 +377,17 @@ Run all checks:
 This script runs the same three checks as `npm run check` in the same order:
 
 ```powershell
-.\scripts\test-all.ps1
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-all.ps1
 ```
 
 Read source snippets that contain Chinese strings with explicit UTF-8 decoding:
 
 ```powershell
-Get-Content -Path backend\app\sessions.py -Encoding UTF8 | Select-Object -Skip 70 -First 40
-.\scripts\show-source.ps1 -Path backend\app\sessions.py -Skip 70 -First 40
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -Command "Get-Content -Path backend\app\sessions.py -Encoding UTF8 | Select-Object -Skip 70 -First 40"
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\show-source.ps1 -Path backend\app\sessions.py -Skip 70 -First 40
 ```
 
-Windows PowerShell 5.1 may misread UTF-8 files without BOM when plain `Get-Content` is used. Use `Get-Content -Encoding UTF8` or `scripts\show-source.ps1` before editing Chinese string literals or tests that assert Chinese text. Do not copy Chinese text from garbled PowerShell output into `apply_patch`; if terminal output shows mojibake such as `鎵` or `浠`, re-read the file with explicit UTF-8 decoding and patch against the actual UTF-8 text. Project scripts dot-source `scripts\env.ps1`, which sets UTF-8 console/Python output and makes `Get-Content` default to UTF-8 inside that scripted environment.
+Read UTF-8 files with explicit `Get-Content -Encoding UTF8` or `scripts\show-source.ps1` before editing Chinese string literals or tests that assert Chinese text. Do not copy Chinese text from garbled terminal output into `apply_patch`; if output shows mojibake such as `鎵` or `浠`, re-read the file with explicit UTF-8 decoding and patch against the actual UTF-8 text. Project scripts dot-source `scripts\env.ps1`, which sets UTF-8 console/Python output and makes `Get-Content` default to UTF-8 inside that scripted environment.
 
 Frontend build only:
 
