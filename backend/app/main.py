@@ -100,7 +100,8 @@ def experiment_conflict_avoidance(request: ConflictAvoidanceExperimentRequest) -
 
 @app.post("/api/experiments/dynamic-replanning", response_model=DynamicReplanningExperimentResult)
 def experiment_dynamic_replanning(request: DynamicReplanningExperimentRequest) -> DynamicReplanningExperimentResult:
-    diagnostics = validate_scenario(request.scenario, request.options)
+    validation_options = request.options.model_copy(update={"includeDynamic": True})
+    diagnostics = validate_scenario(request.scenario, validation_options)
     if diagnostics:
         raise HTTPException(status_code=422, detail=diagnostics)
     return compare_dynamic_replanning(request)

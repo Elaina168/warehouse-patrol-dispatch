@@ -5,7 +5,7 @@ import backend.app.sessions as sessions_module
 from backend.app.main import app
 from backend.app.limits import MAX_EXPERIMENT_CASES
 from backend.app.schemas import Scenario
-from backend.tests.helpers import frontend_demo_scenario
+from backend.tests.helpers import frontend_demo_scenario, scenario_payload
 
 
 def crossing_delivery_scenario() -> dict:
@@ -307,6 +307,38 @@ def test_dynamic_replanning_experiment_returns_static_and_dynamic_cases() -> Non
     assert cases["withDynamicReplanning"]["result"]["metrics"]["assignedTaskCount"] > cases[
         "withoutDynamicReplanning"
     ]["result"]["metrics"]["assignedTaskCount"]
+
+
+def test_dynamic_replanning_experiment_validates_its_enabled_case_when_request_disables_dynamic() -> None:
+    scenario = scenario_payload()
+    scenario["tasks"] = [
+        {
+            "id": "BASE",
+            "type": "inspection",
+            "title": "基础任务",
+            "priority": 1,
+            "targets": [[1, 0]],
+        }
+    ]
+    for robot in scenario["robots"]:
+        robot["capabilities"] = ["inspection"]
+    scenario["dynamic"]["tasks"] = [
+        {
+            "id": "BAD",
+            "type": "emergency",
+            "title": "无兼容机器人",
+            "priority": 5,
+            "target": [1, 0],
+        }
+    ]
+
+    response = TestClient(app).post(
+        "/api/experiments/dynamic-replanning",
+        json={"scenario": scenario, "options": {"includeDynamic": False}},
+    )
+
+    assert response.status_code == 422
+    assert "BAD" in "；".join(response.json()["detail"])
 
 
 def test_dynamic_replanning_experiment_uses_integrated_demo_variant() -> None:
