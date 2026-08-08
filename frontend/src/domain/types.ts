@@ -253,6 +253,7 @@ export type DispatchRequest = {
 export type CreateSessionRequest = {
   scenario: Scenario;
   options?: DispatchOptions;
+  delayInitialPlanning?: boolean;
 };
 
 export type AddTaskRequest = {

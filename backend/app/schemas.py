@@ -245,6 +245,7 @@ class OnlinePressureExperimentRequest(ApiModel):
 class CreateSessionRequest(ApiModel):
     scenario: Scenario
     options: DispatchOptions = Field(default_factory=DispatchOptions)
+    delayInitialPlanning: bool = False
 
 
 class AddTaskRequest(ApiModel):

@@ -99,6 +99,7 @@ class DispatchSession:
     options: DispatchOptions
     initial_scenario: Scenario | None = None
     initial_options: DispatchOptions | None = None
+    delay_initial_planning: bool = False
     created_at: float = field(default_factory=_session_now)
     updated_at: float = field(default_factory=_session_now)
     last_accessed_at: float = field(default_factory=_session_now)
@@ -223,6 +224,7 @@ def create_session(
         options=request.options.model_copy(deep=True),
         initial_scenario=request.scenario.model_copy(deep=True),
         initial_options=request.options.model_copy(deep=True),
+        delay_initial_planning=request.delayInitialPlanning,
         created_at=now,
         updated_at=now,
         last_accessed_at=now,
@@ -1035,7 +1037,7 @@ def _ensure_planning_started(session: DispatchSession) -> None:
 
 
 def _should_delay_initial_planning(session: DispatchSession) -> bool:
-    return session.scenario.id == "integrated-demo"
+    return session.delay_initial_planning
 
 
 def _build_idle_result(session: DispatchSession) -> DispatchResult:

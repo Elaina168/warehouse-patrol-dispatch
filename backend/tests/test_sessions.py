@@ -2262,6 +2262,7 @@ def test_integrated_demo_avoidance_keeps_idle_robot_out_of_active_task_path() ->
         json={
             "scenario": frontend_demo_scenario("integrated-demo"),
             "options": {"avoidConflicts": True, "includeDynamic": True},
+            "delayInitialPlanning": True,
         },
     )
 
@@ -2361,6 +2362,7 @@ def test_session_api_accepts_manual_task() -> None:
         json={
             "scenario": frontend_demo_scenario("integrated-demo"),
             "options": {"avoidConflicts": True, "includeDynamic": True},
+            "delayInitialPlanning": True,
         },
     )
     assert create_response.status_code == 200
@@ -2623,6 +2625,41 @@ def test_session_releases_incompatible_stale_lock_and_replans_immediately() -> N
     )
 
 
+def test_integrated_demo_id_does_not_implicitly_delay_planning() -> None:
+    client = TestClient(app)
+    scenario = scenario_payload()
+    scenario["id"] = "integrated-demo"
+
+    response = client.post("/api/sessions", json={"scenario": scenario})
+
+    assert response.status_code == 200
+    assert len(response.json()["result"]["assignments"]) == 2
+
+
+def test_explicit_delay_initial_planning_preserves_idle_creation_and_reset() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/api/sessions",
+        json={"scenario": scenario_payload(), "delayInitialPlanning": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["result"]["assignments"] == []
+
+    tick = client.post(
+        f"/api/sessions/{payload['sessionId']}/tick",
+        json={"currentTime": 1},
+    )
+    assert tick.status_code == 200
+    assert len(tick.json()["result"]["assignments"]) == 2
+
+    reset = client.post(f"/api/sessions/{payload['sessionId']}/reset")
+    assert reset.status_code == 200
+    assert reset.json()["currentTime"] == 0
+    assert reset.json()["result"]["assignments"] == []
+
+
 def test_session_create_keeps_tasks_waiting_until_first_tick() -> None:
     client = TestClient(app)
     create_response = client.post(
@@ -2630,6 +2667,7 @@ def test_session_create_keeps_tasks_waiting_until_first_tick() -> None:
         json={
             "scenario": frontend_demo_scenario("integrated-demo"),
             "options": {"avoidConflicts": True, "includeDynamic": True},
+            "delayInitialPlanning": True,
         },
     )
 
@@ -2650,6 +2688,7 @@ def test_session_runtime_robot_failure_before_play_is_visible_without_starting_p
         json={
             "scenario": frontend_demo_scenario("integrated-demo"),
             "options": {"avoidConflicts": True, "includeDynamic": True},
+            "delayInitialPlanning": True,
         },
     )
     assert create_response.status_code == 200
@@ -2677,6 +2716,7 @@ def test_session_add_task_before_play_stays_pending_until_tick() -> None:
         json={
             "scenario": frontend_demo_scenario("integrated-demo"),
             "options": {"avoidConflicts": True, "includeDynamic": True},
+            "delayInitialPlanning": True,
         },
     )
     assert create_response.status_code == 200
@@ -2781,6 +2821,7 @@ def test_session_stream_task_endpoint_is_removed() -> None:
         json={
             "scenario": frontend_demo_scenario("integrated-demo"),
             "options": {"avoidConflicts": True, "includeDynamic": True},
+            "delayInitialPlanning": True,
         },
     )
     assert create_response.status_code == 200
@@ -5994,6 +6035,7 @@ def test_reset_clears_adaptive_latency_history_and_state() -> None:
                 "includeDynamic": True,
                 "adaptiveReplanWindow": True,
             },
+            "delayInitialPlanning": True,
         },
     )
     assert created.status_code == 200
@@ -6156,6 +6198,7 @@ def test_delayed_demo_observer_records_first_dispatch_on_initial_tick(
                 avoidConflicts=True,
                 includeDynamic=True,
             ),
+            delayInitialPlanning=True,
         ),
         replan_observer=observations.append,
     )

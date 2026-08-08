@@ -245,6 +245,11 @@ def test_frontend_request_optional_fields_match_backend_defaults() -> None:
         assert _frontend_optional_fields(type_name) == _backend_optional_fields(model), type_name
 
 
+def test_create_session_request_exposes_explicit_delay_initial_planning() -> None:
+    assert schemas.CreateSessionRequest.model_fields["delayInitialPlanning"].default is False
+    assert "delayInitialPlanning" in _frontend_optional_fields("CreateSessionRequest")
+
+
 def test_frontend_assignment_replan_window_constants_match_backend_schema() -> None:
     schema = schemas.DispatchOptions.model_json_schema()["properties"]["assignmentReplanWindow"]
 

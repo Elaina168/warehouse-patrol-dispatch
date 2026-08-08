@@ -56,6 +56,7 @@ import {
   buildManualTask,
   clearSessionViewState,
   createManualTaskForm,
+  buildCreateSessionRequest,
   createSessionRequestCoordinator,
   dispatchSynchronizationLabel,
   MapBoard,
@@ -107,6 +108,19 @@ describe("session request coordination", () => {
       }
     };
   }
+
+  it("delays only the built-in scenario even when an import reuses its ID", () => {
+    const builtInScenario = scenarios[0];
+    const options = buildDispatchOptions(true, true, 24, false);
+    const importedScenario = structuredClone(builtInScenario);
+
+    expect(
+      buildCreateSessionRequest(builtInScenario, options, null).delayInitialPlanning
+    ).toBe(true);
+    expect(
+      buildCreateSessionRequest(importedScenario, options, importedScenario).delayInitialPlanning
+    ).toBe(false);
+  });
 
   it("keeps create HTTP 4xx online without marking a missing session ready", () => {
     const state = createRequestFailureState();

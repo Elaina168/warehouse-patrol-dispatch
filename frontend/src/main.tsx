@@ -20,7 +20,7 @@ import { buildShelfCellPresentations, buildWarehouseDeliveryCandidates } from ".
 import { MAX_TASK_SERVICE_TIME, parseScenario } from "./domain/scenarioImport";
 import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./domain/view";
 import { scenarios } from "./domain/scenarios";
-import type { Cell, Conflict, ConflictState, DispatchOptions, DispatchResult, RecoveryAction, Robot, SafetyStall, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
+import type { Cell, Conflict, ConflictState, CreateSessionRequest, DispatchOptions, DispatchResult, RecoveryAction, Robot, SafetyStall, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
 import "./styles.css";
 
 const API_BASE = "http://127.0.0.1:8011";
@@ -385,10 +385,11 @@ function App() {
     fetch(`${API_BASE}/api/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: JSON.stringify(buildCreateSessionRequest(
         scenario,
-        options: buildDispatchOptions(avoidConflicts, true, assignmentReplanWindow, adaptiveReplanWindow)
-      })
+        buildDispatchOptions(avoidConflicts, true, assignmentReplanWindow, adaptiveReplanWindow),
+        importedScenario
+      ))
     })
       .then((response) => {
         if (!response.ok) return responseError(response, "session failed");
@@ -2173,6 +2174,18 @@ export function buildDispatchOptions(
     includeDynamic,
     assignmentReplanWindow: normalizeAssignmentReplanWindow(assignmentReplanWindow),
     adaptiveReplanWindow
+  };
+}
+
+export function buildCreateSessionRequest(
+  scenario: Scenario,
+  options: DispatchOptions,
+  importedScenario: Scenario | null
+): CreateSessionRequest {
+  return {
+    scenario,
+    options,
+    delayInitialPlanning: importedScenario === null
   };
 }
 
