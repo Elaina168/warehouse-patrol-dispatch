@@ -27,7 +27,7 @@
 - Consumes: `sessions_module.MAX_SESSIONS`、`sessions_module._sessions`、`POST /api/experiments/online-pressure`。
 - Produces: `test_online_pressure_experiment_preserves_full_global_session_registry`。
 
-- [ ] **Step 1: 写入失败测试**
+- [x] **Step 1: 写入失败测试**
 
 创建一个普通生产会话，把 `MAX_SESSIONS` 临时设为 `1`，保存 `_sessions` 的键和值对象，调用在线压力实验 API，然后逐项断言全局 registry 未改变：
 
@@ -52,7 +52,7 @@ def test_online_pressure_experiment_preserves_full_global_session_registry(monke
     assert sessions_module._sessions[existing.sessionId] is before[existing.sessionId]
 ```
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run:
 
@@ -76,7 +76,7 @@ Expected: FAIL；旧实现创建实验会话时淘汰唯一的生产会话。
 - Produces: session 公共函数新增仅限关键字参数 `registry: SessionRegistry | None = None`。
 - Preserves: `_sessions` 与 `_sessions_lock` 继续引用默认 registry 的容器和锁。
 
-- [ ] **Step 1: 增加 registry 类型和默认解析函数**
+- [x] **Step 1: 增加 registry 类型和默认解析函数**
 
 ```python
 @dataclass
@@ -95,7 +95,7 @@ def _session_registry(registry: SessionRegistry | None) -> SessionRegistry:
     return _default_session_registry if registry is None else registry
 ```
 
-- [ ] **Step 2: 让 registry helpers 只访问传入实例**
+- [x] **Step 2: 让 registry helpers 只访问传入实例**
 
 给 `_locked_session`、`_cleanup_sessions_locked`、`_cleanup_sessions` 和 `_publish_session` 增加 `registry` 参数。容量计算使用：
 
@@ -105,11 +105,11 @@ capacity = MAX_SESSIONS if registry is _default_session_registry else registry.m
 
 `registry.max_sessions is None` 表示不额外限制私有 registry；默认 registry 仍读取可被现有测试 monkeypatch 的 `MAX_SESSIONS`。
 
-- [ ] **Step 3: 向公共 session 操作传递 registry**
+- [x] **Step 3: 向公共 session 操作传递 registry**
 
 在 `create_session`、`get_session`、`list_sessions`、`delete_session`、`reset_session`、`add_task`、`add_blocked_cell`、`remove_blocked_cell`、`fail_robot`、`restore_robot` 和 `tick_session` 增加仅限关键字的 `registry` 参数，并把解析后的同一实例传给 helper。
 
-- [ ] **Step 4: 运行 session 回归**
+- [x] **Step 4: 运行 session 回归**
 
 Run:
 
@@ -132,7 +132,7 @@ Expected: 全部通过；默认 registry 行为未改变。
 - Consumes: `SessionRegistry` 及所有 session 操作的 `registry` 参数。
 - Produces: 与原响应完全一致、但不接触默认 registry 的 `run_online_pressure_experiment`。
 
-- [ ] **Step 1: 创建并传递私有 registry**
+- [x] **Step 1: 创建并传递私有 registry**
 
 在实验函数开始处创建：
 
@@ -142,7 +142,7 @@ registry = SessionRegistry(max_sessions=1)
 
 向创建、tick、任务插入、封锁、故障、恢复、解除封锁和删除操作传递 `registry=registry`。
 
-- [ ] **Step 2: 更新现有观察测试包装器**
+- [x] **Step 2: 更新现有观察测试包装器**
 
 现有 `record_experiment_tick` 接受并转发关键字 registry：
 
@@ -151,7 +151,7 @@ def record_experiment_tick(session_id, request, *, registry=None):
     result = real_tick_session(session_id, request, registry=registry)
 ```
 
-- [ ] **Step 3: 验证 GREEN**
+- [x] **Step 3: 验证 GREEN**
 
 Run:
 
@@ -161,7 +161,7 @@ Run:
 
 Expected: 新增隔离测试和既有在线压力测试全部通过。
 
-- [ ] **Step 4: 检查补丁**
+- [x] **Step 4: 检查补丁**
 
 Run:
 
@@ -171,4 +171,3 @@ git diff -- backend/app/sessions.py backend/app/experiments.py backend/tests/tes
 ```
 
 Expected: 无空白错误；无路由、schema 或调度算法改动。
-

@@ -146,8 +146,16 @@ class DispatchSession:
     closing: bool = field(default=False, repr=False, compare=False)
 
 
-_sessions: dict[str, DispatchSession] = {}
-_sessions_lock = RLock()
+@dataclass
+class SessionRegistry:
+    sessions: dict[str, DispatchSession] = field(default_factory=dict)
+    lock: RLock = field(default_factory=RLock, repr=False)
+    max_sessions: int | None = None
+
+
+_default_session_registry = SessionRegistry()
+_sessions = _default_session_registry.sessions
+_sessions_lock = _default_session_registry.lock
 _SESSION_CANDIDATE_COORDINATION_FIELDS = {
     "lock",
     "replan_observer",
@@ -155,17 +163,26 @@ _SESSION_CANDIDATE_COORDINATION_FIELDS = {
 }
 
 
+def _session_registry(registry: SessionRegistry | None) -> SessionRegistry:
+    return _default_session_registry if registry is None else registry
+
+
 @contextmanager
 def _locked_session(
     session_id: str,
     *,
     touch_access: bool = True,
+    registry: SessionRegistry | None = None,
 ) -> Iterator[DispatchSession]:
+    resolved_registry = _session_registry(registry)
     while True:
         waited_session: DispatchSession | None = None
-        with _sessions_lock:
-            _cleanup_sessions_locked()
-            session = _sessions.get(session_id)
+        with resolved_registry.lock:
+            if resolved_registry is _default_session_registry:
+                _cleanup_sessions_locked()
+            else:
+                _cleanup_sessions_locked(registry=resolved_registry)
+            session = resolved_registry.sessions.get(session_id)
             if session is None or session.closing:
                 raise HTTPException(
                     status_code=404,
@@ -191,6 +208,7 @@ def create_session(
     enforce_execution_safety: bool = True,
     adaptive_replan_policy: AdaptiveReplanPolicy = DEFAULT_ADAPTIVE_REPLAN_POLICY,
     replan_observer: Callable[[ReplanObservation], None] | None = None,
+    registry: SessionRegistry | None = None,
 ) -> SessionResult:
     _require_initial_task_capacity(request.scenario)
     diagnostics = validate_scenario(request.scenario, request.options)
@@ -218,22 +236,37 @@ def create_session(
     )
     _initialize_shelf_inventory(session)
     initial_result = _build_result(session)
-    _publish_session(session)
+    _publish_session(session, registry=registry)
     return initial_result
 
 
-def get_session(session_id: str) -> SessionResult:
-    with _locked_session(session_id) as session:
+def get_session(
+    session_id: str,
+    *,
+    registry: SessionRegistry | None = None,
+) -> SessionResult:
+    with _locked_session(session_id, registry=registry) as session:
         return _build_result(session)
 
 
-def list_sessions() -> list[SessionSummary]:
-    with _sessions_lock:
-        _cleanup_sessions_locked()
+def list_sessions(
+    *,
+    registry: SessionRegistry | None = None,
+) -> list[SessionSummary]:
+    resolved_registry = _session_registry(registry)
+    with resolved_registry.lock:
+        if resolved_registry is _default_session_registry:
+            _cleanup_sessions_locked()
+        else:
+            _cleanup_sessions_locked(registry=resolved_registry)
         session_ids = [
             item.session_id
             for item in sorted(
-                (session for session in _sessions.values() if not session.closing),
+                (
+                    session
+                    for session in resolved_registry.sessions.values()
+                    if not session.closing
+                ),
                 key=lambda session: session.last_accessed_at,
                 reverse=True,
             )
@@ -242,7 +275,11 @@ def list_sessions() -> list[SessionSummary]:
     summaries: list[SessionSummary] = []
     for session_id in session_ids:
         try:
-            with _locked_session(session_id, touch_access=False) as session:
+            with _locked_session(
+                session_id,
+                touch_access=False,
+                registry=resolved_registry,
+            ) as session:
                 summaries.append(_build_session_summary(session))
         except HTTPException as error:
             if error.status_code != 404:
@@ -250,11 +287,16 @@ def list_sessions() -> list[SessionSummary]:
     return summaries
 
 
-def delete_session(session_id: str) -> DeleteSessionResult:
+def delete_session(
+    session_id: str,
+    *,
+    registry: SessionRegistry | None = None,
+) -> DeleteSessionResult:
+    resolved_registry = _session_registry(registry)
     target: DispatchSession | None = None
     while True:
-        with _sessions_lock:
-            current = _sessions.get(session_id)
+        with resolved_registry.lock:
+            current = resolved_registry.sessions.get(session_id)
             if current is None or (current.closing and current is not target):
                 raise HTTPException(
                     status_code=404,
@@ -270,8 +312,8 @@ def delete_session(session_id: str) -> DeleteSessionResult:
                 )
             if target.lock.acquire(blocking=False):
                 try:
-                    if _sessions.get(session_id) is target:
-                        _sessions.pop(session_id)
+                    if resolved_registry.sessions.get(session_id) is target:
+                        resolved_registry.sessions.pop(session_id)
                         return DeleteSessionResult(sessionId=session_id, deleted=True)
                 finally:
                     target.lock.release()
@@ -279,8 +321,12 @@ def delete_session(session_id: str) -> DeleteSessionResult:
         target.lock.release()
 
 
-def reset_session(session_id: str) -> SessionResult:
-    with _locked_session(session_id) as session:
+def reset_session(
+    session_id: str,
+    *,
+    registry: SessionRegistry | None = None,
+) -> SessionResult:
+    with _locked_session(session_id, registry=registry) as session:
         if session.initial_scenario is None or session.initial_options is None:
             raise HTTPException(status_code=409, detail=f"调度会话缺少初始快照，无法重置：{session_id}")
 
@@ -288,8 +334,13 @@ def reset_session(session_id: str) -> SessionResult:
         return _build_result(session)
 
 
-def add_task(session_id: str, request: AddTaskRequest) -> SessionResult:
-    with _locked_session(session_id) as session:
+def add_task(
+    session_id: str,
+    request: AddTaskRequest,
+    *,
+    registry: SessionRegistry | None = None,
+) -> SessionResult:
+    with _locked_session(session_id, registry=registry) as session:
         task = request.task.model_copy(deep=True)
         if any(existing.id == task.id for existing in _all_known_tasks(session)):
             raise HTTPException(status_code=409, detail=f"任务 ID 已存在：{task.id}")
@@ -316,8 +367,13 @@ def add_task(session_id: str, request: AddTaskRequest) -> SessionResult:
         return _build_result(session)
 
 
-def add_blocked_cell(session_id: str, request: AddBlockRequest) -> SessionResult:
-    with _locked_session(session_id) as session:
+def add_blocked_cell(
+    session_id: str,
+    request: AddBlockRequest,
+    *,
+    registry: SessionRegistry | None = None,
+) -> SessionResult:
+    with _locked_session(session_id, registry=registry) as session:
         current_time = _runtime_request_time(session, request)
         _require_not_past_time(session, current_time)
         cell = request.cell
@@ -403,8 +459,13 @@ def add_blocked_cell(session_id: str, request: AddBlockRequest) -> SessionResult
         return result
 
 
-def remove_blocked_cell(session_id: str, request: RemoveBlockRequest) -> SessionResult:
-    with _locked_session(session_id) as session:
+def remove_blocked_cell(
+    session_id: str,
+    request: RemoveBlockRequest,
+    *,
+    registry: SessionRegistry | None = None,
+) -> SessionResult:
+    with _locked_session(session_id, registry=registry) as session:
         current_time = _runtime_request_time(session, request)
         _require_not_past_time(session, current_time)
         cell = request.cell
@@ -437,8 +498,13 @@ def remove_blocked_cell(session_id: str, request: RemoveBlockRequest) -> Session
         return _build_result(session)
 
 
-def fail_robot(session_id: str, request: FailRobotRequest) -> SessionResult:
-    with _locked_session(session_id) as session:
+def fail_robot(
+    session_id: str,
+    request: FailRobotRequest,
+    *,
+    registry: SessionRegistry | None = None,
+) -> SessionResult:
+    with _locked_session(session_id, registry=registry) as session:
         current_time = _runtime_request_time(session, request)
         _require_not_past_time(session, current_time)
         robot_ids = {robot.id for robot in session.scenario.robots}
@@ -462,8 +528,13 @@ def fail_robot(session_id: str, request: FailRobotRequest) -> SessionResult:
         return _build_result(session)
 
 
-def restore_robot(session_id: str, request: RestoreRobotRequest) -> SessionResult:
-    with _locked_session(session_id) as session:
+def restore_robot(
+    session_id: str,
+    request: RestoreRobotRequest,
+    *,
+    registry: SessionRegistry | None = None,
+) -> SessionResult:
+    with _locked_session(session_id, registry=registry) as session:
         current_time = _runtime_request_time(session, request)
         _require_not_past_time(session, current_time)
         robot_ids = {robot.id for robot in session.scenario.robots}
@@ -498,8 +569,13 @@ def restore_robot(session_id: str, request: RestoreRobotRequest) -> SessionResul
         return _build_result(session)
 
 
-def tick_session(session_id: str, request: SessionTickRequest) -> SessionResult:
-    with _locked_session(session_id) as session:
+def tick_session(
+    session_id: str,
+    request: SessionTickRequest,
+    *,
+    registry: SessionRegistry | None = None,
+) -> SessionResult:
+    with _locked_session(session_id, registry=registry) as session:
         _require_not_past_time(session, request.currentTime)
         previous_time = session.current_time
         if request.currentTime > session.current_time:
@@ -707,12 +783,17 @@ def _initialize_shelf_inventory(session: DispatchSession) -> None:
     session.shelf_task_bindings = bindings
 
 
-def _cleanup_sessions_locked(now: float | None = None) -> None:
+def _cleanup_sessions_locked(
+    now: float | None = None,
+    *,
+    registry: SessionRegistry | None = None,
+) -> None:
+    resolved_registry = _session_registry(registry)
     cleanup_time = _session_now() if now is None else now
     candidates = sorted(
         (
             item
-            for item in _sessions.values()
+            for item in resolved_registry.sessions.values()
             if not item.closing
             and cleanup_time - item.last_accessed_at > SESSION_TTL_SECONDS
         ),
@@ -725,41 +806,66 @@ def _cleanup_sessions_locked(now: float | None = None) -> None:
             continue
         try:
             if (
-                _sessions.get(candidate.session_id) is candidate
+                resolved_registry.sessions.get(candidate.session_id) is candidate
                 and not candidate.closing
                 and cleanup_time - candidate.last_accessed_at > SESSION_TTL_SECONDS
             ):
                 candidate.closing = True
-                _sessions.pop(candidate.session_id)
+                resolved_registry.sessions.pop(candidate.session_id)
         finally:
             candidate.lock.release()
 
 
-def _cleanup_sessions(now: float | None = None) -> None:
-    with _sessions_lock:
-        _cleanup_sessions_locked(now)
+def _cleanup_sessions(
+    now: float | None = None,
+    *,
+    registry: SessionRegistry | None = None,
+) -> None:
+    resolved_registry = _session_registry(registry)
+    with resolved_registry.lock:
+        if resolved_registry is _default_session_registry:
+            _cleanup_sessions_locked(now)
+        else:
+            _cleanup_sessions_locked(now, registry=resolved_registry)
 
 
-def _publish_session(session: DispatchSession) -> None:
+def _publish_session(
+    session: DispatchSession,
+    *,
+    registry: SessionRegistry | None = None,
+) -> None:
+    resolved_registry = _session_registry(registry)
     while True:
         waited_session: DispatchSession | None = None
         owns_waited_session_closing = False
-        with _sessions_lock:
-            _cleanup_sessions_locked()
-            if len(_sessions) < MAX_SESSIONS:
+        with resolved_registry.lock:
+            capacity = (
+                MAX_SESSIONS
+                if resolved_registry is _default_session_registry
+                else resolved_registry.max_sessions
+            )
+            if resolved_registry is _default_session_registry:
+                _cleanup_sessions_locked()
+            else:
+                _cleanup_sessions_locked(registry=resolved_registry)
+            if capacity is None or len(resolved_registry.sessions) < capacity:
                 session.last_accessed_at = _session_now()
-                _sessions[session.session_id] = session
+                resolved_registry.sessions[session.session_id] = session
                 return
             candidates = sorted(
-                (item for item in _sessions.values() if not item.closing),
+                (
+                    item
+                    for item in resolved_registry.sessions.values()
+                    if not item.closing
+                ),
                 key=lambda item: item.last_accessed_at,
             )
             for candidate in candidates:
                 if candidate.lock.acquire(blocking=False):
                     try:
-                        if _sessions.get(candidate.session_id) is candidate:
+                        if resolved_registry.sessions.get(candidate.session_id) is candidate:
                             candidate.closing = True
-                            _sessions.pop(candidate.session_id)
+                            resolved_registry.sessions.pop(candidate.session_id)
                     finally:
                         candidate.lock.release()
                     break
@@ -771,15 +877,15 @@ def _publish_session(session: DispatchSession) -> None:
                     owns_waited_session_closing = True
                 else:
                     waited_session = min(
-                        _sessions.values(),
+                        resolved_registry.sessions.values(),
                         key=lambda item: item.last_accessed_at,
                     )
         if waited_session is not None:
             waited_session.lock.acquire()
             waited_session.lock.release()
             if owns_waited_session_closing:
-                with _sessions_lock:
-                    if _sessions.get(waited_session.session_id) is waited_session:
+                with resolved_registry.lock:
+                    if resolved_registry.sessions.get(waited_session.session_id) is waited_session:
                         waited_session.closing = False
 
 

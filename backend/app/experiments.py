@@ -31,6 +31,7 @@ from backend.app.schemas import (
     Task,
 )
 from backend.app.sessions import (
+    SessionRegistry,
     add_blocked_cell,
     add_task,
     create_session,
@@ -211,16 +212,22 @@ def run_seeded_pressure_experiment(request: SeededPressureExperimentRequest) -> 
 def run_online_pressure_experiment(request: OnlinePressureExperimentRequest) -> OnlinePressureExperimentResult:
     label, seed, robot_count, task_count = ONLINE_PRESSURE_FLOW
     scenario = seeded_pressure_scenario("seed-17", seed, robot_count, task_count)
+    registry = SessionRegistry(max_sessions=1)
     session_id: str | None = None
 
     try:
         session = create_session(
             CreateSessionRequest(scenario=scenario, options=request.options),
             enforce_execution_safety=False,
+            registry=registry,
         )
         session_id = session.sessionId
         for current_time in range(1, 9):
-            session = tick_session(session_id, SessionTickRequest(currentTime=current_time))
+            session = tick_session(
+                session_id,
+                SessionTickRequest(currentTime=current_time),
+                registry=registry,
+            )
 
         session = add_task(
             session_id,
@@ -235,14 +242,35 @@ def run_online_pressure_experiment(request: OnlinePressureExperimentRequest) -> 
                     target=(2, 9),
                 )
             ),
+            registry=registry,
         )
-        session = add_blocked_cell(session_id, AddBlockRequest(cell=(3, 9), currentTime=8))
-        session = fail_robot(session_id, FailRobotRequest(robotId="R4", currentTime=8))
-        session = restore_robot(session_id, RestoreRobotRequest(robotId="R4", currentTime=8))
-        session = remove_blocked_cell(session_id, RemoveBlockRequest(cell=(3, 9), currentTime=8))
+        session = add_blocked_cell(
+            session_id,
+            AddBlockRequest(cell=(3, 9), currentTime=8),
+            registry=registry,
+        )
+        session = fail_robot(
+            session_id,
+            FailRobotRequest(robotId="R4", currentTime=8),
+            registry=registry,
+        )
+        session = restore_robot(
+            session_id,
+            RestoreRobotRequest(robotId="R4", currentTime=8),
+            registry=registry,
+        )
+        session = remove_blocked_cell(
+            session_id,
+            RemoveBlockRequest(cell=(3, 9), currentTime=8),
+            registry=registry,
+        )
 
         for current_time in range(9, 19):
-            session = tick_session(session_id, SessionTickRequest(currentTime=current_time))
+            session = tick_session(
+                session_id,
+                SessionTickRequest(currentTime=current_time),
+                registry=registry,
+            )
         session = add_task(
             session_id,
             AddTaskRequest(
@@ -256,12 +284,17 @@ def run_online_pressure_experiment(request: OnlinePressureExperimentRequest) -> 
                     targets=[scenario.zones.inspection[0] if scenario.zones.inspection else scenario.robots[0].start],
                 )
             ),
+            registry=registry,
         )
         for current_time in range(19, 21):
-            session = tick_session(session_id, SessionTickRequest(currentTime=current_time))
+            session = tick_session(
+                session_id,
+                SessionTickRequest(currentTime=current_time),
+                registry=registry,
+            )
     finally:
         if session_id is not None:
-            delete_session(session_id)
+            delete_session(session_id, registry=registry)
 
     metrics = session.result.metrics
     task_count = len(session.result.tasks)

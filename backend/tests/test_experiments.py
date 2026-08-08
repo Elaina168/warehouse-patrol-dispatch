@@ -884,14 +884,48 @@ def test_online_pressure_experiment_returns_runtime_flow_summary() -> None:
     assert case["eventLogCount"] >= 6
 
 
+def test_online_pressure_experiment_preserves_full_global_session_registry(monkeypatch) -> None:
+    monkeypatch.setattr(sessions_module, "MAX_SESSIONS", 1)
+    client = TestClient(app)
+    existing_response = client.post(
+        "/api/sessions",
+        json={
+            "scenario": crossing_delivery_scenario(),
+            "options": {
+                "avoidConflicts": True,
+                "includeDynamic": True,
+                "assignmentReplanWindow": 120,
+            },
+        },
+    )
+    assert existing_response.status_code == 200
+    existing_session_id = existing_response.json()["sessionId"]
+    before = dict(sessions_module._sessions)
+
+    experiment_response = client.post(
+        "/api/experiments/online-pressure",
+        json={
+            "options": {
+                "avoidConflicts": True,
+                "includeDynamic": True,
+                "assignmentReplanWindow": 120,
+            }
+        },
+    )
+
+    assert experiment_response.status_code == 200
+    assert sessions_module._sessions == before
+    assert sessions_module._sessions[existing_session_id] is before[existing_session_id]
+
+
 def test_online_pressure_experiment_bypasses_execution_interception(monkeypatch) -> None:
     client = TestClient(app)
     scenario = forced_online_experiment_conflict_scenario()
     observed_ticks: list[tuple[int, int, object]] = []
     real_tick_session = sessions_module.tick_session
 
-    def record_experiment_tick(session_id, request):
-        result = real_tick_session(session_id, request)
+    def record_experiment_tick(session_id, request, *, registry=None):
+        result = real_tick_session(session_id, request, registry=registry)
         observed_ticks.append((request.currentTime, result.currentTime, result.safetyIntervention))
         return result
 
