@@ -231,7 +231,7 @@ emergency
 - failureCount
 - replanTimeMs
 
-`DispatchResult.metrics.totalDistance` 表示当前调度计划中各机器人路径长度之和，会随重规划替换当前计划，不能当作在线会话从开始到结束的累计行驶距离。`MetricSnapshot.travelledDistance` 才表示会话执行到该 tick 时基于实际路径历史累计的移动距离。
+`DispatchResult.metrics.totalDistance` 表示当前调度计划中各机器人相邻坐标实际变化次数之和；释放、服务、充电、避碰和慢速移动产生的原地等待 tick 不计入距离。该值会随重规划替换当前计划，不能当作在线会话从开始到结束的累计行驶距离。`Metrics.makespan` 使用时间展开路径的最长 tick 数，包含这些等待。`Metrics.loadBalance` 表示各机器人计划移动距离的均衡程度。`MetricSnapshot.travelledDistance` 才表示会话执行到该 tick 时基于实际路径历史累计的移动距离。
 
 离线自适应窗口校准的 run 级 `totalDistance` 只读取终止时最后一条 `MetricSnapshot.travelledDistance`。若会话结束时 `metricsHistory` 为空，runner 必须将该运行记为 `error` 并完成会话清理；不得读取当前计划的 `DispatchResult.metrics.totalDistance`，也不得以 `0` 回退并把运行标为 `completed`。
 

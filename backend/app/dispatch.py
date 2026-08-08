@@ -1306,11 +1306,16 @@ def build_paths_for_order(
 def path_planning_candidate_score(candidate: PathPlanningCandidate, assignments: list[Assignment]) -> tuple[float, ...]:
     conflicts = detect_conflicts(candidate.paths)
     deadline_miss_count, average_lateness = deadline_stats(assignments, candidate.paths)
-    lengths = [max(0, len(path) - 1) for path in candidate.paths.values()]
-    total_distance = sum(lengths)
-    makespan = max(lengths, default=0)
-    mean = total_distance / len(lengths) if lengths else 0
-    load_balance = math.sqrt(sum((value - mean) ** 2 for value in lengths) / len(lengths)) if lengths else 0
+    tick_lengths = [max(0, len(path) - 1) for path in candidate.paths.values()]
+    movement_lengths = [path_movement_count(path) for path in candidate.paths.values()]
+    total_distance = sum(movement_lengths)
+    makespan = max(tick_lengths, default=0)
+    mean = total_distance / len(movement_lengths) if movement_lengths else 0
+    load_balance = (
+        math.sqrt(sum((value - mean) ** 2 for value in movement_lengths) / len(movement_lengths))
+        if movement_lengths
+        else 0
+    )
     return (
         len(candidate.failures),
         len(conflicts),
@@ -1568,11 +1573,16 @@ def calculate_metrics(
     replan_time_ms: float,
     failure_count: int | None = None,
 ) -> Metrics:
-    lengths = [max(0, len(path) - 1) for path in paths.values()]
-    total_distance = sum(lengths)
-    makespan = max(lengths, default=0)
-    mean = total_distance / len(lengths) if lengths else 0
-    balance = math.sqrt(sum((value - mean) ** 2 for value in lengths) / len(lengths)) if lengths else 0
+    tick_lengths = [max(0, len(path) - 1) for path in paths.values()]
+    movement_lengths = [path_movement_count(path) for path in paths.values()]
+    total_distance = sum(movement_lengths)
+    makespan = max(tick_lengths, default=0)
+    mean = total_distance / len(movement_lengths) if movement_lengths else 0
+    balance = (
+        math.sqrt(sum((value - mean) ** 2 for value in movement_lengths) / len(movement_lengths))
+        if movement_lengths
+        else 0
+    )
     assigned_task_count = sum(len(item.tasks) for item in assignments)
     deadline_miss_count, average_lateness = deadline_stats(assignments, paths)
     return Metrics(

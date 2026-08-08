@@ -4021,7 +4021,24 @@ def test_release_time_delays_path_execution() -> None:
     robot_id = payload["assignments"][0]["robotId"]
     path = payload["paths"][robot_id]
     assert path[0:5] == [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0]]
+    assert payload["metrics"]["makespan"] == 5
+    assert payload["metrics"]["totalDistance"] == 1
     assert payload["metrics"]["deadlineMissCount"] == 0
+
+
+def test_metrics_count_slow_timed_path_as_one_movement() -> None:
+    metrics = dispatch_module.calculate_metrics(
+        {"R1": [(0, 0), (0, 0), (0, 0), (1, 0)]},
+        [],
+        [],
+        [],
+        0,
+    )
+
+    assert metrics.makespan == 3
+    assert metrics.totalDistance == 1
+    assert metrics.loadBalance == 0
+
 
 def test_deadline_metrics_report_late_tasks() -> None:
     client = TestClient(app)

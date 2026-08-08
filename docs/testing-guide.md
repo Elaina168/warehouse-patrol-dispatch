@@ -927,9 +927,9 @@ docs/testing-guide.md
 - `conflictCount`：整条规划路径中检测到的冲突数量。
 - `deadlineMissCount`：超过截止时间的任务数量。
 - `failureCount`：当前无法调度的任务数量。
-- `totalDistance`：所有机器人路径总长度。
-- `makespan`：最长机器人路径时间。
-- `loadBalance`：机器人路径长度的均衡程度。
+- `totalDistance`：所有机器人计划中相邻坐标实际变化次数之和，不包含原地等待 tick。
+- `makespan`：最长机器人时间展开路径的 tick 数，包含释放、服务、充电、避碰和慢速移动等待。
+- `loadBalance`：机器人计划移动距离的均衡程度。
 - `replanTimeMs`：后端本次规划耗时。
 
 注意：
