@@ -43,15 +43,23 @@ function Invoke-RecordedProcessCleanup {
 function Add-StartedProcessToManifest {
   param(
     [string]$Role,
-    [int]$ProcessId
+    [object]$Process
   )
 
+  if ($Process -is [System.Diagnostics.Process]) {
+    if ($TestHooks -and $TestHooks.ContainsKey("ManifestPath")) {
+      Sync-DevProcessManifestTree -Role $Role -RootProcess $Process -ManifestPath $TestHooks.ManifestPath
+      return
+    }
+    Sync-DevProcessManifestTree -Role $Role -RootProcess $Process
+    return
+  }
   if ($TestHooks -and $TestHooks.ContainsKey("ManifestPath")) {
-    Add-DevProcessManifestEntry -Role $Role -ProcessId $ProcessId -ManifestPath $TestHooks.ManifestPath
+    Add-DevProcessManifestEntry -Role $Role -ProcessId $Process.Id -ManifestPath $TestHooks.ManifestPath
     return
   }
 
-  Add-DevProcessManifestEntry -Role $Role -ProcessId $ProcessId
+  Add-DevProcessManifestEntry -Role $Role -ProcessId $Process.Id
 }
 
 function Add-ManagedProcessOwnership {
@@ -62,7 +70,7 @@ function Add-ManagedProcessOwnership {
 
   $startedProcesses.Add($Process)
   try {
-    Add-StartedProcessToManifest -Role $Role -ProcessId $Process.Id
+    Add-StartedProcessToManifest -Role $Role -Process $Process
   } catch {
     $manifestError = $_.Exception
     $null = $startedProcesses.Remove($Process)
@@ -80,11 +88,34 @@ function Add-ManagedProcessOwnership {
     }
     throw $manifestError
   }
+  $startedProcessOwnerships.Add([pscustomobject]@{
+      role = $Role
+      process = $Process
+    })
+}
+
+function Sync-StartedProcessOwnership {
+  foreach ($ownership in $startedProcessOwnerships) {
+    if ($ownership.process -isnot [System.Diagnostics.Process]) {
+      continue
+    }
+    if ($TestHooks -and $TestHooks.ContainsKey("ManifestPath")) {
+      Sync-DevProcessManifestTree `
+        -Role $ownership.role `
+        -RootProcess $ownership.process `
+        -ManifestPath $TestHooks.ManifestPath
+      continue
+    }
+    Sync-DevProcessManifestTree `
+      -Role $ownership.role `
+      -RootProcess $ownership.process
+  }
 }
 
 Invoke-RecordedProcessCleanup
 
 $startedProcesses = New-Object System.Collections.Generic.List[object]
+$startedProcessOwnerships = New-Object System.Collections.Generic.List[object]
 
 function Test-HttpReady {
   param([string]$Url)
@@ -214,6 +245,12 @@ function Stop-StartedProcesses {
     }
   }
 
+  try {
+    Invoke-RecordedProcessCleanup
+  } catch {
+    $cleanupErrors.Add($_.Exception)
+  }
+
   if ($cleanupErrors.Count -eq 1) {
     throw $cleanupErrors[0]
   }
@@ -234,6 +271,7 @@ function Wait-ForService {
 
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   while ((Get-Date) -lt $deadline) {
+    Sync-StartedProcessOwnership
     foreach ($process in $startedProcesses) {
       if ($process.HasExited) {
         throw "$Name startup failed because PID=$($process.Id) exited."
@@ -279,6 +317,7 @@ try {
 
   Wait-ForService -Name "backend" -Url $backendHealthUrl
   Wait-ForService -Name "frontend" -Url $frontendUrl
+  Sync-StartedProcessOwnership
 
   if (-not $NoBrowser) {
     Start-Process $frontendUrl
@@ -295,6 +334,7 @@ try {
   }
 
   while ($true) {
+    Sync-StartedProcessOwnership
     foreach ($process in $startedProcesses) {
       if ($process.HasExited) {
         throw "Managed process PID=$($process.Id) exited."

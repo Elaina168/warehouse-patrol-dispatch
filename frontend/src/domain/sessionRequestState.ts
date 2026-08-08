@@ -9,6 +9,7 @@ export type SessionFailureDecision = {
   apiStatus: ApiStatus;
   dispatchStatus: DispatchStatus;
   pausePlayback: boolean;
+  invalidateSession: boolean;
 };
 
 export type MutationAvailabilityInput = {
@@ -17,6 +18,12 @@ export type MutationAvailabilityInput = {
   tickInFlight: boolean;
   displayTime: number;
   sessionCurrentTime: number | null;
+};
+
+export type PlaybackAvailabilityInput = {
+  hasResult: boolean;
+  dispatchStatus: DispatchStatus;
+  tickInFlight: boolean;
 };
 
 export type RuntimeOverlay = {
@@ -59,6 +66,12 @@ export function canMutateOnlineSession(input: MutationAvailabilityInput): boolea
     && !isHistoricalPlayback(input.displayTime, input.sessionCurrentTime);
 }
 
+export function canControlOnlinePlayback(input: PlaybackAvailabilityInput): boolean {
+  return input.hasResult
+    && input.dispatchStatus === "ready"
+    && !input.tickInFlight;
+}
+
 export async function runOnlineMutation<T>(
   enabled: boolean,
   request: () => Promise<T>
@@ -71,11 +84,21 @@ export function classifySessionRequestFailure(
   error: unknown,
   operation: SessionOperation
 ): SessionFailureDecision {
+  if (error instanceof ApiRequestError && error.status === 404) {
+    return {
+      apiStatus: "online",
+      dispatchStatus: "error",
+      pausePlayback: true,
+      invalidateSession: true
+    };
+  }
+
   if (error instanceof ApiRequestError && error.status >= 400 && error.status <= 499) {
     return {
       apiStatus: "online",
       dispatchStatus: "ready",
-      pausePlayback: operation === "tick"
+      pausePlayback: operation === "tick",
+      invalidateSession: false
     };
   }
 
@@ -83,13 +106,15 @@ export function classifySessionRequestFailure(
     return {
       apiStatus: "error",
       dispatchStatus: "error",
-      pausePlayback: true
+      pausePlayback: true,
+      invalidateSession: false
     };
   }
 
   return {
     apiStatus: "offline",
     dispatchStatus: "error",
-    pausePlayback: true
+    pausePlayback: true,
+    invalidateSession: false
   };
 }

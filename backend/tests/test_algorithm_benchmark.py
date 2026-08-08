@@ -1029,6 +1029,82 @@ def test_algorithm_final_report_rollback_restore_failure_does_not_probe_backup_b
 
 
 @pytest.mark.parametrize(
+    "has_existing_bundle",
+    [True, False],
+    ids=["existing-bundle", "no-existing-bundle"],
+)
+def test_algorithm_final_report_rolls_back_when_partial_delete_fails(
+    tmp_path,
+    monkeypatch,
+    has_existing_bundle,
+) -> None:
+    report = BenchmarkReport.create({}, [_benchmark_run("scale-r4-t15", 1)])
+    write_partial_report(tmp_path, report)
+    partial_path = tmp_path / "results.partial.json"
+    partial_content = partial_path.read_bytes()
+    original_files = {
+        file_name: f"old {file_name}".encode("utf-8")
+        for file_name in FINAL_REPORT_FILE_NAMES
+    }
+    if has_existing_bundle:
+        for file_name, content in original_files.items():
+            (tmp_path / file_name).write_bytes(content)
+    real_unlink = Path.unlink
+    delete_error = PermissionError("locked partial")
+
+    def fail_partial_delete(path, *args, **kwargs):
+        if Path(path) == partial_path:
+            raise delete_error
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_partial_delete)
+    with pytest.raises(OSError) as exc_info:
+        write_final_report(tmp_path, report)
+
+    assert exc_info.value.__cause__ is delete_error
+    assert partial_path.read_bytes() == partial_content
+    if has_existing_bundle:
+        assert {
+            file_name: (tmp_path / file_name).read_bytes()
+            for file_name in FINAL_REPORT_FILE_NAMES
+        } == original_files
+    else:
+        assert not any(
+            (tmp_path / file_name).exists()
+            for file_name in FINAL_REPORT_FILE_NAMES
+        )
+    _assert_no_final_report_transaction_files(tmp_path)
+
+
+def test_algorithm_final_report_cleanup_failure_after_commit_keeps_new_bundle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    report = BenchmarkReport.create({}, [_benchmark_run("scale-r4-t15", 1)])
+    write_partial_report(tmp_path, report)
+    for file_name in FINAL_REPORT_FILE_NAMES:
+        (tmp_path / file_name).write_bytes(f"old {file_name}".encode("utf-8"))
+    real_unlink = Path.unlink
+
+    def fail_one_backup_cleanup(path, *args, **kwargs):
+        candidate = Path(path)
+        if (
+            candidate.suffix == ".backup"
+            and candidate.name.startswith(".results.json.")
+        ):
+            raise PermissionError("locked backup")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_one_backup_cleanup)
+    write_final_report(tmp_path, report)
+
+    assert not (tmp_path / "results.partial.json").exists()
+    payload = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
+    assert payload["runs"][0]["caseId"] == "scale-r4-t15"
+    assert list(tmp_path.glob(".results.json.*.backup"))
+
+
+@pytest.mark.parametrize(
     ("writer", "file_name"),
     [
         (write_partial_report, "results.partial.json"),

@@ -54,8 +54,10 @@ import {
   parseScenario,
   parseCoordinateInput,
   buildManualTask,
+  clearSessionViewState,
   createManualTaskForm,
   createSessionRequestCoordinator,
+  dispatchSynchronizationLabel,
   MapBoard,
   LiveMetricsPanel,
   OperationalErrorNotice,
@@ -73,37 +75,115 @@ import { runOnlineMutation } from "./domain/sessionRequestState";
 import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, ShelfRuntimeState, Task, TaskType } from "./domain/types";
 
 describe("session request coordination", () => {
-  it("keeps create and reset HTTP 4xx failures online while retaining the visible error", () => {
-    const state = {
+  type RequestFailureTestState = {
+    apiStatus: "checking" | "online" | "offline" | "error";
+    dispatchStatus: "loading" | "ready" | "error";
+    dispatchError: string | null;
+    operationError: string | null;
+  };
+
+  function createRequestFailureState(): RequestFailureTestState {
+    return {
       apiStatus: "checking",
       dispatchStatus: "loading",
-      dispatchError: null as string | null,
-      operationError: null as string | null
+      dispatchError: null,
+      operationError: null
     };
-    applySessionRequestFailure(new ApiRequestError(422, "session reset failed: invalid request"), {
-      setApiStatus: (status) => {
+  }
+
+  function requestFailureSetters(state: RequestFailureTestState) {
+    return {
+      setApiStatus: (status: RequestFailureTestState["apiStatus"]) => {
         state.apiStatus = status;
       },
-      setDispatchStatus: (status) => {
+      setDispatchStatus: (status: RequestFailureTestState["dispatchStatus"]) => {
         state.dispatchStatus = status;
       },
-      setDispatchError: (message) => {
+      setDispatchError: (message: string) => {
         state.dispatchError = message;
       },
       setOperationError: (message: string) => {
         state.operationError = message;
       }
-    });
+    };
+  }
+
+  it("keeps create HTTP 4xx online without marking a missing session ready", () => {
+    const state = createRequestFailureState();
+
+    applySessionRequestFailure(
+      new ApiRequestError(422, "session failed: invalid request"),
+      { hasUsableSession: false },
+      requestFailureSetters(state)
+    );
 
     expect(state).toEqual({
       apiStatus: "online",
       dispatchStatus: "error",
-      dispatchError: "session reset failed: invalid request",
-      operationError: "session reset failed: invalid request"
+      dispatchError: "session failed: invalid request",
+      operationError: "session failed: invalid request"
+    });
+  });
+
+  it("keeps a retained session ready after reset HTTP 4xx", () => {
+    const state = createRequestFailureState();
+
+    applySessionRequestFailure(
+      new ApiRequestError(409, "session reset failed: invalid snapshot"),
+      { hasUsableSession: true },
+      requestFailureSetters(state)
+    );
+
+    expect(state).toEqual({
+      apiStatus: "online",
+      dispatchStatus: "ready",
+      dispatchError: "session reset failed: invalid snapshot",
+      operationError: "session reset failed: invalid snapshot"
     });
 
     expect(renderToStaticMarkup(createElement(OperationalErrorNotice, { message: state.operationError })))
-      .toContain("session reset failed: invalid request");
+      .toContain("session reset failed: invalid snapshot");
+  });
+
+  it("does not retain a missing session after reset HTTP 404", () => {
+    const state = createRequestFailureState();
+
+    applySessionRequestFailure(
+      new ApiRequestError(404, "session reset failed: missing"),
+      { hasUsableSession: true },
+      requestFailureSetters(state)
+    );
+
+    expect(state).toEqual({
+      apiStatus: "online",
+      dispatchStatus: "error",
+      dispatchError: "session reset failed: missing",
+      operationError: "session reset failed: missing"
+    });
+  });
+
+  it("clears both session and result before creating a replacement session", () => {
+    let session = {} as SessionResult | null;
+    let result = {} as DispatchResult | null;
+
+    clearSessionViewState({
+      setSession: (value) => {
+        session = value;
+      },
+      setResult: (value) => {
+        result = value;
+      }
+    });
+
+    expect(session).toBeNull();
+    expect(result).toBeNull();
+  });
+
+  it("does not label an error state as synchronized", () => {
+    expect(dispatchSynchronizationLabel(false, "ready")).toBe("调度结果已同步");
+    expect(dispatchSynchronizationLabel(false, "loading")).toBe("等待重规划结果");
+    expect(dispatchSynchronizationLabel(false, "error")).toBe("调度同步失败");
+    expect(dispatchSynchronizationLabel(true, "error")).toBe("后端 tick 同步中");
   });
 
   it("does not call a blocked online mutation request", async () => {

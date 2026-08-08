@@ -2,7 +2,6 @@ import csv
 import json
 from collections.abc import Callable
 from pathlib import Path
-from shutil import copyfile
 from uuid import uuid4
 
 from backend.benchmarks.adaptive_results import AdaptiveCalibrationReport
@@ -89,11 +88,19 @@ VARIANT_SUMMARY_FIELD_NAMES = (
 )
 
 
-def _raise_write_error(target_path: Path, exc: Exception) -> None:
-    raise OSError(
+def _raise_write_error(
+    target_path: Path,
+    exc: Exception,
+    *,
+    rollback_error: Exception | None = None,
+) -> None:
+    message = (
         "写入自适应窗口校准报告失败: "
         f"{target_path.resolve()}: {exc}"
-    ) from exc
+    )
+    if rollback_error is not None:
+        message = f"{message}；回滚失败: {rollback_error}"
+    raise OSError(message) from exc
 
 
 def _write_json(
@@ -211,20 +218,31 @@ def _cleanup_transaction_files(
 def _rollback_final_bundle(
     target_paths: tuple[Path, ...],
     backup_paths: dict[Path, Path],
-    existing_targets: set[Path],
+    backed_up_targets: set[Path],
+    published_targets: set[Path],
+    preserved_backup_paths: set[Path],
 ) -> None:
     errors: list[str] = []
     for target_path in target_paths:
+        if target_path not in published_targets:
+            continue
         try:
-            if target_path in existing_targets:
-                backup_path = backup_paths[target_path]
-                if not backup_path.exists():
-                    raise OSError(f"缺少回滚备份: {backup_path.resolve()}")
-                backup_path.replace(target_path)
-            else:
-                target_path.unlink(missing_ok=True)
+            target_path.unlink(missing_ok=True)
         except Exception as exc:
             errors.append(f"{target_path.resolve()}: {exc}")
+    for target_path in target_paths:
+        if target_path not in backed_up_targets:
+            continue
+        backup_path = backup_paths[target_path]
+        preserved_backup_paths.add(backup_path)
+        try:
+            backup_path.replace(target_path)
+        except Exception as exc:
+            errors.append(
+                f"{backup_path.resolve()} -> {target_path.resolve()}: {exc}"
+            )
+        else:
+            preserved_backup_paths.discard(backup_path)
     if errors:
         raise OSError("；".join(errors))
 
@@ -279,6 +297,7 @@ def write_final_report(
         *backup_paths.values(),
     ]
     partial_path = output_path / "results.partial.json"
+    preserved_backup_paths: set[Path] = set()
 
     try:
         _write_json(
@@ -305,40 +324,79 @@ def write_final_report(
             lambda: _variant_summary_records(report),
         )
 
-        existing_targets: set[Path] = set()
+        backed_up_targets: set[Path] = set()
+        published_targets: set[Path] = set()
         for target_path in target_paths:
             if not target_path.exists():
                 continue
-            existing_targets.add(target_path)
             try:
-                copyfile(target_path, backup_paths[target_path])
+                target_path.replace(backup_paths[target_path])
+                backed_up_targets.add(target_path)
             except Exception as exc:
-                _raise_write_error(target_path, exc)
-
-        for target_path in target_paths:
-            try:
-                temporary_paths[target_path].replace(target_path)
-            except Exception as exc:
+                rollback_error: Exception | None = None
                 try:
                     _rollback_final_bundle(
                         target_paths,
                         backup_paths,
-                        existing_targets,
+                        backed_up_targets,
+                        published_targets,
+                        preserved_backup_paths,
                     )
                 except Exception as rollback_exc:
-                    exc = OSError(f"{exc}；回滚失败: {rollback_exc}")
-                _raise_write_error(target_path, exc)
+                    rollback_error = rollback_exc
+                _raise_write_error(
+                    target_path,
+                    exc,
+                    rollback_error=rollback_error,
+                )
+
+        for target_path in target_paths:
+            try:
+                temporary_paths[target_path].replace(target_path)
+                published_targets.add(target_path)
+            except Exception as exc:
+                rollback_error = None
+                try:
+                    _rollback_final_bundle(
+                        target_paths,
+                        backup_paths,
+                        backed_up_targets,
+                        published_targets,
+                        preserved_backup_paths,
+                    )
+                except Exception as rollback_exc:
+                    rollback_error = rollback_exc
+                _raise_write_error(
+                    target_path,
+                    exc,
+                    rollback_error=rollback_error,
+                )
 
         try:
             partial_path.unlink(missing_ok=True)
         except Exception as exc:
-            _raise_write_error(partial_path, exc)
-        try:
-            _cleanup_transaction_files(
-                transaction_paths,
-                raise_errors=True,
+            rollback_error: Exception | None = None
+            try:
+                _rollback_final_bundle(
+                    target_paths,
+                    backup_paths,
+                    backed_up_targets,
+                    published_targets,
+                    preserved_backup_paths,
+                )
+            except Exception as rollback_exc:
+                rollback_error = rollback_exc
+            _raise_write_error(
+                partial_path,
+                exc,
+                rollback_error=rollback_error,
             )
-        except Exception as exc:
-            _raise_write_error(output_path / "results.json", exc)
-    finally:
         _cleanup_transaction_files(transaction_paths)
+    finally:
+        _cleanup_transaction_files(
+            [
+                path
+                for path in transaction_paths
+                if path not in preserved_backup_paths
+            ]
+        )

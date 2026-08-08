@@ -211,7 +211,7 @@ function isNullableOptionalTargets(value: unknown): boolean {
 
 function isIntegerInRange(value: unknown, minimum: number, maximum: number): value is number {
   return typeof value === "number"
-    && Number.isInteger(value)
+    && Number.isSafeInteger(value)
     && value >= minimum
     && value <= maximum;
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ApiRequestError } from "./apiError";
 import {
+  canControlOnlinePlayback,
   canMutateOnlineSession,
   classifySessionRequestFailure,
   historicalPlaybackNotice,
@@ -15,7 +16,8 @@ describe("session request failure classification", () => {
       .toEqual({
         apiStatus: "online",
         dispatchStatus: "ready",
-        pausePlayback: false
+        pausePlayback: false,
+        invalidateSession: false
       });
   });
 
@@ -24,7 +26,18 @@ describe("session request failure classification", () => {
       .toEqual({
         apiStatus: "online",
         dispatchStatus: "ready",
-        pausePlayback: true
+        pausePlayback: true,
+        invalidateSession: false
+      });
+  });
+
+  it.each(["mutation", "tick"] as const)("invalidates an expired session for %s HTTP 404", (operation) => {
+    expect(classifySessionRequestFailure(new ApiRequestError(404, "missing"), operation))
+      .toEqual({
+        apiStatus: "online",
+        dispatchStatus: "error",
+        pausePlayback: true,
+        invalidateSession: true
       });
   });
 
@@ -33,7 +46,8 @@ describe("session request failure classification", () => {
       .toEqual({
         apiStatus: "error",
         dispatchStatus: "error",
-        pausePlayback: true
+        pausePlayback: true,
+        invalidateSession: false
       });
   });
 
@@ -42,7 +56,8 @@ describe("session request failure classification", () => {
       .toEqual({
         apiStatus: "offline",
         dispatchStatus: "error",
-        pausePlayback: true
+        pausePlayback: true,
+        invalidateSession: false
       });
   });
 
@@ -51,7 +66,8 @@ describe("session request failure classification", () => {
       .toMatchObject({
         apiStatus: "online",
         dispatchStatus: "ready",
-        pausePlayback: false
+        pausePlayback: false,
+        invalidateSession: false
       });
   });
 
@@ -60,8 +76,30 @@ describe("session request failure classification", () => {
       .toEqual({
         apiStatus: "error",
         dispatchStatus: "error",
-        pausePlayback: true
+        pausePlayback: true,
+        invalidateSession: false
       });
+  });
+});
+
+describe("online playback availability", () => {
+  const available = {
+    hasResult: true,
+    dispatchStatus: "ready" as const,
+    tickInFlight: false
+  };
+
+  it("allows playback only for a synchronized ready result", () => {
+    expect(canControlOnlinePlayback(available)).toBe(true);
+  });
+
+  it.each([
+    { name: "no result", input: { ...available, hasResult: false } },
+    { name: "dispatch loading", input: { ...available, dispatchStatus: "loading" as const } },
+    { name: "dispatch error", input: { ...available, dispatchStatus: "error" as const } },
+    { name: "tick in flight", input: { ...available, tickInFlight: true } }
+  ])("blocks playback controls for $name", ({ input }) => {
+    expect(canControlOnlinePlayback(input)).toBe(false);
   });
 });
 

@@ -1501,6 +1501,146 @@ def test_adaptive_final_publish_failure_rolls_back_existing_bundle(
     ]
 
 
+ADAPTIVE_FINAL_REPORT_FILE_NAMES = (
+    "results.json",
+    "runs.csv",
+    "replan-observations.csv",
+    "variant-summaries.csv",
+)
+
+
+@pytest.mark.parametrize(
+    "has_existing_bundle",
+    [True, False],
+    ids=["existing-bundle", "no-existing-bundle"],
+)
+def test_adaptive_final_report_rolls_back_when_partial_delete_fails(
+    tmp_path,
+    monkeypatch,
+    has_existing_bundle,
+) -> None:
+    run = _completed_run("adaptive-low-load-r4-t17", "fixed-24", 1)
+    report = AdaptiveCalibrationReport.create({}, [run])
+    write_partial_report(tmp_path, report)
+    partial_path = tmp_path / "results.partial.json"
+    partial_content = partial_path.read_bytes()
+    original_files = {
+        file_name: f"old {file_name}".encode("utf-8")
+        for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
+    }
+    if has_existing_bundle:
+        for file_name, content in original_files.items():
+            (tmp_path / file_name).write_bytes(content)
+    real_unlink = Path.unlink
+    delete_error = PermissionError("locked adaptive partial")
+
+    def fail_partial_delete(path, *args, **kwargs):
+        if Path(path) == partial_path:
+            raise delete_error
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_partial_delete)
+    with pytest.raises(OSError) as exc_info:
+        write_final_report(tmp_path, report)
+
+    assert exc_info.value.__cause__ is delete_error
+    assert partial_path.read_bytes() == partial_content
+    if has_existing_bundle:
+        assert {
+            file_name: (tmp_path / file_name).read_bytes()
+            for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
+        } == original_files
+    else:
+        assert not any(
+            (tmp_path / file_name).exists()
+            for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
+        )
+    assert not [
+        path
+        for path in tmp_path.iterdir()
+        if path.suffix in {".tmp", ".backup"}
+    ]
+
+
+def test_adaptive_final_report_cleanup_failure_after_commit_keeps_new_bundle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    run = _completed_run("adaptive-low-load-r4-t17", "fixed-24", 1)
+    report = AdaptiveCalibrationReport.create({}, [run])
+    write_partial_report(tmp_path, report)
+    for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES:
+        (tmp_path / file_name).write_bytes(f"old {file_name}".encode("utf-8"))
+    real_unlink = Path.unlink
+
+    def fail_one_backup_cleanup(path, *args, **kwargs):
+        candidate = Path(path)
+        if (
+            candidate.suffix == ".backup"
+            and candidate.name.startswith(".results.json.")
+        ):
+            raise PermissionError("locked adaptive backup")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_one_backup_cleanup)
+    write_final_report(tmp_path, report)
+
+    assert not (tmp_path / "results.partial.json").exists()
+    payload = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
+    assert payload["runs"][0]["caseId"] == "adaptive-low-load-r4-t17"
+    assert list(tmp_path.glob(".results.json.*.backup"))
+
+
+def test_adaptive_final_report_restore_failure_preserves_recoverable_backup(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    run = _completed_run("adaptive-low-load-r4-t17", "fixed-24", 1)
+    report = AdaptiveCalibrationReport.create({}, [run])
+    write_partial_report(tmp_path, report)
+    partial_path = tmp_path / "results.partial.json"
+    original_files = {
+        file_name: f"old {file_name}".encode("utf-8")
+        for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
+    }
+    for file_name, content in original_files.items():
+        (tmp_path / file_name).write_bytes(content)
+    real_unlink = Path.unlink
+    real_replace = Path.replace
+    delete_error = PermissionError("locked adaptive partial")
+    restore_error = PermissionError("locked adaptive restore")
+    failed_backup: Path | None = None
+
+    def fail_partial_delete(path, *args, **kwargs):
+        if Path(path) == partial_path:
+            raise delete_error
+        return real_unlink(path, *args, **kwargs)
+
+    def fail_runs_restore(source, target):
+        nonlocal failed_backup
+        source_path = Path(source)
+        if (
+            source_path.suffix == ".backup"
+            and source_path.name.startswith(".runs.csv.")
+        ):
+            failed_backup = source_path
+            raise restore_error
+        return real_replace(source, target)
+
+    monkeypatch.setattr(Path, "unlink", fail_partial_delete)
+    monkeypatch.setattr(Path, "replace", fail_runs_restore)
+    with pytest.raises(OSError) as exc_info:
+        write_final_report(tmp_path, report)
+
+    assert failed_backup is not None
+    assert failed_backup.read_bytes() == original_files["runs.csv"]
+    assert exc_info.value.__cause__ is delete_error
+    assert "locked adaptive restore" in str(exc_info.value)
+    assert partial_path.exists()
+    assert not list(tmp_path.glob("*.tmp"))
+    assert list(tmp_path.glob("*.backup")) == [failed_backup]
+
+
 @pytest.mark.parametrize(
     "args",
     [

@@ -208,28 +208,28 @@ function Get-DevProcessDescendants {
   $rootProcessId = $RootProcess.Id
   $rootStartTimeUtc = $RootProcess.StartTime.ToUniversalTime()
   $processRows = @(
-    Get-CimInstance Win32_Process |
+    Get-CimInstance -ClassName Win32_Process -OperationTimeoutSec 5 |
       Select-Object ProcessId, ParentProcessId, CreationDate
   )
   $rootRow = @(
     $processRows | Where-Object { [int]$_.ProcessId -eq $rootProcessId }
   ) | Select-Object -First 1
-  if ($null -eq $rootRow) {
-    return @()
-  }
-
-  $rootStartTicks = Get-DevProcessCreationTicks -CreationDate $rootStartTimeUtc
-  $rootCimStartTimeUtc = ([datetime]$rootRow.CreationDate).ToUniversalTime()
-  $rootCimStartTicks = Get-DevProcessCreationTicks -CreationDate $rootCimStartTimeUtc
-  if ($rootStartTicks -ne $rootCimStartTicks) {
-    throw "Root process identity changed before descendant capture PID=$rootProcessId."
+  $rootCreationDateUtc = $rootStartTimeUtc
+  if ($null -ne $rootRow) {
+    $rootStartTicks = Get-DevProcessCreationTicks -CreationDate $rootStartTimeUtc
+    $rootCimStartTimeUtc = ([datetime]$rootRow.CreationDate).ToUniversalTime()
+    $rootCimStartTicks = Get-DevProcessCreationTicks -CreationDate $rootCimStartTimeUtc
+    if ($rootStartTicks -ne $rootCimStartTicks) {
+      throw "Root process identity changed before descendant capture PID=$rootProcessId."
+    }
+    $rootCreationDateUtc = $rootCimStartTimeUtc
   }
 
   $descendantRows = @(
     Get-DevProcessDescendantRows `
       -ProcessRows $processRows `
       -RootProcessId $rootProcessId `
-      -RootCreationDate $rootCimStartTimeUtc
+      -RootCreationDate $rootCreationDateUtc
   )
 
   $capturedProcesses = [System.Collections.Generic.List[object]]::new()
@@ -309,6 +309,60 @@ function Add-DevProcessManifestEntry {
       })
     $manifest.processes = @($processes)
     Write-DevProcessManifest -Manifest $manifest -ManifestPath $ManifestPath
+  }
+}
+
+function Sync-DevProcessManifestTree {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Role,
+
+    [Parameter(Mandatory = $true)]
+    [System.Diagnostics.Process]$RootProcess,
+
+    [string]$ManifestPath = $script:DevProcessManifestPath
+  )
+
+  Invoke-WithDevProcessManifestLock -ManifestPath $ManifestPath -Action {
+    $null = $RootProcess.SafeHandle
+    $descendants = @()
+    try {
+      $descendants = @(Get-DevProcessDescendants -RootProcess $RootProcess)
+      $manifest = Read-DevProcessManifest -ManifestPath $ManifestPath
+      $processes = [System.Collections.Generic.List[object]]::new()
+      $entryKeys = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+      )
+      foreach ($entry in @($manifest.processes)) {
+        $processes.Add($entry)
+        $entryKey = "{0}`0{1}`0{2}" -f (
+          [string]$entry.role,
+          [int]$entry.pid,
+          [string]$entry.startedAtUtc
+        )
+        $null = $entryKeys.Add($entryKey)
+      }
+
+      foreach ($process in @($RootProcess) + $descendants) {
+        $startedAtUtc = $process.StartTime.ToUniversalTime().ToString("O")
+        $entryKey = "{0}`0{1}`0{2}" -f $Role, $process.Id, $startedAtUtc
+        if (-not $entryKeys.Add($entryKey)) {
+          continue
+        }
+        $processes.Add([pscustomobject]@{
+            role = $Role
+            pid = $process.Id
+            startedAtUtc = $startedAtUtc
+          })
+      }
+
+      $manifest.processes = @($processes)
+      Write-DevProcessManifest -Manifest $manifest -ManifestPath $ManifestPath
+    } finally {
+      foreach ($process in $descendants) {
+        $process.Close()
+      }
+    }
   }
 }
 
@@ -428,6 +482,7 @@ function Stop-RecordedProcessTree {
   Invoke-WithDevProcessManifestLock -ManifestPath $ManifestPath -Action {
     $manifest = Read-DevProcessManifest -ManifestPath $ManifestPath
     $remainingEntries = [System.Collections.Generic.List[object]]::new()
+    $identityMismatches = [System.Collections.Generic.List[object]]::new()
     $stopFailures = [System.Collections.Generic.List[object]]::new()
 
     foreach ($entry in @($manifest.processes)) {
@@ -439,6 +494,10 @@ function Stop-RecordedProcessTree {
           continue
         }
         $remainingEntries.Add($entry)
+        $identityMismatches.Add([pscustomobject]@{
+            role = [string]$entry.role
+            pid = [int]$entry.pid
+          })
         continue
       }
 
@@ -472,6 +531,9 @@ function Stop-RecordedProcessTree {
 
     $manifest.processes = @($remainingEntries)
     Write-DevProcessManifest -Manifest $manifest -ManifestPath $ManifestPath
+    foreach ($mismatch in $identityMismatches) {
+      Write-Warning "Skipped recorded development process role=$($mismatch.role) pid=$($mismatch.pid) because its start time does not match the manifest entry; the entry was retained."
+    }
     foreach ($failure in $stopFailures) {
       Write-Warning "Failed to stop recorded development process role=$($failure.role) pid=$($failure.pid): $($failure.message)"
     }

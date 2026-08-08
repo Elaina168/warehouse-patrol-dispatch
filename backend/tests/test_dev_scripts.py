@@ -237,13 +237,16 @@ try {{
     successfulProcess = $null
   }}
   Write-DevProcessManifest -Manifest ([pscustomobject]@{{ version = 1; processes = @($mismatched) }}) -ManifestPath $manifestPath
-  Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{
-    param($ownedProcess)
-    $state.allProcessObjects = $state.allProcessObjects -and ($ownedProcess -is [System.Diagnostics.Process])
-    if ($ownedProcess -is [System.Diagnostics.Process]) {{
-      $called.Add($ownedProcess.Id)
-    }}
-  }}
+  $mismatchDiagnostics = @(
+    Stop-RecordedProcessTree -ManifestPath $manifestPath -StopCallback {{
+      param($ownedProcess)
+      $state.allProcessObjects = $state.allProcessObjects -and ($ownedProcess -is [System.Diagnostics.Process])
+      if ($ownedProcess -is [System.Diagnostics.Process]) {{
+        $called.Add($ownedProcess.Id)
+      }}
+    }} 3>&1 |
+      ForEach-Object {{ $_.Message }}
+  )
   $mismatchedCalls = @($called).Count
   $mismatchedEntries = @((Read-DevProcessManifest -ManifestPath $manifestPath).processes).Count
 
@@ -294,6 +297,7 @@ try {{
   [ordered]@{{
     allProcessObjects = $state.allProcessObjects
     mismatchedCalls = $mismatchedCalls
+    mismatchDiagnostics = @($mismatchDiagnostics)
     mismatchedEntries = $mismatchedEntries
     failedEntries = $failedEntries
     failedProcessClosed = $failedProcessClosed
@@ -316,6 +320,9 @@ try {{
     assert result == {
         "allProcessObjects": True,
         "mismatchedCalls": 0,
+        "mismatchDiagnostics": [
+            f"Skipped recorded development process role=test pid={result['currentPid']} because its start time does not match the manifest entry; the entry was retained."
+        ],
         "mismatchedEntries": 1,
         "failedEntries": 1,
         "failedProcessClosed": True,
@@ -519,6 +526,200 @@ $descendants = @(Get-DevProcessDescendantRows `
     )
 
     assert result == {"processIds": [300, 301], "depths": [1, 2]}
+
+
+def test_manifest_captures_descendant_when_root_exits_before_descendant_capture(
+    tmp_path: Path,
+) -> None:
+    root_script = tmp_path / "exiting-root.ps1"
+    child_pid_path = tmp_path / "orphan-child.pid"
+    root_script.write_text(
+        """
+param([string]$ChildPidPath)
+$child = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') `
+  -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 60') `
+  -WindowStyle Hidden `
+  -PassThru
+[System.IO.File]::WriteAllText($ChildPidPath, [string]$child.Id, [System.Text.Encoding]::UTF8)
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = run_powershell(
+        f"""
+. '{MANIFEST_HELPER}'
+$root = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') `
+  -ArgumentList @('-NoLogo', '-NoProfile', '-File', '{root_script}', '-ChildPidPath', '{child_pid_path}') `
+  -WindowStyle Hidden `
+  -PassThru
+$null = $root.SafeHandle
+$descendants = @()
+$childPid = 0
+try {{
+  $deadline = (Get-Date).AddSeconds(5)
+  while (-not (Test-Path -LiteralPath '{child_pid_path}') -and (Get-Date) -lt $deadline) {{
+    Start-Sleep -Milliseconds 20
+  }}
+  $childPid = [int](Get-Content -LiteralPath '{child_pid_path}' -Encoding UTF8)
+  $null = $root.WaitForExit(5000)
+  $descendants = @(Get-DevProcessDescendants -RootProcess $root)
+  [ordered]@{{
+    childPid = $childPid
+    descendantProcessIds = @($descendants | ForEach-Object {{ $_.Id }})
+  }} | ConvertTo-Json -Compress
+}} finally {{
+  foreach ($process in $descendants) {{ $process.Close() }}
+  $root.Close()
+  if ($childPid -gt 0) {{
+    $child = Get-Process -Id $childPid -ErrorAction SilentlyContinue
+    if ($null -ne $child) {{
+      $child.Kill($true)
+      $null = $child.WaitForExit(5000)
+      $child.Close()
+    }}
+  }}
+}}
+"""
+    )
+
+    assert result["childPid"] in result["descendantProcessIds"]
+
+
+def test_manifest_stops_synced_descendant_after_root_exit(tmp_path: Path) -> None:
+    root_script = tmp_path / "released-root.ps1"
+    child_pid_path = tmp_path / "synced-child.pid"
+    release_root_path = tmp_path / "release-root"
+    manifest_path = tmp_path / "dev-processes.json"
+    root_script.write_text(
+        """
+param([string]$ChildPidPath, [string]$ReleaseRootPath)
+$child = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') `
+  -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 60') `
+  -WindowStyle Hidden `
+  -PassThru
+[System.IO.File]::WriteAllText($ChildPidPath, [string]$child.Id, [System.Text.Encoding]::UTF8)
+while (-not (Test-Path -LiteralPath $ReleaseRootPath)) {
+  Start-Sleep -Milliseconds 20
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = run_powershell(
+        f"""
+. '{MANIFEST_HELPER}'
+$root = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') `
+  -ArgumentList @(
+    '-NoLogo', '-NoProfile', '-File', '{root_script}',
+    '-ChildPidPath', '{child_pid_path}',
+    '-ReleaseRootPath', '{release_root_path}'
+  ) `
+  -WindowStyle Hidden `
+  -PassThru
+$childPid = 0
+try {{
+  $deadline = (Get-Date).AddSeconds(5)
+  while (-not (Test-Path -LiteralPath '{child_pid_path}') -and (Get-Date) -lt $deadline) {{
+    Start-Sleep -Milliseconds 20
+  }}
+  $childPid = [int](Get-Content -LiteralPath '{child_pid_path}' -Encoding UTF8)
+  Sync-DevProcessManifestTree `
+    -Role 'test-tree' `
+    -RootProcess $root `
+    -ManifestPath '{manifest_path}'
+  Set-Content -LiteralPath '{release_root_path}' -Value 'release' -Encoding UTF8
+  $null = $root.WaitForExit(5000)
+  Stop-RecordedProcessTree -ManifestPath '{manifest_path}'
+  [ordered]@{{
+    childAlive = $null -ne (Get-Process -Id $childPid -ErrorAction SilentlyContinue)
+    remainingEntries = @((Read-DevProcessManifest -ManifestPath '{manifest_path}').processes).Count
+  }} | ConvertTo-Json -Compress
+}} finally {{
+  if (-not $root.HasExited) {{
+    $root.Kill($true)
+    $null = $root.WaitForExit(5000)
+  }}
+  $root.Close()
+  if ($childPid -gt 0) {{
+    $child = Get-Process -Id $childPid -ErrorAction SilentlyContinue
+    if ($null -ne $child) {{
+      $child.Kill($true)
+      $null = $child.WaitForExit(5000)
+      $child.Close()
+    }}
+  }}
+}}
+exit 0
+"""
+    )
+
+    assert result == {"childAlive": False, "remainingEntries": 0}
+
+
+def test_manifest_sync_bounds_cim_query_and_releases_lock_after_timeout(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "dev-processes.json"
+
+    result = run_powershell(
+        f"""
+. '{MANIFEST_HELPER}'
+$state = [pscustomobject]@{{ operationTimeoutSec = $null; lockReacquired = $false }}
+$seedEntry = [pscustomobject]@{{
+  role = 'seed'
+  pid = 2147483647
+  startedAtUtc = '2000-01-01T00:00:00.0000000Z'
+}}
+Write-DevProcessManifest `
+  -Manifest ([pscustomobject]@{{ version = 1; processes = @($seedEntry) }}) `
+  -ManifestPath '{manifest_path}'
+function Get-CimInstance {{
+  param(
+    [Parameter(Position = 0)]
+    [string]$ClassName,
+    [int]$OperationTimeoutSec
+  )
+  $state.operationTimeoutSec = $OperationTimeoutSec
+  throw [TimeoutException]::new("injected CIM timeout")
+}}
+
+$root = Get-Process -Id $PID
+try {{
+  try {{
+    Sync-DevProcessManifestTree `
+      -Role 'test-tree' `
+      -RootProcess $root `
+      -ManifestPath '{manifest_path}'
+  }} catch {{
+    $errorMessage = $_.Exception.Message
+  }}
+  Invoke-WithDevProcessManifestLock `
+    -ManifestPath '{manifest_path}' `
+    -LockTimeoutMilliseconds 100 `
+    -Action {{ $state.lockReacquired = $true }}
+  [ordered]@{{
+    operationTimeoutSec = $state.operationTimeoutSec
+    lockReacquired = $state.lockReacquired
+    errorMessage = $errorMessage
+    remainingRoles = @(
+      (Read-DevProcessManifest -ManifestPath '{manifest_path}').processes |
+        ForEach-Object {{ $_.role }}
+    )
+  }} | ConvertTo-Json -Compress
+}} finally {{
+  $root.Close()
+}}
+"""
+    )
+
+    assert result == {
+        "operationTimeoutSec": 5,
+        "lockReacquired": True,
+        "errorMessage": "injected CIM timeout",
+        "remainingRoles": ["seed"],
+    }
 
 
 def test_manifest_add_waits_for_concurrent_stop_transaction(tmp_path: Path) -> None:

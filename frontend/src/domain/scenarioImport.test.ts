@@ -124,6 +124,22 @@ describe("scenario import contract", () => {
     expect(() => parseScenario(scenario)).toThrow("JSON 必须是 Scenario 对象");
   });
 
+  it.each<[string, (scenario: Scenario) => void]>([
+    ["robot battery", (scenario) => {
+      const unsafeInteger = Number.MAX_SAFE_INTEGER + 1;
+      scenario.robots[0].battery = unsafeInteger;
+      scenario.robots[0].batteryCapacity = unsafeInteger;
+    }],
+    ["task deadline", (scenario) => {
+      scenario.tasks[0].deadline = Number.MAX_SAFE_INTEGER + 1;
+    }]
+  ])("rejects unsafe integer in %s", (_, mutate) => {
+    const scenario = buildScenario();
+    mutate(scenario);
+
+    expect(() => parseScenario(scenario)).toThrow("JSON 必须是 Scenario 对象");
+  });
+
   it("rejects service time above 10000", () => {
     const scenario = buildScenario();
     scenario.tasks[0].serviceTime = 10_001;

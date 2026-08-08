@@ -286,14 +286,23 @@ def write_final_report(output_dir: Path, report: BenchmarkReport) -> None:
         try:
             partial_path.unlink(missing_ok=True)
         except Exception as exc:
-            _raise_write_error(partial_path, exc)
-        try:
-            _cleanup_transaction_files(
-                transaction_paths,
-                raise_errors=True,
+            rollback_error: Exception | None = None
+            try:
+                _rollback_final_bundle(
+                    target_paths,
+                    backup_paths,
+                    backed_up_targets,
+                    published_targets,
+                    preserved_backup_paths,
+                )
+            except Exception as rollback_exc:
+                rollback_error = rollback_exc
+            _raise_write_error(
+                partial_path,
+                exc,
+                rollback_error=rollback_error,
             )
-        except Exception as exc:
-            _raise_write_error(output_path / "results.json", exc)
+        _cleanup_transaction_files(transaction_paths)
     finally:
         _cleanup_transaction_files(
             [

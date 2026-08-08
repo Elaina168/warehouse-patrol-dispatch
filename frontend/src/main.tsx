@@ -8,6 +8,7 @@ import {
   settleCreatedSession
 } from "./domain/sessionApi";
 import {
+  canControlOnlinePlayback,
   canMutateOnlineSession,
   classifySessionRequestFailure,
   historicalPlaybackNotice,
@@ -151,19 +152,42 @@ export function createSessionRequestCoordinator(): SessionRequestCoordinator {
 
 export function applySessionRequestFailure(
   error: unknown,
+  context: { hasUsableSession: boolean },
   setters: {
     setApiStatus: (status: "checking" | "online" | "offline" | "error") => void;
     setDispatchStatus: (status: "loading" | "ready" | "error") => void;
     setDispatchError: (message: string) => void;
     setOperationError: (message: string) => void;
   }
-): void {
+) {
   const decision = classifySessionRequestFailure(error, "mutation");
   const message = error instanceof Error ? error.message : "unknown error";
+  const dispatchStatus = decision.dispatchStatus === "ready" && !context.hasUsableSession
+    ? "error"
+    : decision.dispatchStatus;
   setters.setApiStatus(decision.apiStatus);
-  setters.setDispatchStatus("error");
+  setters.setDispatchStatus(dispatchStatus);
   setters.setDispatchError(message);
   setters.setOperationError(message);
+  return decision;
+}
+
+export function clearSessionViewState(setters: {
+  setSession: (session: SessionResult | null) => void;
+  setResult: (result: DispatchResult | null) => void;
+}): void {
+  setters.setSession(null);
+  setters.setResult(null);
+}
+
+export function dispatchSynchronizationLabel(
+  tickInFlight: boolean,
+  dispatchStatus: "loading" | "ready" | "error"
+): string {
+  if (tickInFlight) return "后端 tick 同步中";
+  if (dispatchStatus === "loading") return "等待重规划结果";
+  if (dispatchStatus === "error") return "调度同步失败";
+  return "调度结果已同步";
 }
 
 function App() {
@@ -236,6 +260,11 @@ function App() {
     displayTime: time,
     sessionCurrentTime: session?.currentTime ?? null
   });
+  const playbackControlEnabled = canControlOnlinePlayback({
+    hasResult: result !== null,
+    dispatchStatus,
+    tickInFlight
+  });
   const reachedConflictAlert = useMemo(
     () => result ? selectLatestConflictAlert(result.conflicts, time) : null,
     [result, time]
@@ -256,6 +285,16 @@ function App() {
     if (previousSessionId && previousSessionId !== payload.sessionId) {
       void deleteSession(API_BASE, previousSessionId).catch(() => undefined);
     }
+  }
+
+  function invalidateActiveSession() {
+    activeSessionIdRef.current = null;
+    clearSessionViewState({ setSession, setResult });
+    setPlaying(false);
+    setRandomGeneratorEnabled(false);
+    setLastRandomTaskTime(null);
+    setTickInFlight(false);
+    setRouteHintsEnabled(false);
   }
 
   const visibleSafetyIntervention = session?.safetyIntervention?.time === time
@@ -332,7 +371,7 @@ function App() {
     setDispatchStatus("loading");
     setDispatchError(null);
     setOperationError(null);
-    setSession(null);
+    clearSessionViewState({ setSession, setResult });
     setTime(0);
     setPlaying(false);
     setRouteHintsEnabled(false);
@@ -365,7 +404,11 @@ function App() {
       })
       .catch((error) => {
         if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
-        applySessionRequestFailure(error, { setApiStatus, setDispatchStatus, setDispatchError, setOperationError });
+        applySessionRequestFailure(
+          error,
+          { hasUsableSession: false },
+          { setApiStatus, setDispatchStatus, setDispatchError, setOperationError }
+        );
       });
 
     return () => {
@@ -562,6 +605,7 @@ function App() {
       if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
       const decision = classifySessionRequestFailure(error, "tick");
       const message = error instanceof Error ? error.message : "unknown error";
+      if (decision.invalidateSession) invalidateActiveSession();
       if (decision.pausePlayback) setPlaying(false);
       setApiStatus(decision.apiStatus);
       setDispatchStatus(decision.dispatchStatus);
@@ -595,7 +639,12 @@ function App() {
       applySessionPayload(payload);
     } catch (error) {
       if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
-      applySessionRequestFailure(error, { setApiStatus, setDispatchStatus, setDispatchError, setOperationError });
+      const decision = applySessionRequestFailure(
+        error,
+        { hasUsableSession: true },
+        { setApiStatus, setDispatchStatus, setDispatchError, setOperationError }
+      );
+      if (decision.invalidateSession) invalidateActiveSession();
     }
   }
 
@@ -616,6 +665,7 @@ function App() {
         if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
         const decision = classifySessionRequestFailure(error, "mutation");
         const message = error instanceof Error ? error.message : "unknown error";
+        if (decision.invalidateSession) invalidateActiveSession();
         if (decision.pausePlayback) setPlaying(false);
         setApiStatus(decision.apiStatus);
         setDispatchStatus(decision.dispatchStatus);
@@ -626,6 +676,7 @@ function App() {
   }
 
   function togglePlayback() {
+    if (!playbackControlEnabled) return;
     if (!playing) setRouteHintsEnabled(true);
     setPlaying((value) => !value);
   }
@@ -991,7 +1042,7 @@ function App() {
 
             <Panel title="仿真启动">
               <div className="control-row">
-                <button type="button" onClick={togglePlayback} disabled={!result || tickInFlight}>
+                <button type="button" onClick={togglePlayback} disabled={!playbackControlEnabled}>
                   {playing ? <Pause size={16} /> : <Play size={16} />}
                   {playing ? "暂停" : "播放"}
                 </button>
@@ -1024,7 +1075,7 @@ function App() {
                 />
               </label>
               <p className="session-note">
-                {playing ? "仿真运行中" : "仿真已暂停"} · {tickInFlight ? "后端 tick 同步中" : dispatchStatus === "loading" ? "等待重规划结果" : "调度结果已同步"}
+                {playing ? "仿真运行中" : "仿真已暂停"} · {dispatchSynchronizationLabel(tickInFlight, dispatchStatus)}
               </p>
               <OperationalErrorNotice message={operationError} />
             </Panel>
