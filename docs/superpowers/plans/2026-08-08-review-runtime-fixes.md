@@ -595,7 +595,7 @@ Expected: 全部 pytest 通过，`pip check` 输出 `No broken requirements foun
 
 ```powershell
 & 'C:\nvm4w\nodejs\npm.cmd' run check
-& 'C:\nvm4w\nodejs\npm.cmd' audit --audit-level=high --registry=https://registry.npmjs.org
+& 'C:\nvm4w\nodejs\npm.cmd' --prefix frontend audit --audit-level=high --registry=https://registry.npmjs.org
 git diff --check
 ```
 
