@@ -9,6 +9,7 @@ export const MAX_TASK_TARGETS = 64;
 export const MAX_TASK_SERVICE_TIME = 10_000;
 export const MAX_SCENARIO_CHARGE_TIME = 10_000;
 export const MAX_SESSION_CURRENT_TIME = 10_000;
+export const MAX_SAFE_INTEGER = 9_007_199_254_740_991;
 
 type ImportedShelf = Omit<Shelf, "initialOccupied"> & {
   initialOccupied?: boolean;
@@ -114,8 +115,8 @@ function isRobot(value: unknown): value is Scenario["robots"][number] {
     || !isString(value.id)
     || !isString(value.name)
     || !isCell(value.start)
-    || !isIntegerInRange(value.battery, 0, Number.POSITIVE_INFINITY)
-    || !isIntegerInRange(value.load, 0, Number.POSITIVE_INFINITY)
+    || !isIntegerInRange(value.battery, 0, MAX_SAFE_INTEGER)
+    || !isIntegerInRange(value.load, 0, MAX_SAFE_INTEGER)
     || !(value.moveTicks === undefined || isIntegerInRange(value.moveTicks, 1, 4))
     || !(value.capabilities === undefined || isCapabilityList(value.capabilities))
   ) {
@@ -123,7 +124,7 @@ function isRobot(value: unknown): value is Scenario["robots"][number] {
   }
 
   const batteryCapacity = value.batteryCapacity === undefined ? 100 : value.batteryCapacity;
-  return isIntegerInRange(batteryCapacity, 1, Number.POSITIVE_INFINITY)
+  return isIntegerInRange(batteryCapacity, 1, MAX_SAFE_INTEGER)
     && value.battery <= batteryCapacity;
 }
 
@@ -160,13 +161,13 @@ function isTask(value: unknown): value is Task {
     || !isString(value.title)
     || !isIntegerInRange(value.priority, 0, 5)
     || !isNullableOptionalInteger(value.releaseTime, 0, MAX_SESSION_CURRENT_TIME)
-    || !isNullableOptionalInteger(value.deadline, 0, Number.POSITIVE_INFINITY)
+    || !isNullableOptionalInteger(value.deadline, 0, MAX_SAFE_INTEGER)
     || !isNullableOptionalInteger(value.serviceTime, 0, MAX_TASK_SERVICE_TIME)
     || !isNullableOptionalCell(value.pickup)
     || !isNullableOptionalCell(value.dropoff)
     || !isNullableOptionalCell(value.target)
     || !isNullableOptionalTargets(value.targets)
-    || !isNullableOptionalInteger(value.demand, 1, Number.POSITIVE_INFINITY)
+    || !isNullableOptionalInteger(value.demand, 1, MAX_SAFE_INTEGER)
   ) {
     return false;
   }

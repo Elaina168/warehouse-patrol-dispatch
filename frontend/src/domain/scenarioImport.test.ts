@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseScenario } from "./scenarioImport";
+import { MAX_SAFE_INTEGER, parseScenario } from "./scenarioImport";
 import type { Scenario } from "./types";
 
 function buildScenario(): Scenario {
@@ -115,6 +115,17 @@ describe("scenario import contract", () => {
     mutate(scenario);
 
     expect(() => parseScenario(scenario)).toThrow("JSON 必须是 Scenario 对象");
+  });
+
+  it("accepts the JavaScript safe integer boundary", () => {
+    const scenario = buildScenario();
+    scenario.robots[0].battery = Number.MAX_SAFE_INTEGER;
+    scenario.robots[0].batteryCapacity = Number.MAX_SAFE_INTEGER;
+    scenario.robots[0].load = Number.MAX_SAFE_INTEGER;
+    scenario.tasks[0].deadline = Number.MAX_SAFE_INTEGER;
+
+    expect(parseScenario(scenario).robots[0].battery).toBe(Number.MAX_SAFE_INTEGER);
+    expect(MAX_SAFE_INTEGER).toBe(Number.MAX_SAFE_INTEGER);
   });
 
   it.each([1.5, -1, 6])("rejects task priority %s outside the integer zero-to-five range", (priority) => {

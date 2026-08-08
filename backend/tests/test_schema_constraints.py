@@ -9,6 +9,7 @@ from backend.app.limits import (
     MAX_SCENARIO_CELL_COUNT,
     MAX_SCENARIO_ROBOTS,
     MAX_SCENARIO_TASKS,
+    MAX_SESSION_CURRENT_TIME,
     MAX_TASK_TARGETS,
 )
 from backend.app.main import app
@@ -78,6 +79,153 @@ def _forbidden_call(calls: list[str], callable_name: str):
         raise AssertionError(f"{callable_name} must not receive an invalid Pydantic request")
 
     return forbidden
+
+
+def _validate_scenario_string(field_name: str, value: str):
+    payload = scenario_payload()
+    payload[field_name] = value
+    return schemas.Scenario.model_validate(payload)
+
+
+def _validate_dynamic_failed_robot_id(value: str):
+    payload = scenario_payload()
+    payload["dynamic"]["failedRobots"] = [value]
+    return schemas.Scenario.model_validate(payload)
+
+
+def _validate_task_string(field_name: str, value: str):
+    payload = _inspection_task(0)
+    payload[field_name] = value
+    return schemas.Task.model_validate(payload)
+
+
+def _validate_robot_string(field_name: str, value: str):
+    payload = _robot(0)
+    payload[field_name] = value
+    return schemas.Robot.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "validator",
+    [
+        pytest.param(lambda value: _validate_scenario_string("id", value), id="scenario-id"),
+        pytest.param(lambda value: _validate_task_string("id", value), id="task-id"),
+        pytest.param(lambda value: _validate_robot_string("id", value), id="robot-id"),
+        pytest.param(
+            lambda value: schemas.Shelf.model_validate(
+                {"id": value, "cell": [0, 0], "serviceCell": [0, 1]}
+            ),
+            id="shelf-id",
+        ),
+        pytest.param(_validate_dynamic_failed_robot_id, id="dynamic-failed-robot-id"),
+        pytest.param(
+            lambda value: schemas.FailRobotRequest.model_validate({"robotId": value}),
+            id="fail-robot-request-id",
+        ),
+        pytest.param(
+            lambda value: schemas.RestoreRobotRequest.model_validate({"robotId": value}),
+            id="restore-robot-request-id",
+        ),
+    ],
+)
+def test_identifier_strings_accept_128_and_reject_129_characters(validator) -> None:
+    assert validator("I" * 128) is not None
+    with pytest.raises(ValidationError):
+        validator("I" * 129)
+
+
+@pytest.mark.parametrize(
+    "validator",
+    [
+        pytest.param(lambda value: _validate_scenario_string("name", value), id="scenario-name"),
+        pytest.param(lambda value: _validate_task_string("title", value), id="task-title"),
+        pytest.param(lambda value: _validate_robot_string("name", value), id="robot-name"),
+        pytest.param(
+            lambda value: schemas.ScaleExperimentScenario.model_validate(
+                {"label": value, "scenario": scenario_payload()}
+            ),
+            id="scale-experiment-label",
+        ),
+    ],
+)
+def test_display_strings_accept_256_and_reject_257_characters(validator) -> None:
+    assert validator("N" * 256) is not None
+    with pytest.raises(ValidationError):
+        validator("N" * 257)
+
+
+def test_scenario_description_accepts_4096_and_rejects_4097_characters() -> None:
+    assert _validate_scenario_string("description", "D" * 4096) is not None
+    with pytest.raises(ValidationError):
+        _validate_scenario_string("description", "D" * 4097)
+
+
+@pytest.mark.parametrize(
+    "validator",
+    [
+        pytest.param(
+            lambda value: schemas.Scenario.model_validate(
+                {
+                    **scenario_payload(),
+                    "robots": [
+                        {
+                            **scenario_payload()["robots"][0],
+                            "battery": value,
+                            "batteryCapacity": value,
+                        }
+                    ],
+                }
+            ),
+            id="robot-battery",
+        ),
+        pytest.param(
+            lambda value: schemas.Robot.model_validate(
+                {**_robot(0), "battery": value, "batteryCapacity": value}
+            ),
+            id="robot-battery-capacity",
+        ),
+        pytest.param(
+            lambda value: schemas.Robot.model_validate({**_robot(0), "load": value}),
+            id="robot-load",
+        ),
+        pytest.param(
+            lambda value: schemas.Task.model_validate(
+                {**_inspection_task(0), "deadline": value}
+            ),
+            id="task-deadline",
+        ),
+        pytest.param(
+            lambda value: schemas.Task.model_validate(
+                {
+                    "id": "D",
+                    "type": "delivery",
+                    "title": "D",
+                    "priority": 1,
+                    "pickup": [0, 0],
+                    "dropoff": [1, 0],
+                    "demand": value,
+                }
+            ),
+            id="task-demand",
+        ),
+    ],
+)
+def test_javascript_safe_integer_boundary(validator) -> None:
+    assert validator(9_007_199_254_740_991) is not None
+    with pytest.raises(ValidationError):
+        validator(9_007_199_254_740_992)
+
+
+def test_runtime_current_time_openapi_maximum_matches_session_limit() -> None:
+    for model in (
+        schemas.SessionTickRequest,
+        schemas.AddBlockRequest,
+        schemas.RemoveBlockRequest,
+        schemas.FailRobotRequest,
+        schemas.RestoreRobotRequest,
+    ):
+        current_time_schema = model.model_json_schema()["properties"]["currentTime"]
+        assert current_time_schema["maximum"] == MAX_SESSION_CURRENT_TIME
 
 
 def test_robot_capabilities_default_to_all_task_types() -> None:

@@ -6,7 +6,7 @@ from typing import Any, Literal, Union, get_args, get_origin
 from pydantic import BaseModel
 
 from backend.app.main import app
-from backend.app import schemas
+from backend.app import limits, schemas
 from backend.app.limits import (
     MAX_SCENARIO_AXIS_LENGTH,
     MAX_SCENARIO_CELL_COUNT,
@@ -262,6 +262,7 @@ def test_frontend_scenario_import_limits_match_backend_limits() -> None:
         "MAX_TASK_TARGETS": MAX_TASK_TARGETS,
         "MAX_TASK_SERVICE_TIME": MAX_TASK_SERVICE_TIME,
         "MAX_SCENARIO_CHARGE_TIME": MAX_SCENARIO_CHARGE_TIME,
+        "MAX_SAFE_INTEGER": getattr(limits, "MAX_SAFE_INTEGER", None),
     }
 
     assert {

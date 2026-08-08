@@ -50,10 +50,16 @@ from backend.app.sessions import (
     restore_robot,
     tick_session,
 )
+from backend.app.limits import MAX_REQUEST_BODY_BYTES
+from backend.app.request_limits import RequestBodyLimitMiddleware
 from backend.app.validation import validate_scenario
 
 app = FastAPI(title="Warehouse Patrol Dispatch API", version="0.1.0")
 
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    max_body_size=MAX_REQUEST_BODY_BYTES,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_allowed_origins(),

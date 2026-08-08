@@ -3,7 +3,11 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.app.limits import (
+    MAX_DESCRIPTION_LENGTH,
+    MAX_DISPLAY_NAME_LENGTH,
     MAX_EXPERIMENT_CASES,
+    MAX_IDENTIFIER_LENGTH,
+    MAX_SAFE_INTEGER,
     MAX_SCENARIO_CHARGE_TIME,
     MAX_SCENARIO_AXIS_LENGTH,
     MAX_SCENARIO_CELL_COUNT,
@@ -15,8 +19,11 @@ from backend.app.limits import (
 )
 
 Cell = tuple[int, int]
-NonNegativeInt = Annotated[int, Field(ge=0)]
-PositiveInt = Annotated[int, Field(gt=0)]
+IdentifierStr = Annotated[str, Field(max_length=MAX_IDENTIFIER_LENGTH)]
+DisplayNameStr = Annotated[str, Field(max_length=MAX_DISPLAY_NAME_LENGTH)]
+DescriptionStr = Annotated[str, Field(max_length=MAX_DESCRIPTION_LENGTH)]
+NonNegativeInt = Annotated[int, Field(ge=0, le=MAX_SAFE_INTEGER)]
+PositiveInt = Annotated[int, Field(gt=0, le=MAX_SAFE_INTEGER)]
 SessionTimeInt = Annotated[int, Field(ge=0, le=MAX_SESSION_CURRENT_TIME)]
 TaskServiceTimeInt = Annotated[int, Field(ge=0, le=MAX_TASK_SERVICE_TIME)]
 ChargeTimeInt = Annotated[int, Field(ge=1, le=MAX_SCENARIO_CHARGE_TIME)]
@@ -44,9 +51,9 @@ class ApiModel(BaseModel):
 
 
 class Task(ApiModel):
-    id: str
+    id: IdentifierStr
     type: TaskType
-    title: str
+    title: DisplayNameStr
     priority: PriorityInt
     releaseTime: SessionTimeInt | None = None
     deadline: NonNegativeInt | None = None
@@ -59,8 +66,8 @@ class Task(ApiModel):
 
 
 class Robot(ApiModel):
-    id: str
-    name: str
+    id: IdentifierStr
+    name: DisplayNameStr
     start: Cell
     battery: NonNegativeInt
     batteryCapacity: PositiveInt = 100
@@ -80,7 +87,7 @@ class Robot(ApiModel):
 class DynamicEvent(ApiModel):
     triggerTime: SessionTimeInt
     blockedCells: list[Cell] = Field(max_length=MAX_SCENARIO_CELL_COUNT)
-    failedRobots: list[str] = Field(max_length=MAX_SCENARIO_ROBOTS)
+    failedRobots: list[IdentifierStr] = Field(max_length=MAX_SCENARIO_ROBOTS)
     tasks: list[Task] = Field(max_length=MAX_SCENARIO_TASKS)
 
 
@@ -92,7 +99,7 @@ class Zones(ApiModel):
 
 
 class Shelf(ApiModel):
-    id: str
+    id: IdentifierStr
     cell: Cell
     serviceCell: Cell
     initialOccupied: bool = False
@@ -106,9 +113,9 @@ class ShelfRuntimeState(ApiModel):
 
 
 class Scenario(ApiModel):
-    id: str
-    name: str
-    description: str
+    id: IdentifierStr
+    name: DisplayNameStr
+    description: DescriptionStr
     width: ScenarioAxisInt
     height: ScenarioAxisInt
     obstacles: list[Cell] = Field(max_length=MAX_SCENARIO_CELL_COUNT)
@@ -189,7 +196,7 @@ class ReplanWindowExperimentRequest(ApiModel):
 
 
 class ScaleExperimentScenario(ApiModel):
-    label: str
+    label: DisplayNameStr
     scenario: Scenario
 
 
@@ -220,27 +227,27 @@ class AddTaskRequest(ApiModel):
 
 
 class SessionTickRequest(ApiModel):
-    currentTime: NonNegativeInt
+    currentTime: SessionTimeInt
 
 
 class AddBlockRequest(ApiModel):
     cell: Cell
-    currentTime: NonNegativeInt = 0
+    currentTime: SessionTimeInt = 0
 
 
 class RemoveBlockRequest(ApiModel):
     cell: Cell
-    currentTime: NonNegativeInt = 0
+    currentTime: SessionTimeInt = 0
 
 
 class FailRobotRequest(ApiModel):
-    robotId: str
-    currentTime: NonNegativeInt = 0
+    robotId: IdentifierStr
+    currentTime: SessionTimeInt = 0
 
 
 class RestoreRobotRequest(ApiModel):
-    robotId: str
-    currentTime: NonNegativeInt = 0
+    robotId: IdentifierStr
+    currentTime: SessionTimeInt = 0
 
 
 class Assignment(ApiModel):
