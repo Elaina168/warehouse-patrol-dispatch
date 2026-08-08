@@ -1,10 +1,27 @@
 import type {
+  CreateSessionRequest,
   DeleteSessionResult,
   SessionResult
 } from "./types";
 import { apiErrorFromResponse } from "./apiError";
 
 export type FetchLike = typeof fetch;
+
+export async function createSession(
+  apiBase: string,
+  request: CreateSessionRequest,
+  fetcher: FetchLike = fetch
+): Promise<SessionResult> {
+  const response = await fetcher(`${apiBase}/api/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request)
+  });
+  if (!response.ok) {
+    throw await apiErrorFromResponse(response, "session failed");
+  }
+  return await response.json() as SessionResult;
+}
 
 export async function settleCreatedSession(
   payload: SessionResult,

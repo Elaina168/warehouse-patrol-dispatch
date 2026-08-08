@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { ArrowUp, Crosshair, Download, Lock, Pause, Play, Plus, RefreshCcw, Server, ShieldX, Square, TriangleAlert, Unlock, Upload } from "lucide-react";
 import { apiErrorFromResponse } from "./domain/apiError";
 import {
+  createSession,
   deleteSession,
   resetSession,
   settleCreatedSession
@@ -17,7 +18,7 @@ import {
   runOnlineMutation
 } from "./domain/sessionRequestState";
 import { buildShelfCellPresentations, buildWarehouseDeliveryCandidates } from "./domain/inventory";
-import { MAX_TASK_SERVICE_TIME, parseScenario } from "./domain/scenarioImport";
+import { importScenarioCandidate, MAX_TASK_SERVICE_TIME } from "./domain/scenarioImport";
 import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./domain/view";
 import { scenarios } from "./domain/scenarios";
 import type { Cell, Conflict, ConflictState, CreateSessionRequest, DispatchOptions, DispatchResult, RecoveryAction, Robot, SafetyStall, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
@@ -150,6 +151,13 @@ export function createSessionRequestCoordinator(): SessionRequestCoordinator {
   };
 }
 
+export function shouldReusePrecreatedScenario(
+  precreatedScenario: Scenario | null,
+  scenario: Scenario
+): boolean {
+  return precreatedScenario === scenario;
+}
+
 export function applySessionRequestFailure(
   error: unknown,
   context: { hasUsableSession: boolean },
@@ -222,6 +230,7 @@ function App() {
   const [importError, setImportError] = useState<string | null>(null);
   const [mapContextMenu, setMapContextMenu] = useState<MapContextMenuState | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
+  const precreatedScenarioRef = useRef<Scenario | null>(null);
   const randomTaskSequenceRef = useRef(0);
   const sessionRequestCoordinatorRef = useRef(createSessionRequestCoordinator());
   const sessionRequestCoordinator = sessionRequestCoordinatorRef.current;
@@ -367,6 +376,10 @@ function App() {
   }, [latestConflictAlert, result, time]);
 
   useEffect(() => {
+    if (shouldReusePrecreatedScenario(precreatedScenarioRef.current, scenario)) {
+      precreatedScenarioRef.current = null;
+      return;
+    }
     const requestGeneration = sessionRequestCoordinator.invalidate();
     setDispatchStatus("loading");
     setDispatchError(null);
@@ -382,19 +395,14 @@ function App() {
     setMapPickTarget(null);
     resetSessionConflictState(setLatestConflictAlert, setLatestConflictResolved);
 
-    fetch(`${API_BASE}/api/sessions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildCreateSessionRequest(
+    createSession(
+      API_BASE,
+      buildCreateSessionRequest(
         scenario,
         buildDispatchOptions(avoidConflicts, true, assignmentReplanWindow, adaptiveReplanWindow),
         importedScenario
-      ))
-    })
-      .then((response) => {
-        if (!response.ok) return responseError(response, "session failed");
-        return response.json() as Promise<SessionResult>;
-      })
+      )
+    )
       .then(async (payload) => {
         await settleCreatedSession(
           payload,
@@ -708,13 +716,49 @@ function App() {
     event.target.value = "";
     if (!file) return;
 
+    let requestGeneration: number | null = null;
     try {
-      const parsed = JSON.parse(await file.text()) as unknown;
-      const importedScenario = parseScenario(parsed);
-      setImportedScenario(importedScenario);
-      setImportStatus("ready");
-      setImportError(null);
+      await importScenarioCandidate(
+        file,
+        (candidate) => {
+          requestGeneration = sessionRequestCoordinator.invalidate();
+          return sessionRequestCoordinator.enqueue(() => createSession(
+            API_BASE,
+            buildCreateSessionRequest(
+              candidate,
+              buildDispatchOptions(
+                avoidConflicts,
+                true,
+                assignmentReplanWindow,
+                adaptiveReplanWindow
+              ),
+              candidate
+            )
+          ));
+        },
+        async (candidate, payload) => {
+          if (requestGeneration === null) {
+            throw new Error("导入会话请求未初始化");
+          }
+          await settleCreatedSession(
+            payload,
+            sessionRequestCoordinator.isCurrent(requestGeneration),
+            (current) => {
+              precreatedScenarioRef.current = candidate;
+              setImportedScenario(candidate);
+              applySessionPayload(current);
+              setImportStatus("ready");
+              setImportError(null);
+            },
+            (sessionId) => deleteSession(API_BASE, sessionId).then(() => undefined)
+          );
+        }
+      );
     } catch (error) {
+      if (
+        requestGeneration !== null
+        && !sessionRequestCoordinator.isCurrent(requestGeneration)
+      ) return;
       setImportStatus("error");
       setImportError(error instanceof Error ? error.message : "无法解析导入文件");
     }

@@ -1,4 +1,4 @@
-import type { Cell, Scenario, Shelf, Task, TaskType } from "./types";
+import type { Cell, Scenario, SessionResult, Shelf, Task, TaskType } from "./types";
 import { cellKey } from "./view";
 
 export const MAX_SCENARIO_AXIS_LENGTH = 64;
@@ -10,6 +10,7 @@ export const MAX_TASK_SERVICE_TIME = 10_000;
 export const MAX_SCENARIO_CHARGE_TIME = 10_000;
 export const MAX_SESSION_CURRENT_TIME = 10_000;
 export const MAX_SAFE_INTEGER = 9_007_199_254_740_991;
+export const MAX_SCENARIO_IMPORT_BYTES = 2_097_152;
 
 type ImportedShelf = Omit<Shelf, "initialOccupied"> & {
   initialOccupied?: boolean;
@@ -52,6 +53,19 @@ export function parseScenario(value: unknown): Scenario {
     throw new Error(diagnostics.join("；"));
   }
   return scenario;
+}
+
+export async function importScenarioCandidate(
+  file: Pick<File, "size" | "text">,
+  create: (scenario: Scenario) => Promise<SessionResult>,
+  commit: (scenario: Scenario, payload: SessionResult) => void | Promise<void>
+): Promise<void> {
+  if (file.size > MAX_SCENARIO_IMPORT_BYTES) {
+    throw new Error("场景文件不能超过 2 MiB");
+  }
+  const scenario = parseScenario(JSON.parse(await file.text()) as unknown);
+  const payload = await create(scenario);
+  await commit(scenario, payload);
 }
 
 function isScenario(value: unknown): value is ImportedScenario {

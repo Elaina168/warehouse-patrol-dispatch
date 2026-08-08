@@ -1,16 +1,57 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  createSession,
   deleteSession,
   resetSession,
   settleCreatedSession
 } from "./sessionApi";
 import type {
+  CreateSessionRequest,
   DeleteSessionResult,
   SessionResult
 } from "./types";
 
 describe("session API helpers", () => {
+  it("posts a create-session request and returns the session payload", async () => {
+    const request = {
+      scenario: { id: "candidate" },
+      options: { avoidConflicts: true, includeDynamic: true }
+    } as CreateSessionRequest;
+    const payload = { sessionId: "session-created" } as SessionResult;
+    const fetcher = vi.fn(async () => (
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    ));
+
+    const result = await createSession("http://127.0.0.1:8011", request, fetcher);
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://127.0.0.1:8011/api/sessions",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request)
+      }
+    );
+    expect(result).toEqual(payload);
+  });
+
+  it("includes backend create error detail in thrown errors", async () => {
+    const request = { scenario: { id: "candidate" } } as CreateSessionRequest;
+    const fetcher = vi.fn(async () => (
+      new Response(JSON.stringify({ detail: "动态故障机器人不存在：MISSING" }), {
+        status: 422,
+        headers: { "Content-Type": "application/json" }
+      })
+    ));
+
+    await expect(createSession("http://127.0.0.1:8011", request, fetcher))
+      .rejects.toThrow("session failed: 动态故障机器人不存在：MISSING");
+  });
+
   it("applies a current created session without deleting it", async () => {
     const payload = { sessionId: "session-current" } as SessionResult;
     const applied: string[] = [];

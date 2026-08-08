@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { MAX_SAFE_INTEGER, parseScenario } from "./scenarioImport";
-import type { Scenario } from "./types";
+import {
+  importScenarioCandidate,
+  MAX_SAFE_INTEGER,
+  MAX_SCENARIO_IMPORT_BYTES,
+  parseScenario
+} from "./scenarioImport";
+import type { Scenario, SessionResult } from "./types";
 
 function buildScenario(): Scenario {
   return {
@@ -50,6 +55,63 @@ function addUnknownField(value: object): void {
 }
 
 describe("scenario import contract", () => {
+  it("rejects an oversized scenario before reading it", async () => {
+    const text = vi.fn(async () => "{}");
+    const create = vi.fn();
+    const commit = vi.fn();
+
+    await expect(importScenarioCandidate(
+      { size: MAX_SCENARIO_IMPORT_BYTES + 1, text },
+      create,
+      commit
+    )).rejects.toThrow("2 MiB");
+
+    expect(text).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it("does not commit a candidate when session creation fails", async () => {
+    const scenario = buildScenario();
+    const commit = vi.fn();
+
+    await expect(importScenarioCandidate(
+      { size: 100, text: async () => JSON.stringify(scenario) },
+      async () => {
+        throw new Error("backend rejected");
+      },
+      commit
+    )).rejects.toThrow("backend rejected");
+
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it("commits the exact candidate only after session creation succeeds", async () => {
+    const scenario = buildScenario();
+    const payload = { sessionId: "candidate-session" } as SessionResult;
+    const order: string[] = [];
+    let createdScenario: Scenario | null = null;
+    let committedScenario: Scenario | null = null;
+
+    await importScenarioCandidate(
+      { size: MAX_SCENARIO_IMPORT_BYTES, text: async () => JSON.stringify(scenario) },
+      async (candidate) => {
+        order.push("create");
+        createdScenario = candidate;
+        return payload;
+      },
+      (candidate, committedPayload) => {
+        order.push("commit");
+        committedScenario = candidate;
+        expect(committedPayload).toBe(payload);
+      }
+    );
+
+    expect(order).toEqual(["create", "commit"]);
+    expect(createdScenario).toBe(committedScenario);
+    expect(committedScenario).toEqual(scenario);
+  });
+
   it("accepts nullable task timing fields", () => {
     const scenario = buildScenario();
     scenario.tasks[0].releaseTime = null;

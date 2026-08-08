@@ -29,6 +29,7 @@ import {
   shouldGenerateRandomTaskAtTime,
   shouldUseRuntimeRobotSnapshot,
   shouldRequestSessionTick,
+  shouldReusePrecreatedScenario,
   parsePlaybackSpeed,
   parsePositiveIntegerInput,
   normalizeManualTaskDeadline,
@@ -108,6 +109,15 @@ describe("session request coordination", () => {
       }
     };
   }
+
+  it("reuses only the exact precreated scenario object", () => {
+    const scenario = structuredClone(scenarios[0]);
+    const sameIdClone = structuredClone(scenario);
+
+    expect(shouldReusePrecreatedScenario(scenario, scenario)).toBe(true);
+    expect(shouldReusePrecreatedScenario(scenario, sameIdClone)).toBe(false);
+    expect(shouldReusePrecreatedScenario(null, scenario)).toBe(false);
+  });
 
   it("delays only the built-in scenario even when an import reuses its ID", () => {
     const builtInScenario = scenarios[0];
