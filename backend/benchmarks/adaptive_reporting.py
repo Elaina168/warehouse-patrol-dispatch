@@ -247,6 +247,30 @@ def _rollback_final_bundle(
         raise OSError("；".join(errors))
 
 
+def _reconcile_final_bundle_state(
+    target_paths: tuple[Path, ...],
+    temporary_paths: dict[Path, Path],
+    backup_paths: dict[Path, Path],
+    backed_up_targets: set[Path],
+    published_targets: set[Path],
+    publication_started: bool,
+) -> tuple[set[Path], set[Path]]:
+    reconciled_backups = set(backed_up_targets)
+    reconciled_publications = set(published_targets)
+    reconciled_backups.update(
+        target_path
+        for target_path in target_paths
+        if backup_paths[target_path].exists()
+    )
+    if publication_started:
+        reconciled_publications.update(
+            target_path
+            for target_path in target_paths
+            if target_path.exists() and not temporary_paths[target_path].exists()
+        )
+    return reconciled_backups, reconciled_publications
+
+
 def write_partial_report(
     output_dir: Path,
     report: AdaptiveCalibrationReport,
@@ -326,55 +350,33 @@ def write_final_report(
 
         backed_up_targets: set[Path] = set()
         published_targets: set[Path] = set()
-        for target_path in target_paths:
-            if not target_path.exists():
-                continue
-            try:
+        publication_started = False
+        active_path = partial_path
+        try:
+            for target_path in target_paths:
+                active_path = target_path
+                if not target_path.exists():
+                    continue
                 target_path.replace(backup_paths[target_path])
                 backed_up_targets.add(target_path)
-            except Exception as exc:
-                rollback_error: Exception | None = None
-                try:
-                    _rollback_final_bundle(
-                        target_paths,
-                        backup_paths,
-                        backed_up_targets,
-                        published_targets,
-                        preserved_backup_paths,
-                    )
-                except Exception as rollback_exc:
-                    rollback_error = rollback_exc
-                _raise_write_error(
-                    target_path,
-                    exc,
-                    rollback_error=rollback_error,
-                )
 
-        for target_path in target_paths:
-            try:
+            publication_started = True
+            for target_path in target_paths:
+                active_path = target_path
                 temporary_paths[target_path].replace(target_path)
                 published_targets.add(target_path)
-            except Exception as exc:
-                rollback_error = None
-                try:
-                    _rollback_final_bundle(
-                        target_paths,
-                        backup_paths,
-                        backed_up_targets,
-                        published_targets,
-                        preserved_backup_paths,
-                    )
-                except Exception as rollback_exc:
-                    rollback_error = rollback_exc
-                _raise_write_error(
-                    target_path,
-                    exc,
-                    rollback_error=rollback_error,
-                )
 
-        try:
+            active_path = partial_path
             partial_path.unlink(missing_ok=True)
-        except Exception as exc:
+        except BaseException as exc:
+            backed_up_targets, published_targets = _reconcile_final_bundle_state(
+                target_paths,
+                temporary_paths,
+                backup_paths,
+                backed_up_targets,
+                published_targets,
+                publication_started,
+            )
             rollback_error: Exception | None = None
             try:
                 _rollback_final_bundle(
@@ -386,11 +388,13 @@ def write_final_report(
                 )
             except Exception as rollback_exc:
                 rollback_error = rollback_exc
-            _raise_write_error(
-                partial_path,
-                exc,
-                rollback_error=rollback_error,
-            )
+            if isinstance(exc, Exception):
+                _raise_write_error(
+                    active_path,
+                    exc,
+                    rollback_error=rollback_error,
+                )
+            raise
         _cleanup_transaction_files(transaction_paths)
     finally:
         _cleanup_transaction_files(

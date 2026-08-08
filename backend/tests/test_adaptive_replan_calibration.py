@@ -1509,6 +1509,140 @@ ADAPTIVE_FINAL_REPORT_FILE_NAMES = (
 )
 
 
+def _install_adaptive_final_report_interrupt_after_filesystem_change(
+    monkeypatch,
+    output_path: Path,
+    stage: str,
+    *,
+    restore_failure_file: str | None = None,
+) -> dict[str, bool]:
+    real_replace = Path.replace
+    real_unlink = Path.unlink
+    state = {"interrupted": False, "restore_failed": False}
+    partial_path = output_path / "results.partial.json"
+
+    def interrupt_after_replace(source, target):
+        source_path = Path(source)
+        target_path = Path(target)
+        if (
+            restore_failure_file is not None
+            and source_path.suffix == ".backup"
+            and target_path.name == restore_failure_file
+        ):
+            state["restore_failed"] = True
+            raise OSError(f"{restore_failure_file} restore failed")
+
+        result = real_replace(source, target)
+        is_target_file = target_path.name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
+        should_interrupt = (
+            not state["interrupted"]
+            and (
+                (stage == "backup" and target_path.suffix == ".backup")
+                or (
+                    stage == "publish"
+                    and source_path.suffix == ".tmp"
+                    and is_target_file
+                )
+            )
+        )
+        if should_interrupt:
+            state["interrupted"] = True
+            raise KeyboardInterrupt(f"interrupted after {stage}")
+        return result
+
+    def interrupt_after_unlink(path, *args, **kwargs):
+        result = real_unlink(path, *args, **kwargs)
+        if (
+            not state["interrupted"]
+            and stage == "partial-delete"
+            and Path(path) == partial_path
+        ):
+            state["interrupted"] = True
+            raise KeyboardInterrupt("interrupted after partial-delete")
+        return result
+
+    monkeypatch.setattr(Path, "replace", interrupt_after_replace)
+    monkeypatch.setattr(Path, "unlink", interrupt_after_unlink)
+    return state
+
+
+@pytest.mark.parametrize("stage", ["backup", "publish", "partial-delete"])
+def test_adaptive_final_report_cancellation_restores_existing_bundle(
+    tmp_path,
+    monkeypatch,
+    stage,
+) -> None:
+    run = _completed_run("adaptive-low-load-r4-t17", "fixed-24", 1)
+    report = AdaptiveCalibrationReport.create({}, [run])
+    write_partial_report(tmp_path, report)
+    partial_path = tmp_path / "results.partial.json"
+    partial_content = partial_path.read_bytes()
+    original_files = {
+        file_name: f"old {file_name}".encode("utf-8")
+        for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
+    }
+    for file_name, content in original_files.items():
+        (tmp_path / file_name).write_bytes(content)
+    state = _install_adaptive_final_report_interrupt_after_filesystem_change(
+        monkeypatch,
+        tmp_path,
+        stage,
+    )
+
+    with pytest.raises(KeyboardInterrupt, match=stage):
+        write_final_report(tmp_path, report)
+
+    assert state["interrupted"] is True
+    assert {
+        file_name: (tmp_path / file_name).read_bytes()
+        for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
+    } == original_files
+    if stage != "partial-delete":
+        assert partial_path.read_bytes() == partial_content
+    assert not [
+        path
+        for path in tmp_path.iterdir()
+        if path.suffix in {".tmp", ".backup"}
+    ]
+
+
+def test_adaptive_final_report_cancellation_preserves_backup_when_rollback_restore_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    run = _completed_run("adaptive-low-load-r4-t17", "fixed-24", 1)
+    report = AdaptiveCalibrationReport.create({}, [run])
+    write_partial_report(tmp_path, report)
+    original_files = {
+        file_name: f"old {file_name}".encode("utf-8")
+        for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
+    }
+    for file_name, content in original_files.items():
+        (tmp_path / file_name).write_bytes(content)
+    state = _install_adaptive_final_report_interrupt_after_filesystem_change(
+        monkeypatch,
+        tmp_path,
+        "publish",
+        restore_failure_file="runs.csv",
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="publish"):
+        write_final_report(tmp_path, report)
+
+    assert state == {"interrupted": True, "restore_failed": True}
+    preserved_backups = list(tmp_path.glob(".runs.csv.*.backup"))
+    assert len(preserved_backups) == 1
+    assert preserved_backups[0].read_bytes() == original_files["runs.csv"]
+    assert not (tmp_path / "runs.csv").exists()
+    for file_name in (
+        "results.json",
+        "replan-observations.csv",
+        "variant-summaries.csv",
+    ):
+        assert (tmp_path / file_name).read_bytes() == original_files[file_name]
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 @pytest.mark.parametrize(
     "has_existing_bundle",
     [True, False],
