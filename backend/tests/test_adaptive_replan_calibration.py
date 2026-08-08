@@ -1593,12 +1593,51 @@ def test_adaptive_final_report_cancellation_restores_existing_bundle(
         write_final_report(tmp_path, report)
 
     assert state["interrupted"] is True
-    assert {
-        file_name: (tmp_path / file_name).read_bytes()
-        for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
-    } == original_files
-    if stage != "partial-delete":
+    if stage == "partial-delete":
+        assert not partial_path.exists()
+        assert all(
+            (tmp_path / file_name).exists()
+            for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
+        )
+        assert all(
+            (tmp_path / file_name).read_bytes() != original_files[file_name]
+            for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
+        )
+    else:
+        assert {
+            file_name: (tmp_path / file_name).read_bytes()
+            for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
+        } == original_files
         assert partial_path.read_bytes() == partial_content
+    assert not [
+        path
+        for path in tmp_path.iterdir()
+        if path.suffix in {".tmp", ".backup"}
+    ]
+
+
+def test_adaptive_final_report_cancellation_after_partial_delete_keeps_new_bundle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    run = _completed_run("adaptive-low-load-r4-t17", "fixed-24", 1)
+    report = AdaptiveCalibrationReport.create({}, [run])
+    write_partial_report(tmp_path, report)
+    state = _install_adaptive_final_report_interrupt_after_filesystem_change(
+        monkeypatch,
+        tmp_path,
+        "partial-delete",
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="partial-delete"):
+        write_final_report(tmp_path, report)
+
+    assert state["interrupted"] is True
+    assert not (tmp_path / "results.partial.json").exists()
+    assert all(
+        (tmp_path / file_name).exists()
+        for file_name in ADAPTIVE_FINAL_REPORT_FILE_NAMES
+    )
     assert not [
         path
         for path in tmp_path.iterdir()

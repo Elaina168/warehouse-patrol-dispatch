@@ -271,6 +271,21 @@ def _reconcile_final_bundle_state(
     return reconciled_backups, reconciled_publications
 
 
+def _final_bundle_is_committed(
+    target_paths: tuple[Path, ...],
+    temporary_paths: dict[Path, Path],
+    partial_path: Path,
+) -> bool:
+    return (
+        not partial_path.exists()
+        and all(target_path.exists() for target_path in target_paths)
+        and all(
+            not temporary_paths[target_path].exists()
+            for target_path in target_paths
+        )
+    )
+
+
 def write_partial_report(
     output_dir: Path,
     report: AdaptiveCalibrationReport,
@@ -369,6 +384,12 @@ def write_final_report(
             active_path = partial_path
             partial_path.unlink(missing_ok=True)
         except BaseException as exc:
+            if active_path == partial_path and _final_bundle_is_committed(
+                target_paths,
+                temporary_paths,
+                partial_path,
+            ):
+                raise
             backed_up_targets, published_targets = _reconcile_final_bundle_state(
                 target_paths,
                 temporary_paths,

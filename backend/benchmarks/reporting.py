@@ -197,6 +197,21 @@ def _reconcile_final_bundle_state(
     return reconciled_backups, reconciled_publications
 
 
+def _final_bundle_is_committed(
+    target_paths: tuple[Path, ...],
+    temporary_paths: dict[Path, Path],
+    partial_path: Path,
+) -> bool:
+    return (
+        not partial_path.exists()
+        and all(target_path.exists() for target_path in target_paths)
+        and all(
+            not temporary_paths[target_path].exists()
+            for target_path in target_paths
+        )
+    )
+
+
 def write_partial_report(output_dir: Path, report: BenchmarkReport) -> None:
     partial_path = Path(output_dir) / "results.partial.json"
     temporary_path = partial_path.with_name(f".{partial_path.name}.{uuid4().hex}.tmp")
@@ -280,6 +295,12 @@ def write_final_report(output_dir: Path, report: BenchmarkReport) -> None:
             active_path = partial_path
             partial_path.unlink(missing_ok=True)
         except BaseException as exc:
+            if active_path == partial_path and _final_bundle_is_committed(
+                target_paths,
+                temporary_paths,
+                partial_path,
+            ):
+                raise
             backed_up_targets, published_targets = _reconcile_final_bundle_state(
                 target_paths,
                 temporary_paths,
