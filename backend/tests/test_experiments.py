@@ -173,6 +173,14 @@ def test_invalid_experiment_batch_limits_and_duplicate_windows_never_run_dispatc
                 "windows": list(range(MAX_EXPERIMENT_CASES + 1)),
             },
         ),
+        (
+            "/api/experiments/replan-window",
+            {
+                "scenario": scenario,
+                "windows": list(range(MAX_EXPERIMENT_CASES)),
+                "includeAdaptive": True,
+            },
+        ),
         ("/api/experiments/scale", {"cases": []}),
         ("/api/experiments/scale", {"cases": excessive_cases}),
     ]

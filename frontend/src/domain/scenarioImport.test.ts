@@ -117,6 +117,80 @@ describe("scenario import contract", () => {
     expect(() => parseScenario(scenario)).toThrow("JSON 必须是 Scenario 对象");
   });
 
+  it.each<[string, (scenario: Scenario) => void]>([
+    ["inspection target", (scenario) => {
+      scenario.tasks[0].target = [2, 0];
+    }],
+    ["delivery targets", (scenario) => {
+      scenario.tasks = [{
+        id: "D1",
+        type: "delivery",
+        title: "配送",
+        priority: 2,
+        pickup: [0, 1],
+        dropoff: [2, 0],
+        demand: 1,
+        targets: [[1, 0]]
+      }];
+    }],
+    ["emergency pickup", (scenario) => {
+      scenario.tasks = [{
+        id: "E1",
+        type: "emergency",
+        title: "紧急任务",
+        priority: 5,
+        target: [1, 0],
+        pickup: [0, 1]
+      }];
+    }]
+  ])("rejects non-null irrelevant field %s", (_, mutate) => {
+    const scenario = buildScenario();
+    mutate(scenario);
+
+    expect(() => parseScenario(scenario)).toThrow("JSON 必须是 Scenario 对象");
+  });
+
+  it.each<Scenario["tasks"][number]>([
+    {
+      id: "I1",
+      type: "inspection",
+      title: "巡检",
+      priority: 2,
+      targets: [[1, 0]],
+      pickup: null,
+      dropoff: null,
+      demand: null,
+      target: null
+    },
+    {
+      id: "D1",
+      type: "delivery",
+      title: "配送",
+      priority: 2,
+      pickup: [0, 1],
+      dropoff: [2, 0],
+      demand: 1,
+      targets: null,
+      target: null
+    },
+    {
+      id: "E1",
+      type: "emergency",
+      title: "紧急任务",
+      priority: 5,
+      target: [1, 0],
+      targets: null,
+      pickup: null,
+      dropoff: null,
+      demand: null
+    }
+  ])("accepts null irrelevant fields for $type tasks", (task) => {
+    const scenario = buildScenario();
+    scenario.tasks = [task];
+
+    expect(parseScenario(scenario).tasks[0].type).toBe(task.type);
+  });
+
   it("accepts the JavaScript safe integer boundary", () => {
     const scenario = buildScenario();
     scenario.robots[0].battery = Number.MAX_SAFE_INTEGER;

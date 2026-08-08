@@ -64,6 +64,27 @@ class Task(ApiModel):
     demand: PositiveInt | None = None
     target: Cell | None = None
 
+    @model_validator(mode="after")
+    def validate_task_shape(self) -> "Task":
+        required_fields = {
+            "inspection": ("targets",),
+            "delivery": ("pickup", "dropoff", "demand"),
+            "emergency": ("target",),
+        }[self.type]
+        irrelevant_fields = {
+            "inspection": ("pickup", "dropoff", "demand", "target"),
+            "delivery": ("targets", "target"),
+            "emergency": ("targets", "pickup", "dropoff", "demand"),
+        }[self.type]
+
+        for field_name in required_fields:
+            if getattr(self, field_name) is None:
+                raise ValueError(f"{self.type} task requires {field_name}")
+        for field_name in irrelevant_fields:
+            if getattr(self, field_name) is not None:
+                raise ValueError(f"{self.type} task does not allow {field_name}")
+        return self
+
 
 class Robot(ApiModel):
     id: IdentifierStr
@@ -192,6 +213,10 @@ class ReplanWindowExperimentRequest(ApiModel):
     def validate_unique_windows(self) -> "ReplanWindowExperimentRequest":
         if len(set(self.windows)) != len(self.windows):
             raise ValueError("windows must be unique")
+        if len(self.windows) + int(self.includeAdaptive) > MAX_EXPERIMENT_CASES:
+            raise ValueError(
+                f"total experiment case count must be <= {MAX_EXPERIMENT_CASES}"
+            )
         return self
 
 

@@ -175,15 +175,25 @@ function isTask(value: unknown): value is Task {
   if (value.type === "inspection") {
     return Array.isArray(value.targets)
       && value.targets.length <= MAX_TASK_TARGETS
-      && value.targets.every(isCell);
+      && value.targets.every(isCell)
+      && (value.pickup === undefined || value.pickup === null)
+      && (value.dropoff === undefined || value.dropoff === null)
+      && (value.demand === undefined || value.demand === null)
+      && (value.target === undefined || value.target === null);
   }
   if (value.type === "delivery") {
     return isCell(value.pickup)
       && isCell(value.dropoff)
-      && isIntegerInRange(value.demand, 1, Number.POSITIVE_INFINITY);
+      && isIntegerInRange(value.demand, 1, MAX_SAFE_INTEGER)
+      && (value.targets === undefined || value.targets === null)
+      && (value.target === undefined || value.target === null);
   }
   if (value.type === "emergency") {
-    return isCell(value.target);
+    return isCell(value.target)
+      && (value.targets === undefined || value.targets === null)
+      && (value.pickup === undefined || value.pickup === null)
+      && (value.dropoff === undefined || value.dropoff === null)
+      && (value.demand === undefined || value.demand === null);
   }
   return false;
 }

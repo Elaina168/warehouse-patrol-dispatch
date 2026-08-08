@@ -228,6 +228,173 @@ def test_runtime_current_time_openapi_maximum_matches_session_limit() -> None:
         assert current_time_schema["maximum"] == MAX_SESSION_CURRENT_TIME
 
 
+@pytest.mark.parametrize(
+    ("payload", "irrelevant_field"),
+    [
+        pytest.param(
+            {
+                "id": "I",
+                "type": "inspection",
+                "title": "I",
+                "priority": 1,
+                "targets": [[0, 0]],
+                "target": [1, 0],
+            },
+            "target",
+            id="inspection-target",
+        ),
+        pytest.param(
+            {
+                "id": "D",
+                "type": "delivery",
+                "title": "D",
+                "priority": 1,
+                "pickup": [0, 0],
+                "dropoff": [1, 0],
+                "demand": 1,
+                "targets": [[1, 0]],
+            },
+            "targets",
+            id="delivery-targets",
+        ),
+        pytest.param(
+            {
+                "id": "E",
+                "type": "emergency",
+                "title": "E",
+                "priority": 1,
+                "target": [1, 0],
+                "pickup": [0, 0],
+            },
+            "pickup",
+            id="emergency-pickup",
+        ),
+    ],
+)
+def test_task_rejects_non_null_irrelevant_variant_fields(
+    payload: dict,
+    irrelevant_field: str,
+) -> None:
+    with pytest.raises(ValidationError, match=irrelevant_field):
+        schemas.Task.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            {
+                "id": "I",
+                "type": "inspection",
+                "title": "I",
+                "priority": 1,
+                "targets": [[0, 0]],
+                "pickup": None,
+                "dropoff": None,
+                "demand": None,
+                "target": None,
+            },
+            id="inspection",
+        ),
+        pytest.param(
+            {
+                "id": "D",
+                "type": "delivery",
+                "title": "D",
+                "priority": 1,
+                "pickup": [0, 0],
+                "dropoff": [1, 0],
+                "demand": 1,
+                "targets": None,
+                "target": None,
+            },
+            id="delivery",
+        ),
+        pytest.param(
+            {
+                "id": "E",
+                "type": "emergency",
+                "title": "E",
+                "priority": 1,
+                "target": [1, 0],
+                "targets": None,
+                "pickup": None,
+                "dropoff": None,
+                "demand": None,
+            },
+            id="emergency",
+        ),
+    ],
+)
+def test_task_accepts_null_irrelevant_variant_fields(payload: dict) -> None:
+    assert schemas.Task.model_validate(payload).type == payload["type"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "missing_field"),
+    [
+        pytest.param(
+            {"id": "I", "type": "inspection", "title": "I", "priority": 1},
+            "targets",
+            id="inspection-targets",
+        ),
+        pytest.param(
+            {
+                "id": "D",
+                "type": "delivery",
+                "title": "D",
+                "priority": 1,
+                "dropoff": [1, 0],
+                "demand": 1,
+            },
+            "pickup",
+            id="delivery-pickup",
+        ),
+        pytest.param(
+            {
+                "id": "D",
+                "type": "delivery",
+                "title": "D",
+                "priority": 1,
+                "pickup": [0, 0],
+                "demand": 1,
+            },
+            "dropoff",
+            id="delivery-dropoff",
+        ),
+        pytest.param(
+            {
+                "id": "D",
+                "type": "delivery",
+                "title": "D",
+                "priority": 1,
+                "pickup": [0, 0],
+                "dropoff": [1, 0],
+            },
+            "demand",
+            id="delivery-demand",
+        ),
+        pytest.param(
+            {"id": "E", "type": "emergency", "title": "E", "priority": 1},
+            "target",
+            id="emergency-target",
+        ),
+    ],
+)
+def test_task_rejects_missing_variant_fields(payload: dict, missing_field: str) -> None:
+    with pytest.raises(ValidationError, match=missing_field):
+        schemas.Task.model_validate(payload)
+
+
+def test_dispatch_api_rejects_non_null_irrelevant_task_field() -> None:
+    payload = scenario_payload()
+    payload["tasks"][0]["target"] = [1, 4]
+
+    response = TestClient(app).post("/api/dispatch", json={"scenario": payload})
+
+    assert response.status_code == 422
+
+
 def test_robot_capabilities_default_to_all_task_types() -> None:
     robot = Robot(id="R1", name="R1", start=(0, 0), battery=100, load=1)
     assert robot.capabilities == ["inspection", "delivery", "emergency"]
@@ -355,6 +522,21 @@ def test_replan_window_experiment_batch_limit_rejects_0_and_33() -> None:
                 "windows": list(range(MAX_EXPERIMENT_CASES + 1)),
             }
         )
+
+
+def test_replan_window_total_case_limit_counts_adaptive_case() -> None:
+    payload = {
+        "scenario": scenario_payload(),
+        "windows": list(range(MAX_EXPERIMENT_CASES)),
+        "includeAdaptive": True,
+    }
+
+    with pytest.raises(ValidationError, match="total experiment case count"):
+        schemas.ReplanWindowExperimentRequest.model_validate(payload)
+
+    payload["windows"] = list(range(MAX_EXPERIMENT_CASES - 1))
+    request = schemas.ReplanWindowExperimentRequest.model_validate(payload)
+    assert len(request.windows) == MAX_EXPERIMENT_CASES - 1
 
 
 def test_replan_window_experiment_duplicate_window_rejected() -> None:
