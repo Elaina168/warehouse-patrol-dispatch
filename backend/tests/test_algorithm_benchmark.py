@@ -842,6 +842,132 @@ def _assert_no_final_report_transaction_files(output_path: Path) -> None:
     ]
 
 
+def _install_final_report_interrupt_after_filesystem_change(
+    monkeypatch,
+    output_path: Path,
+    stage: str,
+    *,
+    restore_failure_file: str | None = None,
+) -> dict[str, bool]:
+    real_replace = Path.replace
+    real_unlink = Path.unlink
+    state = {"interrupted": False, "restore_failed": False}
+    partial_path = output_path / "results.partial.json"
+
+    def interrupt_after_replace(source, target):
+        source_path = Path(source)
+        target_path = Path(target)
+        if (
+            restore_failure_file is not None
+            and source_path.suffix == ".backup"
+            and target_path.name == restore_failure_file
+        ):
+            state["restore_failed"] = True
+            raise OSError(f"{restore_failure_file} restore failed")
+
+        result = real_replace(source, target)
+        is_target_file = target_path.name in FINAL_REPORT_FILE_NAMES
+        should_interrupt = (
+            not state["interrupted"]
+            and (
+                (stage == "backup" and target_path.suffix == ".backup")
+                or (
+                    stage == "publish"
+                    and source_path.suffix == ".tmp"
+                    and is_target_file
+                )
+            )
+        )
+        if should_interrupt:
+            state["interrupted"] = True
+            raise KeyboardInterrupt(f"interrupted after {stage}")
+        return result
+
+    def interrupt_after_unlink(path, *args, **kwargs):
+        result = real_unlink(path, *args, **kwargs)
+        if (
+            not state["interrupted"]
+            and stage == "partial-delete"
+            and Path(path) == partial_path
+        ):
+            state["interrupted"] = True
+            raise KeyboardInterrupt("interrupted after partial-delete")
+        return result
+
+    monkeypatch.setattr(Path, "replace", interrupt_after_replace)
+    monkeypatch.setattr(Path, "unlink", interrupt_after_unlink)
+    return state
+
+
+@pytest.mark.parametrize("stage", ["backup", "publish", "partial-delete"])
+def test_algorithm_final_report_cancellation_restores_existing_bundle(
+    tmp_path,
+    monkeypatch,
+    stage,
+) -> None:
+    report = BenchmarkReport.create({}, [_benchmark_run("scale-r4-t15", 1)])
+    write_partial_report(tmp_path, report)
+    partial_path = tmp_path / "results.partial.json"
+    partial_content = partial_path.read_bytes()
+    original_files = {
+        file_name: f"old {file_name}".encode("utf-8")
+        for file_name in FINAL_REPORT_FILE_NAMES
+    }
+    for file_name, content in original_files.items():
+        (tmp_path / file_name).write_bytes(content)
+    state = _install_final_report_interrupt_after_filesystem_change(
+        monkeypatch,
+        tmp_path,
+        stage,
+    )
+
+    with pytest.raises(KeyboardInterrupt, match=stage):
+        write_final_report(tmp_path, report)
+
+    assert state["interrupted"] is True
+    assert {
+        file_name: (tmp_path / file_name).read_bytes()
+        for file_name in FINAL_REPORT_FILE_NAMES
+    } == original_files
+    if stage != "partial-delete":
+        assert partial_path.read_bytes() == partial_content
+    _assert_no_final_report_transaction_files(tmp_path)
+
+
+def test_algorithm_final_report_cancellation_preserves_backup_when_rollback_restore_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    report = BenchmarkReport.create({}, [_benchmark_run("scale-r4-t15", 1)])
+    write_partial_report(tmp_path, report)
+    original_files = {
+        file_name: f"old {file_name}".encode("utf-8")
+        for file_name in FINAL_REPORT_FILE_NAMES
+    }
+    for file_name, content in original_files.items():
+        (tmp_path / file_name).write_bytes(content)
+    state = _install_final_report_interrupt_after_filesystem_change(
+        monkeypatch,
+        tmp_path,
+        "publish",
+        restore_failure_file="runs.csv",
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="publish"):
+        write_final_report(tmp_path, report)
+
+    assert state == {"interrupted": True, "restore_failed": True}
+    preserved_backups = list(tmp_path.glob(".runs.csv.*.backup"))
+    assert len(preserved_backups) == 1
+    assert preserved_backups[0].read_bytes() == original_files["runs.csv"]
+    assert not (tmp_path / "runs.csv").exists()
+    assert (tmp_path / "results.json").read_bytes() == original_files["results.json"]
+    assert (tmp_path / "case-summaries.csv").read_bytes() == original_files[
+        "case-summaries.csv"
+    ]
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 @pytest.mark.parametrize("file_name", FINAL_REPORT_FILE_NAMES)
 @pytest.mark.parametrize(
     "has_existing_bundle",
