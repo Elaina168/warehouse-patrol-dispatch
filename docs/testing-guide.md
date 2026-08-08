@@ -20,13 +20,13 @@
 在项目根目录运行：
 
 ```powershell
-.\scripts\start-dev.ps1
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
 如果不希望自动打开浏览器：
 
 ```powershell
-.\scripts\start-dev.ps1 -NoBrowser
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1 -NoBrowser
 ```
 
 前端页面：
@@ -44,7 +44,7 @@ http://127.0.0.1:8011/health
 停止服务：
 
 ```powershell
-.\scripts\stop-dev.ps1
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop-dev.ps1
 ```
 
 完整自动检查：

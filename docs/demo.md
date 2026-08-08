@@ -5,7 +5,7 @@
 ## 启动
 
 ```powershell
-.\scripts\start-dev.ps1
+.\.tools\powershell\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
 前端地址：
