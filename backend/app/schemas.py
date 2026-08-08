@@ -1,6 +1,7 @@
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic.functional_validators import AfterValidator
 
 from backend.app.limits import (
     MAX_DESCRIPTION_LENGTH,
@@ -19,8 +20,24 @@ from backend.app.limits import (
 )
 
 Cell = tuple[int, int]
-IdentifierStr = Annotated[str, Field(max_length=MAX_IDENTIFIER_LENGTH)]
-DisplayNameStr = Annotated[str, Field(max_length=MAX_DISPLAY_NAME_LENGTH)]
+
+
+def _require_non_blank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
+IdentifierStr = Annotated[
+    str,
+    Field(max_length=MAX_IDENTIFIER_LENGTH),
+    AfterValidator(_require_non_blank),
+]
+DisplayNameStr = Annotated[
+    str,
+    Field(max_length=MAX_DISPLAY_NAME_LENGTH),
+    AfterValidator(_require_non_blank),
+]
 DescriptionStr = Annotated[str, Field(max_length=MAX_DESCRIPTION_LENGTH)]
 NonNegativeInt = Annotated[int, Field(ge=0, le=MAX_SAFE_INTEGER)]
 PositiveInt = Annotated[int, Field(gt=0, le=MAX_SAFE_INTEGER)]
@@ -231,6 +248,13 @@ class ScaleExperimentRequest(ApiModel):
         max_length=MAX_EXPERIMENT_CASES,
     )
     options: DispatchOptions = Field(default_factory=DispatchOptions)
+
+    @model_validator(mode="after")
+    def validate_unique_case_labels(self) -> "ScaleExperimentRequest":
+        labels = [case.label for case in self.cases]
+        if len(set(labels)) != len(labels):
+            raise ValueError("case labels must be unique")
+        return self
 
 
 class SeededPressureExperimentRequest(ApiModel):

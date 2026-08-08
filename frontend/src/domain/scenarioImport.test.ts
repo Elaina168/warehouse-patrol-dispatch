@@ -95,6 +95,36 @@ describe("scenario import contract", () => {
     expect(parsed.robots[0].capabilities).toBeUndefined();
   });
 
+  it.each<[string, (scenario: Scenario, value: string) => void]>([
+    ["scenario id", (scenario, value) => { scenario.id = value; }],
+    ["scenario name", (scenario, value) => { scenario.name = value; }],
+    ["robot id", (scenario, value) => { scenario.robots[0].id = value; }],
+    ["robot name", (scenario, value) => { scenario.robots[0].name = value; }],
+    ["task id", (scenario, value) => { scenario.tasks[0].id = value; }],
+    ["task title", (scenario, value) => { scenario.tasks[0].title = value; }],
+    ["shelf id", (scenario, value) => {
+      scenario.shelves = [{ id: value, cell: [4, 4], serviceCell: [4, 3], initialOccupied: false }];
+    }],
+    ["dynamic failed robot id", (scenario, value) => { scenario.dynamic.failedRobots = [value]; }]
+  ])("rejects blank %s", (_, mutate) => {
+    for (const value of ["", "   "]) {
+      const scenario = buildScenario();
+      mutate(scenario, value);
+      expect(() => parseScenario(scenario)).toThrow("JSON 必须是 Scenario 对象");
+    }
+  });
+
+  it("keeps exact non-empty strings and accepts an empty description", () => {
+    const scenario = buildScenario();
+    scenario.id = " scenario-import ";
+    scenario.description = "";
+
+    const parsed = parseScenario(scenario);
+
+    expect(parsed.id).toBe(" scenario-import ");
+    expect(parsed.description).toBe("");
+  });
+
   it.each<[string, (scenario: Scenario) => void]>([
     ["Scenario", (scenario) => addUnknownField(scenario)],
     ["Zones", (scenario) => addUnknownField(scenario.zones)],

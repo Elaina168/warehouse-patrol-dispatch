@@ -57,8 +57,8 @@ export function parseScenario(value: unknown): Scenario {
 function isScenario(value: unknown): value is ImportedScenario {
   if (!isRecord(value)
     || !hasOnlyKeys(value, scenarioKeys)
-    || !isString(value.id)
-    || !isString(value.name)
+    || !isNonBlankString(value.id)
+    || !isNonBlankString(value.name)
     || !isString(value.description)
     || !isIntegerInRange(value.width, 1, MAX_SCENARIO_AXIS_LENGTH)
     || !isIntegerInRange(value.height, 1, MAX_SCENARIO_AXIS_LENGTH)
@@ -103,7 +103,7 @@ function isScenario(value: unknown): value is ImportedScenario {
 function isShelf(value: unknown): value is ImportedShelf {
   return isRecord(value)
     && hasOnlyKeys(value, shelfKeys)
-    && isString(value.id)
+    && isNonBlankString(value.id)
     && isCell(value.cell)
     && isCell(value.serviceCell)
     && (value.initialOccupied === undefined || typeof value.initialOccupied === "boolean");
@@ -112,8 +112,8 @@ function isShelf(value: unknown): value is ImportedShelf {
 function isRobot(value: unknown): value is Scenario["robots"][number] {
   if (!isRecord(value)
     || !hasOnlyKeys(value, robotKeys)
-    || !isString(value.id)
-    || !isString(value.name)
+    || !isNonBlankString(value.id)
+    || !isNonBlankString(value.name)
     || !isCell(value.start)
     || !isIntegerInRange(value.battery, 0, MAX_SAFE_INTEGER)
     || !isIntegerInRange(value.load, 0, MAX_SAFE_INTEGER)
@@ -148,7 +148,7 @@ function isDynamicEvent(value: unknown): value is Scenario["dynamic"] {
     && value.blockedCells.every(isCell)
     && Array.isArray(value.failedRobots)
     && value.failedRobots.length <= MAX_SCENARIO_ROBOTS
-    && value.failedRobots.every(isString)
+    && value.failedRobots.every(isNonBlankString)
     && Array.isArray(value.tasks)
     && value.tasks.length <= MAX_SCENARIO_TASKS
     && value.tasks.every(isTask);
@@ -157,8 +157,8 @@ function isDynamicEvent(value: unknown): value is Scenario["dynamic"] {
 function isTask(value: unknown): value is Task {
   if (!isRecord(value)
     || !hasOnlyKeys(value, taskKeys)
-    || !isString(value.id)
-    || !isString(value.title)
+    || !isNonBlankString(value.id)
+    || !isNonBlankString(value.title)
     || !isIntegerInRange(value.priority, 0, 5)
     || !isNullableOptionalInteger(value.releaseTime, 0, MAX_SESSION_CURRENT_TIME)
     || !isNullableOptionalInteger(value.deadline, 0, MAX_SAFE_INTEGER)
@@ -326,4 +326,8 @@ function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: ReadonlySet<st
 
 function isString(value: unknown): value is string {
   return typeof value === "string";
+}
+
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }

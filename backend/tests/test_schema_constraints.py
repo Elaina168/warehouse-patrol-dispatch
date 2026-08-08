@@ -137,6 +137,35 @@ def test_identifier_strings_accept_128_and_reject_129_characters(validator) -> N
 @pytest.mark.parametrize(
     "validator",
     [
+        pytest.param(lambda value: _validate_scenario_string("id", value), id="scenario-id"),
+        pytest.param(lambda value: _validate_task_string("id", value), id="task-id"),
+        pytest.param(lambda value: _validate_robot_string("id", value), id="robot-id"),
+        pytest.param(
+            lambda value: schemas.Shelf.model_validate(
+                {"id": value, "cell": [0, 0], "serviceCell": [0, 1]}
+            ),
+            id="shelf-id",
+        ),
+        pytest.param(_validate_dynamic_failed_robot_id, id="dynamic-failed-robot-id"),
+        pytest.param(
+            lambda value: schemas.FailRobotRequest.model_validate({"robotId": value}),
+            id="fail-robot-request-id",
+        ),
+        pytest.param(
+            lambda value: schemas.RestoreRobotRequest.model_validate({"robotId": value}),
+            id="restore-robot-request-id",
+        ),
+    ],
+)
+@pytest.mark.parametrize("value", ["", "   "])
+def test_identifier_strings_reject_empty_and_whitespace(validator, value: str) -> None:
+    with pytest.raises(ValidationError, match="must not be blank"):
+        validator(value)
+
+
+@pytest.mark.parametrize(
+    "validator",
+    [
         pytest.param(lambda value: _validate_scenario_string("name", value), id="scenario-name"),
         pytest.param(lambda value: _validate_task_string("title", value), id="task-title"),
         pytest.param(lambda value: _validate_robot_string("name", value), id="robot-name"),
@@ -152,6 +181,38 @@ def test_display_strings_accept_256_and_reject_257_characters(validator) -> None
     assert validator("N" * 256) is not None
     with pytest.raises(ValidationError):
         validator("N" * 257)
+
+
+@pytest.mark.parametrize(
+    "validator",
+    [
+        pytest.param(lambda value: _validate_scenario_string("name", value), id="scenario-name"),
+        pytest.param(lambda value: _validate_task_string("title", value), id="task-title"),
+        pytest.param(lambda value: _validate_robot_string("name", value), id="robot-name"),
+        pytest.param(
+            lambda value: schemas.ScaleExperimentScenario.model_validate(
+                {"label": value, "scenario": scenario_payload()}
+            ),
+            id="scale-experiment-label",
+        ),
+    ],
+)
+@pytest.mark.parametrize("value", ["", "   "])
+def test_display_strings_reject_empty_and_whitespace(validator, value: str) -> None:
+    with pytest.raises(ValidationError, match="must not be blank"):
+        validator(value)
+
+
+def test_non_blank_strings_keep_exact_non_empty_value() -> None:
+    request = schemas.ScaleExperimentRequest.model_validate(
+        {"cases": [{"label": " case ", "scenario": scenario_payload()}]}
+    )
+
+    assert request.cases[0].label == " case "
+
+
+def test_empty_scenario_description_remains_valid() -> None:
+    assert _validate_scenario_string("description", "").description == ""
 
 
 def test_scenario_description_accepts_4096_and_rejects_4097_characters() -> None:
@@ -578,6 +639,13 @@ def test_scale_experiment_batch_limit_rejects_0_and_33() -> None:
         schemas.ScaleExperimentRequest.model_validate({"cases": []})
     with pytest.raises(ValidationError):
         schemas.ScaleExperimentRequest.model_validate({"cases": excessive_cases})
+
+
+def test_scale_experiment_rejects_duplicate_labels() -> None:
+    case = {"label": "same", "scenario": scenario_payload()}
+
+    with pytest.raises(ValidationError, match="case labels must be unique"):
+        schemas.ScaleExperimentRequest.model_validate({"cases": [case, case]})
 
 
 def test_request_models_reject_negative_time_and_non_positive_dimensions() -> None:
