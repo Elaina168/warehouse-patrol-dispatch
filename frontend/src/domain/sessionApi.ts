@@ -12,7 +12,7 @@ export async function createSession(
   request: CreateSessionRequest,
   fetcher: FetchLike = fetch
 ): Promise<SessionResult> {
-  const response = await fetcher(`${apiBase}/api/sessions`, {
+  const response = await fetcher(`${apiBase}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request)
@@ -47,7 +47,7 @@ export async function resetSession(
   sessionId: string,
   fetcher: FetchLike = fetch
 ): Promise<SessionResult> {
-  const response = await fetcher(`${apiBase}/api/sessions/${encodeURIComponent(sessionId)}/reset`, {
+  const response = await fetcher(`${apiBase}/sessions/${encodeURIComponent(sessionId)}/reset`, {
     method: "POST"
   });
   if (!response.ok) {
@@ -61,7 +61,7 @@ export async function deleteSession(
   sessionId: string,
   fetcher: FetchLike = fetch
 ): Promise<DeleteSessionResult> {
-  const response = await fetcher(`${apiBase}/api/sessions/${encodeURIComponent(sessionId)}`, {
+  const response = await fetcher(`${apiBase}/sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE"
   });
   if (!response.ok) {

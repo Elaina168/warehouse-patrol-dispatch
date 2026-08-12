@@ -26,10 +26,10 @@ describe("session API helpers", () => {
       })
     ));
 
-    const result = await createSession("http://127.0.0.1:8011", request, fetcher);
+    const result = await createSession("/api", request, fetcher);
 
     expect(fetcher).toHaveBeenCalledWith(
-      "http://127.0.0.1:8011/api/sessions",
+      "/api/sessions",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -119,10 +119,10 @@ describe("session API helpers", () => {
       })
     ));
 
-    const result = await resetSession("http://127.0.0.1:8011", "session-1", fetcher);
+    const result = await resetSession("/api", "session-1", fetcher);
 
     expect(fetcher).toHaveBeenCalledWith(
-      "http://127.0.0.1:8011/api/sessions/session-1/reset",
+      "/api/sessions/session-1/reset",
       { method: "POST" }
     );
     expect(result).toEqual(payload);
@@ -137,10 +137,10 @@ describe("session API helpers", () => {
       })
     ));
 
-    const result = await deleteSession("http://127.0.0.1:8011", "session-1", fetcher);
+    const result = await deleteSession("/api", "session-1", fetcher);
 
     expect(fetcher).toHaveBeenCalledWith(
-      "http://127.0.0.1:8011/api/sessions/session-1",
+      "/api/sessions/session-1",
       { method: "DELETE" }
     );
     expect(result).toEqual(payload);

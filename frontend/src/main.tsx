@@ -21,10 +21,11 @@ import { buildShelfCellPresentations, buildWarehouseDeliveryCandidates } from ".
 import { importScenarioCandidate, MAX_TASK_SERVICE_TIME } from "./domain/scenarioImport";
 import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./domain/view";
 import { scenarios } from "./domain/scenarios";
+import { CompetitionApp, resolveCompetitionEntry } from "./competition/competition";
 import type { Cell, Conflict, ConflictState, CreateSessionRequest, DispatchOptions, DispatchResult, RecoveryAction, Robot, SafetyStall, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
 import "./styles.css";
 
-const API_BASE = "http://127.0.0.1:8011";
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const DEFAULT_ASSIGNMENT_REPLAN_WINDOW = 24;
 const MAX_ASSIGNMENT_REPLAN_WINDOW = 120;
 const DEFAULT_PLAYBACK_RATE = 2.4;
@@ -502,7 +503,7 @@ function App() {
     if (!onlineMutationEnabled) return;
     if (!session) return;
     await updateSession(() =>
-      fetch(`${API_BASE}/api/sessions/${session.sessionId}/tasks`, {
+      fetch(`${API_BASE}/sessions/${session.sessionId}/tasks`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ task })
@@ -529,7 +530,7 @@ function App() {
     if (!onlineMutationEnabled) return;
     if (!session) return;
     await updateSession(() =>
-      fetch(`${API_BASE}/api/sessions/${session.sessionId}/blocked-cells`, {
+      fetch(`${API_BASE}/sessions/${session.sessionId}/blocked-cells`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cell, currentTime: runtimeActionTime })
@@ -541,7 +542,7 @@ function App() {
     if (!onlineMutationEnabled) return;
     if (!session) return;
     await updateSession(() =>
-      fetch(`${API_BASE}/api/sessions/${session.sessionId}/blocked-cells/remove`, {
+      fetch(`${API_BASE}/sessions/${session.sessionId}/blocked-cells/remove`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cell, currentTime: runtimeActionTime })
@@ -553,7 +554,7 @@ function App() {
     if (!onlineMutationEnabled) return;
     if (!session) return;
     await updateSession(() =>
-      fetch(`${API_BASE}/api/sessions/${session.sessionId}/blocked-cells/remove`, {
+      fetch(`${API_BASE}/sessions/${session.sessionId}/blocked-cells/remove`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cell, currentTime: runtimeActionTime })
@@ -565,7 +566,7 @@ function App() {
     if (!onlineMutationEnabled) return;
     if (!session) return;
     await updateSession(() =>
-      fetch(`${API_BASE}/api/sessions/${session.sessionId}/failed-robots`, {
+      fetch(`${API_BASE}/sessions/${session.sessionId}/failed-robots`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ robotId, currentTime: runtimeActionTime })
@@ -577,7 +578,7 @@ function App() {
     if (!onlineMutationEnabled) return;
     if (!session) return;
     await updateSession(() =>
-      fetch(`${API_BASE}/api/sessions/${session.sessionId}/failed-robots/restore`, {
+      fetch(`${API_BASE}/sessions/${session.sessionId}/failed-robots/restore`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ robotId, currentTime: runtimeActionTime })
@@ -600,7 +601,7 @@ function App() {
     setOperationError(null);
     try {
       const response = await sessionRequestCoordinator.enqueue(() =>
-        fetch(`${API_BASE}/api/sessions/${session.sessionId}/tick`, {
+        fetch(`${API_BASE}/sessions/${session.sessionId}/tick`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ currentTime: targetTime })
@@ -2737,6 +2738,11 @@ async function responseError(response: Response, prefix: string): Promise<never>
   throw await apiErrorFromResponse(response, prefix);
 }
 
+export function RootApplication({ search }: { search: string }) {
+  const competitionEntry = resolveCompetitionEntry(search);
+  return competitionEntry ? <CompetitionApp entry={competitionEntry} /> : <App />;
+}
+
 if (typeof document !== "undefined") {
   const rootElement = document.getElementById("root");
   if (!rootElement) throw new Error("root element not found");
@@ -2746,7 +2752,7 @@ if (typeof document !== "undefined") {
 
   root.render(
     <React.StrictMode>
-      <App />
+      <RootApplication search={window.location.search} />
     </React.StrictMode>
   );
 }

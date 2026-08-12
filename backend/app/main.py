@@ -1,4 +1,8 @@
-from fastapi import FastAPI, HTTPException
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.config import cors_allowed_origins
@@ -189,3 +193,41 @@ def session_fail_robot(session_id: str, request: FailRobotRequest) -> SessionRes
 @app.post("/api/sessions/{session_id}/failed-robots/restore", response_model=SessionResult)
 def session_restore_robot(session_id: str, request: RestoreRobotRequest) -> SessionResult:
     return restore_robot(session_id, request)
+
+
+def configure_frontend_static(application: FastAPI, dist_directory: Path) -> bool:
+    """在业务路由之后挂载前端产物；开发环境没有产物时保持 API 可用。"""
+    index_file = dist_directory / "index.html"
+    if not index_file.is_file():
+        return False
+
+    @application.api_route(
+        "/api/{api_path:path}",
+        methods=["GET", "POST", "DELETE", "OPTIONS"],
+        include_in_schema=False,
+    )
+    async def unknown_api(api_path: str):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+    assets_directory = dist_directory / "assets"
+    if assets_directory.is_dir():
+        application.mount("/assets", StaticFiles(directory=assets_directory), name="frontend-assets")
+
+    @application.get("/{frontend_path:path}", include_in_schema=False)
+    async def frontend_fallback(frontend_path: str, request: Request):
+        if frontend_path == "api" or frontend_path.startswith("api/"):
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
+        requested = (dist_directory / frontend_path).resolve()
+        try:
+            requested.relative_to(dist_directory.resolve())
+        except ValueError:
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
+        if requested.is_file():
+            return FileResponse(requested)
+        return FileResponse(index_file)
+
+    return True
+
+
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+configure_frontend_static(app, FRONTEND_DIST)
