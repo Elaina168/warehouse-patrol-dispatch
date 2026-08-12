@@ -25,6 +25,7 @@ from backend.app.schemas import (
     Scenario,
     Task,
 )
+from backend.competition.manifests import load_safety_demo_scenario
 from backend.tests.helpers import frontend_demo_scenario, scenario_payload, seeded_pressure_scenario
 
 
@@ -487,57 +488,7 @@ def test_zero_battery_idle_robot_does_not_stall_active_task_across_session_ticks
 
 
 def _forced_safety_gate_scenario() -> dict[str, Any]:
-    return {
-        "id": "forced-safety-gate",
-        "name": "forced-safety-gate",
-        "description": "能力约束强制两台机器人在单通道对向执行",
-        "width": 3,
-        "height": 1,
-        "obstacles": [],
-        "zones": {
-            "warehouse": [[0, 0]],
-            "inspection": [[2, 0]],
-            "delivery": [],
-            "charging": [],
-        },
-        "robots": [
-            {
-                "id": "R1",
-                "name": "R1",
-                "start": [0, 0],
-                "battery": 90,
-                "batteryCapacity": 100,
-                "load": 1,
-                "capabilities": ["inspection"],
-            },
-            {
-                "id": "R2",
-                "name": "R2",
-                "start": [2, 0],
-                "battery": 90,
-                "batteryCapacity": 100,
-                "load": 1,
-                "capabilities": ["emergency"],
-            },
-        ],
-        "tasks": [
-            {
-                "id": "T1",
-                "type": "inspection",
-                "title": "R1 到右端",
-                "priority": 2,
-                "targets": [[2, 0]],
-            },
-            {
-                "id": "T2",
-                "type": "emergency",
-                "title": "R2 到左端",
-                "priority": 4,
-                "target": [0, 0],
-            },
-        ],
-        "dynamic": {"triggerTime": 0, "blockedCells": [], "failedRobots": [], "tasks": []},
-    }
+    return load_safety_demo_scenario()
 
 
 def _repeated_hold_charge_scenario() -> dict[str, Any]:

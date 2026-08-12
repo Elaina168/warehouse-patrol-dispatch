@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "main-demo",
+  "scenarioId": "integrated-demo",
+  "options": {
+    "avoidConflicts": true,
+    "includeDynamic": true,
+    "assignmentReplanWindow": 24,
+    "adaptiveReplanWindow": false
+  },
+  "steps": [
+    {
+      "time": 20,
+      "action": "addBlockedCell",
+      "cell": [10, 6]
+    },
+    {
+      "time": 12,
+      "action": "addTask",
+      "task": {
+        "id": "DEMO-URGENT-12",
+        "type": "emergency",
+        "title": "高优先级冷链复核",
+        "priority": 5,
+        "releaseTime": 12,
+        "deadline": 120,
+        "serviceTime": 2,
+        "target": [1, 4]
+      }
+    }
+  ]
+}
