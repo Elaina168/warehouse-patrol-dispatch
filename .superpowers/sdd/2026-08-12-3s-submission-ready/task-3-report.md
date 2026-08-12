@@ -64,3 +64,34 @@
 - 竞赛控制器已覆盖公开入口与可见 SSR 行为，但本 Task 未增加浏览器 E2E；最终 UI 录制仍建议在 Task 5 的录屏验收中验证浏览器交互与节奏。
 - `record=1` 使用固定 350ms 步间停顿；这是本任务要求的确定性加速节奏，不代表演讲稿语速或最终视频剪辑时长。
 - FastAPI 静态托管只在启动时发现 `frontend/dist/index.html` 才注册；开发时后构建 dist 需要重启后端才能启用静态托管，API 不受影响。
+
+## Fix round 1/5（2026-08-12）
+
+### 状态与改动
+
+- 安全入口不再执行两个空 `accept`。它使用 Task 1 安全清单内嵌场景创建会话，依次精确推进 T=2、T=3、T=4：每次要求本次 `safetyIntervention.time` 与目标一致、机器人返回位置唯一、末条 `metricsHistory.activeConflictCount === 0`，第三次还要求 `safetyStall.consecutiveCount === 3`。
+- 安全界面明确专项证据边界：只以每次结构化返回证明危险移动未提交、机器人处于可观察安全等待，不宣称前端拥有后端内部全程轨迹。
+- 所有 tick 写入与 TypeError 后 GET 核对均要求 `currentTime ===` 目标时点，不再接受越过时点。
+- 主演示最终 `accept` 同时要求 `completedTaskCount === 7`、末条 `metricsHistory.activeConflictCount === 0`，以及结果指标 `conflictCount / failureCount / deadlineMissCount` 均为 0。
+- 控制器新增 `subscribe`，所有状态更新统一经 `update` 同步通知。React 订阅真实控制器；自动运行会发布 `preparing`、每步 `running`、步骤后置条件与 `record=1` 的每次 350ms 讲解停顿快照。
+- reset 复用不确定写核对：POST TypeError 后 GET 检查 T=0、`runtimeTaskCount === 0`、`runtimeEventCount === 0`；已重置不重复，未重置最多再 POST 一次。reset 的 HTTP、核对或重试错误均转换为 `failed` 并通知订阅者，不再 reject 越过 React 状态更新。
+- 未处理已台账 Minor PUT/PATCH/HEAD，未改默认面板、后端业务模型/算法或 Task 4+。
+
+### 逐项 RED / GREEN
+
+测试文件：`frontend/src/competition/competition.test.ts`。
+
+1. 安全门契约 RED：聚焦运行 11 tests 时 2 failed；界面缺少“每次返回状态证明危险移动未提交”，控制器在 `stepIndex=1` 进入 `failed`，无法到第三次 `safetyStall=3`。GREEN：11/11。
+2. 精确 tick 与主终验 RED：越时 GET 返回 `currentTime=13` 后控制器仍为 `paused`，未进入预期 `failed`；现有 accept 也没有完整结构化校验。GREEN：12/12。
+3. 订阅 RED：`controller.subscribe is not a function`。GREEN：13/13，测试从真实控制器收集 `preparing`、`running`、步骤推进与 `录制讲解停顿 350ms` 序列。
+4. reset 不确定写 RED：两例均 `promise rejected "TypeError: connection lost" instead of resolving`；补充自动录制停顿错误 RED 为 `promise rejected "Error: pause failed" instead of resolving`。GREEN：16/16，覆盖 GET 已生效不重试、GET 未生效后最多一次重试失败转 `failed` 通知，以及自动流程异常不越过通知边界。
+
+### 最终验证
+
+- 聚焦：`npm --prefix frontend test -- src/competition/competition.test.ts`，16/16 passed。
+- 全量：`npm run check`，前端生产构建通过（1589 modules transformed），前端 9 files / 207 tests passed，后端 735 tests passed（80.00s）。
+- `git diff --check`：通过，仅有 Git LF/CRLF 工作区转换提示，无空白错误。
+
+### 修复提交
+
+- 提交后由本轮最终消息报告精确哈希。
