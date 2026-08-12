@@ -6,6 +6,8 @@ import pytest
 from fastapi import HTTPException
 
 from backend.app import sessions
+from backend.app.schemas import Conflict
+import backend.competition.runners as runners_module
 from backend.competition.manifests import ManifestValidationError, load_manifest
 from backend.competition.runners import _validate_main_acceptance, run_main_demo, run_safety_demo
 from backend.tests.test_sessions import _forced_safety_gate_scenario
@@ -87,6 +89,65 @@ def test_main_demo_runner_checks_each_contract_checkpoint_and_deletes_session() 
 
     with pytest.raises(HTTPException, match="调度会话不存在"):
         sessions.get_session(evidence.session_id)
+
+
+def test_main_demo_runner_rejects_tick_that_does_not_reach_t12(monkeypatch) -> None:
+    original_tick_session = runners_module.tick_session
+
+    def tick_before_t12(session_id: str, request):
+        result = original_tick_session(session_id, request)
+        if request.currentTime == 12:
+            return result.model_copy(update={"currentTime": 11})
+        return result
+
+    monkeypatch.setattr(runners_module, "tick_session", tick_before_t12)
+
+    with pytest.raises(RuntimeError, match="T=12"):
+        run_main_demo()
+
+
+def test_main_demo_runner_keeps_distinct_t36_action_evidence_in_order() -> None:
+    evidence = run_main_demo()
+
+    t36_actions = [
+        record
+        for record in evidence.step_evidence
+        if record.time == 36
+    ]
+    assert [record.action for record in t36_actions] == [
+        "removeBlockedCell",
+        "restoreRobot",
+    ]
+    assert t36_actions[0].result.result.extraBlocked == []
+    assert t36_actions[0].result.result.unavailableRobotIds == ["R2"]
+    assert t36_actions[1].result.result.extraBlocked == []
+    assert t36_actions[1].result.result.unavailableRobotIds == []
+
+
+def test_main_demo_runner_rejects_early_safety_intervention_cleared_before_t700(
+    monkeypatch,
+) -> None:
+    original_tick_session = runners_module.tick_session
+
+    def tick_with_early_intervention(session_id: str, request):
+        result = original_tick_session(session_id, request)
+        if request.currentTime == 12:
+            return result.model_copy(
+                update={
+                    "safetyIntervention": Conflict(
+                        time=12,
+                        type="vertex",
+                        robots=["R1", "R2"],
+                        cell=(1, 4),
+                    )
+                }
+            )
+        return result
+
+    monkeypatch.setattr(runners_module, "tick_session", tick_with_early_intervention)
+
+    with pytest.raises(RuntimeError, match="safetyIntervention"):
+        run_main_demo()
 
 
 def test_main_demo_acceptance_rejects_a_remaining_active_conflict() -> None:

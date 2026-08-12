@@ -41,7 +41,17 @@ class MainDemoEvidence:
 
     session_id: str
     checkpoints: dict[int, SessionResult]
+    step_evidence: tuple["MainDemoStepEvidence", ...]
     final: SessionResult
+
+
+@dataclass(frozen=True)
+class MainDemoStepEvidence:
+    """主演示单个清单步骤完成后的独立证据。"""
+
+    time: int
+    action: str
+    result: SessionResult
 
 
 @dataclass(frozen=True)
@@ -61,10 +71,13 @@ def run_main_demo() -> MainDemoEvidence:
     created = create_session(CreateSessionRequest(scenario=scenario, options=options))
     session_id = created.sessionId
     checkpoints: dict[int, SessionResult] = {}
+    step_evidence: list[MainDemoStepEvidence] = []
     try:
         for step in manifest["steps"]:
             current = tick_session(session_id, SessionTickRequest(currentTime=step["time"]))
+            _require_step_time(current, step["time"])
             action = step["action"]
+            _require_no_safety_intervention(current, step["time"], f"{action} 前")
             if action == "addTask":
                 current = add_task(
                     session_id,
@@ -88,6 +101,7 @@ def run_main_demo() -> MainDemoEvidence:
                     session_id,
                     RemoveBlockRequest(cell=step["cell"], currentTime=step["time"]),
                 )
+                _require(tuple(step["cell"]) not in current.result.extraBlocked, "T=36 封锁未解除")
             elif action == "restoreRobot":
                 current = restore_robot(
                     session_id,
@@ -99,9 +113,23 @@ def run_main_demo() -> MainDemoEvidence:
                 _validate_main_acceptance(current)
             else:
                 raise RuntimeError(f"不支持的主演示步骤：{action}")
+            _require_step_time(current, step["time"])
+            _require_no_safety_intervention(current, step["time"], action)
+            step_evidence.append(
+                MainDemoStepEvidence(
+                    time=step["time"],
+                    action=action,
+                    result=current,
+                )
+            )
             checkpoints[step["time"]] = get_session(session_id)
         final = checkpoints[700]
-        return MainDemoEvidence(session_id=session_id, checkpoints=checkpoints, final=final)
+        return MainDemoEvidence(
+            session_id=session_id,
+            checkpoints=checkpoints,
+            step_evidence=tuple(step_evidence),
+            final=final,
+        )
     finally:
         delete_session(session_id)
 
@@ -147,6 +175,24 @@ def _validate_main_acceptance(result: SessionResult) -> None:
     _require(result.result.metrics.conflictCount == 0, "主演示最终仍有活动冲突")
     _require(result.result.metrics.failureCount == 0, "主演示最终仍有失败任务")
     _require(result.result.metrics.deadlineMissCount == 0, "主演示最终存在超期任务")
+
+
+def _require_step_time(result: SessionResult, expected_time: int) -> None:
+    _require(
+        result.currentTime == expected_time,
+        f"T={expected_time} 会话未推进到目标时间",
+    )
+
+
+def _require_no_safety_intervention(
+    result: SessionResult,
+    current_time: int,
+    stage: str,
+) -> None:
+    _require(
+        result.safetyIntervention is None,
+        f"T={current_time} {stage} safetyIntervention 不为空",
+    )
 
 
 def _paths_are_collision_free(checkpoints: dict[int, SessionResult]) -> bool:
