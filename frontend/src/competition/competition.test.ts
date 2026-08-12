@@ -145,8 +145,45 @@ describe("competition manifest and controller", () => {
       async (milliseconds) => { waits.push(milliseconds); }
     );
     await controller.runAutomatically();
-    expect(waits).toEqual([350, 350, 350]);
-    expect(controller.snapshot.runState).toBe("completed");
+    expect(waits).toEqual([350, 350]);
+    expect(controller.snapshot).toMatchObject({
+      runState: "completed",
+      message: "全部步骤已完成",
+      postcondition: "全部后置条件已满足",
+      pauseReason: null
+    });
+  });
+
+  it("does not pause after a recorded step reaches failed", async () => {
+    const waits: number[] = [];
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload()), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload({ currentTime: 2 })), { status: 200 }));
+    const controller = new CompetitionDemoController("safety", true, fetcher, async (milliseconds) => { waits.push(milliseconds); });
+    await controller.runAutomatically();
+    expect(waits).toEqual([]);
+    expect(controller.snapshot).toMatchObject({
+      runState: "failed",
+      message: "安全门未在 T=2 产生预期拦截",
+      postcondition: "演示已停止",
+      pauseReason: "安全门未在 T=2 产生预期拦截"
+    });
+  });
+
+  it("does not pause after a recorded main step reaches safety-paused", async () => {
+    const waits: number[] = [];
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload()), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload({ currentTime: 12, safetyIntervention: { time: 12 } as never })), { status: 200 }));
+    const controller = new CompetitionDemoController("main", true, fetcher, async (milliseconds) => { waits.push(milliseconds); });
+    await controller.runAutomatically();
+    expect(waits).toEqual([]);
+    expect(controller.snapshot).toMatchObject({
+      runState: "paused",
+      message: "正在执行安全演示步骤",
+      postcondition: "安全门已暂停主演示",
+      pauseReason: "主演示触发 safetyIntervention"
+    });
   });
 
   it("publishes every running, step, postcondition, and recording-pause snapshot", async () => {
@@ -168,7 +205,7 @@ describe("competition manifest and controller", () => {
     expect(snapshots).toContainEqual({ runState: "preparing", stepIndex: 0, currentStep: "准备演示", message: "正在创建固定演示会话", postcondition: "创建固定演示会话" });
     expect(snapshots).toContainEqual({ runState: "running", stepIndex: 0, currentStep: "T=2 observeSafetyWait", message: "正在执行安全演示步骤", postcondition: "执行 T=2 observeSafetyWait" });
     expect(snapshots).toContainEqual({ runState: "paused", stepIndex: 1, currentStep: "T=3 observeSafetyWait", message: "录制讲解停顿中", postcondition: "录制讲解停顿 350ms" });
-    expect(snapshots.at(-1)).toMatchObject({ runState: "completed", stepIndex: 3 });
+    expect(snapshots.at(-1)).toMatchObject({ runState: "completed", stepIndex: 3, message: "全部步骤已完成", postcondition: "全部后置条件已满足" });
   });
 
   it("checks the session with GET before retrying an uncertain write", async () => {

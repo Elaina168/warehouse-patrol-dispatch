@@ -95,3 +95,25 @@
 ### 修复提交
 
 - 提交后由本轮最终消息报告精确哈希。
+
+## Fix round 2/5（2026-08-12）
+
+### 状态与最小修复
+
+- 仅修复 `record=1` 自动运行在终态后仍无条件写入 350ms 停顿的问题。
+- `runAutomatically` 现在只在 `step()` 返回后仍未 `completed`、未 `failed` 且没有 `pauseReason` 时发布并等待录制停顿。
+- completed 保留“全部步骤已完成 / 全部后置条件已满足”；failed 保留失败消息与“演示已停止”；主演示安全暂停保留 `pauseReason` 与“安全门已暂停主演示”。三类终态均不再额外调用停顿。
+- 未修改 Task 4 或旧 Minor。
+
+### RED / GREEN
+
+- 测试文件：`frontend/src/competition/competition.test.ts`。
+- 命令：`npm --prefix frontend test -- src/competition/competition.test.ts`。
+- RED：18 tests 中 4 failed。completed 的 wait 实际为 `[350, 350, 350]`、期望 `[350, 350]`；failed 与 safety-paused 的 wait 均实际为 `[350]`、期望 `[]`；最终 completed 快照的 `message/postcondition` 实际为“录制讲解停顿中 / 录制讲解停顿 350ms”，而非完成文案。
+- GREEN：18/18 passed，1 file passed；耗时 875ms。
+
+### 提交范围
+
+- `frontend/src/competition/competition.tsx`
+- `frontend/src/competition/competition.test.ts`
+- `.superpowers/sdd/2026-08-12-3s-submission-ready/task-3-report.md`

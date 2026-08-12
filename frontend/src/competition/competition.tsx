@@ -177,7 +177,12 @@ export class CompetitionDemoController {
       if (this.state.runState === "idle") await this.prepare();
       while (this.state.runState !== "completed" && this.state.runState !== "failed" && this.state.pauseReason === null) {
         await this.step();
-        if (this.record) {
+        if (
+          this.record
+          && this.state.runState !== "completed"
+          && this.state.runState !== "failed"
+          && this.state.pauseReason === null
+        ) {
           this.update({ ...this.state, message: "录制讲解停顿中", postcondition: "录制讲解停顿 350ms" });
           await this.wait(350);
         }
