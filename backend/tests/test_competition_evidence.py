@@ -340,6 +340,13 @@ def test_evidence_cli_defaults_to_35_runs_and_publishes_diagnostics_on_failure(
     payload = json.loads((result_path / "published").read_text(encoding="utf-8"))
     assert len(payload["runs"]) == 35
     assert payload["runs"][-1]["outcome"] == "timeout"
+    assert payload["config"] == {
+        "caseIds": [case.case_id for case in EVIDENCE_CASES],
+        "repetitions": 5,
+        "timeoutSeconds": 30.0,
+        "outputDir": str(result_path),
+        "seededPressurePlanningTimeBudgetMs": SEEDED_PRESSURE_PLANNING_TIME_BUDGET_MS,
+    }
 
 
 def test_evidence_cli_rejects_invalid_config_before_creating_output(

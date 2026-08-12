@@ -967,8 +967,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result_path = _create_result_directory(args.output_dir)
         config = {
+            "caseIds": [case.case_id for case in EVIDENCE_CASES],
             "repetitions": args.repetitions,
             "timeoutSeconds": args.timeout_seconds,
+            "outputDir": str(result_path),
+            "seededPressurePlanningTimeBudgetMs": (
+                SEEDED_PRESSURE_PLANNING_TIME_BUDGET_MS
+            ),
         }
         runs = run_evidence_cases(
             EVIDENCE_CASES,
