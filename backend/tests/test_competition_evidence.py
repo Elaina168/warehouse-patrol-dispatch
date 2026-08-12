@@ -1,9 +1,11 @@
 from backend.app.experiments import SEEDED_PRESSURE_CASES
 from dataclasses import replace
+import copy
 import csv
 import hashlib
 import json
 import multiprocessing
+from math import ceil
 from pathlib import Path
 from statistics import median
 import time
@@ -24,6 +26,7 @@ from backend.competition.evidence import (
     main,
     planned_runs,
     run_evidence_cases,
+    render_chart,
     write_evidence_bundle,
 )
 
@@ -209,6 +212,97 @@ def test_evidence_bundle_csv_recomputes_json_summaries_and_manifest_hashes(
         assert hashlib.sha256((tmp_path / relative_path).read_bytes()).hexdigest() == expected_hash
 
 
+def test_runs_csv_independently_recomputes_every_case_summary_field(
+    tmp_path: Path,
+) -> None:
+    case = EVIDENCE_CASES[0]
+    completed = [
+        _completed_run(case.case_id, index).with_data(
+            metrics={
+                "replanTimeMs": replan_time,
+                "conflictCount": 0,
+                "failureCount": 0,
+            }
+        )
+        for index, replan_time in enumerate((11, 22, 33, 44, 55), start=1)
+    ]
+    completed[-1] = replace(
+        completed[-1],
+        accepted=False,
+        acceptance_error="controlled rejection",
+    )
+    runs = [
+        *completed,
+        EvidenceRun.failed(case, 6, "timeout", "TimeoutError", None, 60),
+        EvidenceRun.failed(case, 7, "error", "ValueError", "controlled", 70),
+    ]
+    runs = [
+        replace(run, wall_clock_ms=wall_clock)
+        for run, wall_clock in zip(runs, (10, 20, 30, 40, 50, 60, 70))
+    ]
+
+    write_evidence_bundle(tmp_path, EvidenceReport.create({}, runs))
+
+    with (tmp_path / "runs.csv").open(encoding="utf-8-sig", newline="") as handle:
+        csv_runs = list(csv.DictReader(handle))
+    with (tmp_path / "case-summaries.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as handle:
+        csv_summary = next(csv.DictReader(handle))
+    json_summary = json.loads(
+        (tmp_path / "results.json").read_text(encoding="utf-8")
+    )["caseSummaries"][0]
+
+    completed_rows = [row for row in csv_runs if row["outcome"] == "completed"]
+    wall_values = sorted(float(row["wallClockMs"]) for row in completed_rows)
+    replan_values = sorted(
+        float(json.loads(row["metrics"])["replanTimeMs"])
+        for row in completed_rows
+    )
+    expected = {
+        "caseId": case.case_id,
+        "runCount": len(csv_runs),
+        "completedRunCount": len(completed_rows),
+        "timeoutCount": sum(row["outcome"] == "timeout" for row in csv_runs),
+        "errorCount": sum(row["outcome"] == "error" for row in csv_runs),
+        "acceptedRunCount": sum(row["accepted"] == "True" for row in csv_runs),
+        "acceptedRunRatePercent": round(
+            100 * sum(row["accepted"] == "True" for row in csv_runs) / len(csv_runs),
+            1,
+        ),
+        "medianWallClockMs": median(wall_values),
+        "p95WallClockMs": wall_values[ceil(0.95 * len(wall_values)) - 1],
+        "medianReplanTimeMs": median(replan_values),
+        "p95ReplanTimeMs": replan_values[ceil(0.95 * len(replan_values)) - 1],
+    }
+    typed_csv_summary = {
+        "caseId": csv_summary["caseId"],
+        **{
+            field: int(csv_summary[field])
+            for field in (
+                "runCount",
+                "completedRunCount",
+                "timeoutCount",
+                "errorCount",
+                "acceptedRunCount",
+            )
+        },
+        **{
+            field: float(csv_summary[field])
+            for field in (
+                "acceptedRunRatePercent",
+                "medianWallClockMs",
+                "p95WallClockMs",
+                "medianReplanTimeMs",
+                "p95ReplanTimeMs",
+            )
+        },
+    }
+
+    assert typed_csv_summary == expected
+    assert json_summary == expected
+
+
 def test_evidence_charts_use_only_values_in_raw_run_records(tmp_path: Path) -> None:
     runs = _representative_runs()
     source = chart_data(runs)
@@ -216,15 +310,22 @@ def test_evidence_charts_use_only_values_in_raw_run_records(tmp_path: Path) -> N
     assert source["conflict-avoidance"] == [
         {
             "label": "without",
-            "values": [runs[0].metrics["conflictCount"]],
+            "predictedConflictCounts": [runs[0].metrics["conflictCount"]],
+            "failureCounts": [runs[0].metrics["failureCount"]],
         },
-        {"label": "with", "values": [runs[1].metrics["conflictCount"]]},
+        {
+            "label": "with",
+            "predictedConflictCounts": [runs[1].metrics["conflictCount"]],
+            "failureCounts": [runs[1].metrics["failureCount"]],
+        },
     ]
     assert source["dynamic-event-timeline"] == list(runs[2].timeline)
     assert source["scale-performance"] == [
         {
             "robotCount": run.robot_count,
+            "taskCount": run.task_count,
             "replanTimeMs": run.metrics["replanTimeMs"],
+            "accepted": run.accepted,
         }
         for run in runs[3:6]
     ]
@@ -237,6 +338,53 @@ def test_evidence_charts_use_only_values_in_raw_run_records(tmp_path: Path) -> N
         assert svg.read_text(encoding="utf-8").startswith("<svg")
         assert png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
         assert len(png.read_bytes()) > 100
+
+
+@pytest.mark.parametrize(
+    ("chart_key", "mutate", "required_svg_text"),
+    [
+        (
+            "conflict-avoidance",
+            lambda records: records[0]["failureCounts"].__setitem__(0, 7),
+            ("without", "with", "Predicted conflicts", "Failures"),
+        ),
+        (
+            "dynamic-event-timeline",
+            lambda records: records[0].__setitem__("action", "changed-action"),
+            ("changed-action", "T=12", "Completed", "Failures"),
+        ),
+        (
+            "scale-performance",
+            lambda records: records[0].__setitem__("robotCount", 14),
+            ("14 robots", "Planning ms", "Tasks", "Accepted"),
+        ),
+        (
+            "safety-gate-trajectory",
+            lambda records: records[1]["positions"]["R1"].__setitem__(0, 2),
+            ("T=1", "R1", "Intervention", "Stall"),
+        ),
+    ],
+)
+def test_business_chart_rendering_uses_labels_and_each_domain_field(
+    chart_key,
+    mutate,
+    required_svg_text,
+) -> None:
+    source = chart_data(_representative_runs())[chart_key]
+    changed = copy.deepcopy(source)
+    mutate(changed)
+
+    original_svg, original_png = render_chart(chart_key, source)
+    changed_svg, changed_png = render_chart(chart_key, changed)
+
+    assert original_svg != changed_svg
+    assert original_png != changed_png
+    for text in required_svg_text:
+        assert text in changed_svg
+    assert changed_svg.count("<text") >= 5
+    assert changed_svg.count("fill=\"") >= 5
+    assert changed_png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(set(changed_png)) >= 40
 
 
 def test_evidence_bundle_publish_failure_restores_existing_package(
@@ -346,6 +494,35 @@ def test_evidence_cli_defaults_to_35_runs_and_publishes_diagnostics_on_failure(
         "timeoutSeconds": 30.0,
         "outputDir": str(result_path),
         "seededPressurePlanningTimeBudgetMs": SEEDED_PRESSURE_PLANNING_TIME_BUDGET_MS,
+        "dispatchParameters": {
+            "integratedDemoWithoutConflictAvoidance": {
+                "avoidConflicts": False,
+                "includeDynamic": False,
+                "assignmentReplanWindow": 24,
+                "adaptiveReplanWindow": False,
+            },
+            "integratedDemoWithConflictAvoidance": {
+                "avoidConflicts": True,
+                "includeDynamic": False,
+                "assignmentReplanWindow": 24,
+                "adaptiveReplanWindow": False,
+            },
+            "seededPressure": {
+                "avoidConflicts": True,
+                "includeDynamic": True,
+                "assignmentReplanWindow": 24,
+                "adaptiveReplanWindow": False,
+            },
+        },
+        "seededPressureCases": [
+            {
+                "label": label,
+                "seed": seed,
+                "robotCount": robot_count,
+                "taskCount": task_count,
+            }
+            for label, seed, robot_count, task_count in SEEDED_PRESSURE_CASES
+        ],
     }
 
 

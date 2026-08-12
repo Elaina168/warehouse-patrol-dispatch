@@ -145,3 +145,64 @@ git diff --check: passed
 - Git `dirty` 是生成时工作树状态；正式材料应从期望提交上的干净工作树重新运行 CLI，以获得 `dirty=false` 的证据包。
 - 默认正式运行会在 `output/3s-submission-evidence/<UTC timestamp>` 创建新目录；验证产生的目录本次没有提交。
 - pytest 系统临时目录出现过一次 ACL 扫描错误；代码相关集合已用工作树内 basetemp 重跑并通过，完整 `npm run check` 随后也在默认配置下通过。
+
+## Fix round 1/5（2026-08-12）
+
+状态：完成。本轮仅修复 Task 2 图表、manifest 参数和 CSV 摘要验证规格；未修改 Task 1 文件，未开始 Task 3+。
+
+覆盖测试文件：`backend/tests/test_competition_evidence.py`。
+
+### 业务语义图表
+
+- RED 命令：
+
+```text
+.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider \
+  --basetemp .pytest-task2-fix1 \
+  backend\tests\test_competition_evidence.py -k "charts or business_chart"
+```
+
+- RED 结果：测试收集失败，`ImportError: cannot import name 'render_chart'`。当前 HEAD 只有无标签通用折线，无法按业务字段验证渲染。
+- GREEN：新增四个专用 renderer；SVG 包含标题、标签和图例，PNG 用标准库像素绘制业务几何及内置 3×5 字体。
+  - 避碰对照：`without`/`with`、`Predicted conflicts`、`Failures`。
+  - 动态时间线：每条 `T=<time>`、`action`、completed/failure 状态。
+  - 规模表现：按实际 `robotCount` 分组，显示 planning ms、task count 和 accepted 数。
+  - 安全门轨迹：每 tick 的机器人 ID/坐标、intervention、stall count。
+- 测试分别改变 failure、action、robotCount 和 position，要求 SVG 文本/结构和 PNG 实际字节同时改变，并检查多标签、多颜色像素结构。
+- GREEN 结果：`5 passed, 9 deselected in 4.35s`。
+
+### manifest 精确调度参数
+
+- RED 命令：
+
+```text
+.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider \
+  --basetemp .pytest-task2-fix1-manifest \
+  backend\tests\test_competition_evidence.py::test_evidence_cli_defaults_to_35_runs_and_publishes_diagnostics_on_failure
+```
+
+- RED 结果：config 缺少 `dispatchParameters` 和 `seededPressureCases`。
+- GREEN：direct without/direct with/seeded 三类运行与 manifest 共用 `_direct_options()`/`_seeded_options()`；精确记录 `avoidConflicts`、`includeDynamic`、`assignmentReplanWindow`、`adaptiveReplanWindow`。`seededPressureCases` 逐项从 `SEEDED_PRESSURE_CASES` 派生 label/seed/robotCount/taskCount，没有复制常量。
+- GREEN 结果：`1 passed in 0.06s`。
+
+### runs.csv 独立重算全部 11 个摘要字段
+
+- 新测试使用同一案例的 5 条 completed（含一条验收拒绝）、1 timeout、1 error，并从 CSV 的标量列和 JSON `metrics` 单元独立手算：caseId、runCount、completedRunCount、timeoutCount、errorCount、acceptedRunCount、acceptedRunRatePercent、medianWallClockMs、p95WallClockMs、medianReplanTimeMs、p95ReplanTimeMs。
+- 初次执行因测试夹具只提供 `replanTimeMs`，不符合冲突图 raw-run 的完整 metrics 结构而出现 `KeyError: conflictCount`；这不是目标规格的有效 RED，补全真实结构后重跑。
+- 补全夹具后的结果：`1 passed in 0.28s`。生产摘要实现已有 11 字段能力；本轮修复的是原测试只核对 4 字段的覆盖缺口，因此没有为制造 RED 修改正确的生产统计。
+- CSV 和 JSON 两份摘要都逐字段等于独立期望。
+
+### 回归与全量
+
+```text
+相关集合：111 passed in 15.43s
+
+& 'C:\nvm4w\nodejs\npm.cmd' run check
+frontend production build: passed
+frontend tests: 190/190 passed
+backend tests: 733/733 passed in 74.96s
+overall exit: 0
+git diff --check: passed
+```
+
+本轮创建的 `.pytest-task2-fix1*` 临时目录均逐个解析绝对路径、确认位于当前 worktree 根后删除；没有保留测试输出目录。

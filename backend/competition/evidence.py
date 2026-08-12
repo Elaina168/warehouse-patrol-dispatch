@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import html
 import json
 import os
 import platform
@@ -260,6 +261,24 @@ EVIDENCE_CASES = (
 )
 
 
+def _direct_options(avoid_conflicts: bool) -> DispatchOptions:
+    return DispatchOptions(
+        avoidConflicts=avoid_conflicts,
+        includeDynamic=False,
+        assignmentReplanWindow=24,
+        adaptiveReplanWindow=False,
+    )
+
+
+def _seeded_options() -> DispatchOptions:
+    return DispatchOptions(
+        avoidConflicts=True,
+        includeDynamic=True,
+        assignmentReplanWindow=24,
+        adaptiveReplanWindow=False,
+    )
+
+
 def planned_runs(repetitions: int = 5) -> list[tuple[EvidenceCase, int]]:
     """按稳定案例顺序列出待执行记录。"""
     if repetitions < 1:
@@ -294,12 +313,7 @@ def _execute_integrated_direct(
     scenario = _load_integrated_demo()
     result = run_dispatch(
         scenario,
-        DispatchOptions(
-            avoidConflicts=bool(case.avoid_conflicts),
-            includeDynamic=False,
-            assignmentReplanWindow=24,
-            adaptiveReplanWindow=False,
-        ),
+        _direct_options(bool(case.avoid_conflicts)),
     )
     metrics = result.metrics.model_dump(mode="json")
     accepted = (
@@ -377,12 +391,7 @@ def _execute_seeded_pressure(
     scenario = seeded_pressure_scenario(label, seed, robot_count, base_task_count)
     result = run_dispatch(
         scenario,
-        DispatchOptions(
-            avoidConflicts=True,
-            includeDynamic=True,
-            assignmentReplanWindow=24,
-            adaptiveReplanWindow=False,
-        ),
+        _seeded_options(),
     )
     metrics = result.metrics.model_dump(mode="json")
     task_count = len(result.tasks)
@@ -615,12 +624,20 @@ def chart_data(runs: list[EvidenceRun]) -> dict[str, list[dict[str, object]]]:
         "conflict-avoidance": [
             {
                 "label": "without",
-                "values": [run.metrics["conflictCount"] for run in without if run.metrics],
+                "predictedConflictCounts": [
+                    run.metrics["conflictCount"] for run in without if run.metrics
+                ],
+                "failureCounts": [
+                    run.metrics["failureCount"] for run in without if run.metrics
+                ],
             },
             {
                 "label": "with",
-                "values": [
+                "predictedConflictCounts": [
                     run.metrics["conflictCount"] for run in with_avoidance if run.metrics
+                ],
+                "failureCounts": [
+                    run.metrics["failureCount"] for run in with_avoidance if run.metrics
                 ],
             },
         ],
@@ -630,7 +647,9 @@ def chart_data(runs: list[EvidenceRun]) -> dict[str, list[dict[str, object]]]:
         "scale-performance": [
             {
                 "robotCount": run.robot_count,
+                "taskCount": run.task_count,
                 "replanTimeMs": run.metrics["replanTimeMs"],
+                "accepted": run.accepted,
             }
             for run in seeded_runs
             if run.metrics
@@ -691,9 +710,9 @@ def write_evidence_bundle(output_dir: Path, report: EvidenceReport) -> None:
         ),
     }
     for spec in CHART_SPECS:
-        values = _chart_numeric_values(spec.key, chart_payloads[spec.key])
-        content[f"{spec.file_stem}.svg"] = _svg_chart(spec.title, values).encode("utf-8")
-        content[f"{spec.file_stem}.png"] = _png_chart(values)
+        svg, png = render_chart(spec.key, chart_payloads[spec.key])
+        content[f"{spec.file_stem}.svg"] = svg.encode("utf-8")
+        content[f"{spec.file_stem}.png"] = png
 
     manifest = _build_manifest(report, content)
     content["evidence-manifest.json"] = _json_bytes(manifest)
@@ -804,63 +823,280 @@ def _csv_run_record(run: EvidenceRun) -> dict[str, object]:
     return record
 
 
-def _chart_numeric_values(
-    key: str,
+def render_chart(
+    chart_key: str,
     records: list[dict[str, object]],
-) -> list[float]:
-    if key == "conflict-avoidance":
-        return [
-            float(value)
-            for record in records
-            for value in record.get("values", [])
-        ]
-    if key == "dynamic-event-timeline":
-        return [float(record["time"]) for record in records]
-    if key == "scale-performance":
-        return [float(record["replanTimeMs"]) for record in records]
-    return [float(record["time"]) for record in records]
+) -> tuple[str, bytes]:
+    """按每组证据的业务字段生成带标题、标签和图例的 SVG/PNG。"""
+    spec = next((item for item in CHART_SPECS if item.key == chart_key), None)
+    if spec is None:
+        raise KeyError(f"未知证据图表：{chart_key}")
+    renderers = {
+        "conflict-avoidance": _render_conflict_chart,
+        "dynamic-event-timeline": _render_timeline_chart,
+        "scale-performance": _render_scale_chart,
+        "safety-gate-trajectory": _render_safety_chart,
+    }
+    return renderers[chart_key](spec.title, records)
 
 
-def _svg_chart(title: str, values: list[float]) -> str:
-    width, height, margin = 800, 450, 50
-    maximum = max(values, default=1.0) or 1.0
-    points = []
-    for index, value in enumerate(values):
-        x = margin + index * ((width - 2 * margin) / max(len(values) - 1, 1))
-        y = height - margin - (value / maximum) * (height - 2 * margin)
-        points.append(f"{x:.2f},{y:.2f}")
-    polyline = " ".join(points)
-    circles = "".join(
-        f'<circle cx="{point.split(",")[0]}" cy="{point.split(",")[1]}" r="4" fill="#1f6feb"/>'
-        for point in points
-    )
+def _render_conflict_chart(
+    title: str,
+    records: list[dict[str, object]],
+) -> tuple[str, bytes]:
+    groups = [
+        (
+            str(record["label"]),
+            _average(record["predictedConflictCounts"]),
+            _average(record["failureCounts"]),
+        )
+        for record in records
+    ]
+    maximum = max((value for _, conflicts, failures in groups for value in (conflicts, failures)), default=1) or 1
+    body = [
+        _svg_text(40, 58, "Predicted conflicts", "#1f6feb"),
+        _svg_text(240, 58, "Failures", "#d73a49"),
+    ]
+    commands: list[tuple[str, object]] = [
+        ("text", (20, 12, title, (17, 24, 39))),
+        ("text", (20, 32, "BLUE Predicted conflicts  RED Failures", (17, 24, 39))),
+    ]
+    for index, (label, conflicts, failures) in enumerate(groups):
+        x = 130 + index * 300
+        conflict_height = round(240 * conflicts / maximum)
+        failure_height = round(240 * failures / maximum)
+        body.extend(
+            [
+                f'<rect x="{x}" y="{360-conflict_height}" width="70" height="{conflict_height}" fill="#1f6feb"/>',
+                f'<rect x="{x+90}" y="{360-failure_height}" width="70" height="{failure_height}" fill="#d73a49"/>',
+                _svg_text(x, 390, label),
+                _svg_text(x, 350 - conflict_height, f"{conflicts:g}"),
+                _svg_text(x + 90, 350 - failure_height, f"{failures:g}"),
+            ]
+        )
+        commands.extend(
+            [
+                ("rect", (40 + index * 270, 310 - conflict_height, 65, conflict_height, (31, 111, 235))),
+                ("rect", (120 + index * 270, 310 - failure_height, 65, failure_height, (215, 58, 73))),
+                ("text", (40 + index * 270, 320, label, (17, 24, 39))),
+                ("text", (40 + index * 270, 294 - conflict_height, f"C{conflicts:g}", (31, 111, 235))),
+                ("text", (120 + index * 270, 294 - failure_height, f"F{failures:g}", (215, 58, 73))),
+            ]
+        )
+    return _svg_document(title, body), _png_document(commands)
+
+
+def _render_timeline_chart(
+    title: str,
+    records: list[dict[str, object]],
+) -> tuple[str, bytes]:
+    maximum_time = max((float(record["time"]) for record in records), default=1) or 1
+    body = [
+        _svg_text(40, 58, "Completed", "#2da44e"),
+        _svg_text(190, 58, "Failures", "#d73a49"),
+        '<line x1="70" y1="220" x2="760" y2="220" stroke="#57606a" stroke-width="3"/>',
+    ]
+    commands: list[tuple[str, object]] = [
+        ("text", (20, 12, title, (17, 24, 39))),
+        ("text", (20, 32, "GREEN Completed  RED Failures", (17, 24, 39))),
+    ]
+    for index, record in enumerate(records):
+        time_value = float(record["time"])
+        action = str(record["action"])
+        completed = int(record["completedTaskCount"])
+        failures = int(record["failureCount"])
+        x = 70 + round(690 * time_value / maximum_time)
+        y = 145 if index % 2 == 0 else 290
+        body.extend(
+            [
+                f'<line x1="{x}" y1="220" x2="{x}" y2="{y}" stroke="#8250df"/>',
+                f'<circle cx="{x}" cy="220" r="7" fill="#8250df"/>',
+                _svg_text(x - 25, y - 24, f"T={time_value:g}"),
+                _svg_text(x - 55, y - 6, action),
+                _svg_text(x - 55, y + 13, f"Completed {completed}"),
+                _svg_text(x - 55, y + 32, f"Failures {failures}"),
+            ]
+        )
+        px = 50 + round(550 * time_value / maximum_time)
+        py = 105 if index % 2 == 0 else 245
+        commands.extend(
+            [
+                ("line", (px, 180, px, py, (130, 80, 223))),
+                ("text", (px - 18, py - 30, f"T={time_value:g}", (17, 24, 39))),
+                ("text", (px - 40, py - 16, action, (17, 24, 39))),
+                ("text", (px - 40, py - 2, f"C{completed} F{failures}", (45, 164, 78))),
+            ]
+        )
+    commands.append(("line", (50, 180, 600, 180, (87, 96, 106))))
+    return _svg_document(title, body), _png_document(commands)
+
+
+def _render_scale_chart(
+    title: str,
+    records: list[dict[str, object]],
+) -> tuple[str, bytes]:
+    robot_counts = list(dict.fromkeys(int(record["robotCount"]) for record in records))
+    groups = []
+    for robot_count in robot_counts:
+        matching = [record for record in records if int(record["robotCount"]) == robot_count]
+        groups.append(
+            (
+                robot_count,
+                _average([record["replanTimeMs"] for record in matching]),
+                _average([record["taskCount"] for record in matching]),
+                sum(bool(record["accepted"]) for record in matching),
+                len(matching),
+            )
+        )
+    max_replan = max((item[1] for item in groups), default=1) or 1
+    max_tasks = max((item[2] for item in groups), default=1) or 1
+    body = [
+        _svg_text(40, 58, "Planning ms", "#1f6feb"),
+        _svg_text(180, 58, "Tasks", "#bf8700"),
+        _svg_text(280, 58, "Accepted", "#2da44e"),
+    ]
+    commands: list[tuple[str, object]] = [
+        ("text", (20, 12, title, (17, 24, 39))),
+        ("text", (20, 32, "BLUE Planning ms  GOLD Tasks  GREEN Accepted", (17, 24, 39))),
+    ]
+    for index, (robot_count, replan, tasks, accepted, total) in enumerate(groups):
+        x = 100 + index * 220
+        replan_height = round(220 * replan / max_replan)
+        task_height = round(220 * tasks / max_tasks)
+        body.extend(
+            [
+                f'<rect x="{x}" y="{350-replan_height}" width="55" height="{replan_height}" fill="#1f6feb"/>',
+                f'<rect x="{x+65}" y="{350-task_height}" width="55" height="{task_height}" fill="#bf8700"/>',
+                _svg_text(x, 382, f"{robot_count} robots"),
+                _svg_text(x, 335 - replan_height, f"{replan:.2f} ms"),
+                _svg_text(x + 65, 335 - task_height, f"{tasks:g} Tasks"),
+                _svg_text(x, 410, f"Accepted {accepted}/{total}", "#2da44e"),
+            ]
+        )
+        px = 45 + index * 190
+        commands.extend(
+            [
+                ("rect", (px, 300 - replan_height, 50, replan_height, (31, 111, 235))),
+                ("rect", (px + 58, 300 - task_height, 50, task_height, (191, 135, 0))),
+                ("text", (px, 310, f"{robot_count} ROBOTS", (17, 24, 39))),
+                ("text", (px, 325, f"{replan:.1f}MS {tasks:g}TASKS", (17, 24, 39))),
+                ("text", (px, 340, f"ACCEPTED {accepted}/{total}", (45, 164, 78))),
+            ]
+        )
+    return _svg_document(title, body), _png_document(commands)
+
+
+def _render_safety_chart(
+    title: str,
+    records: list[dict[str, object]],
+) -> tuple[str, bytes]:
+    all_positions = [
+        position
+        for record in records
+        for position in record["positions"].values()
+    ]
+    max_x = max((int(position[0]) for position in all_positions), default=1) or 1
+    max_y = max((int(position[1]) for position in all_positions), default=1) or 1
+    body = [
+        _svg_text(40, 58, "Intervention", "#d73a49"),
+        _svg_text(180, 58, "Stall", "#8250df"),
+    ]
+    commands: list[tuple[str, object]] = [
+        ("text", (20, 12, title, (17, 24, 39))),
+        ("text", (20, 32, "RED Intervention  PURPLE Stall", (17, 24, 39))),
+    ]
+    panel_width = 700 / max(len(records), 1)
+    for index, record in enumerate(records):
+        time_value = int(record["time"])
+        intervention = bool(record["safetyIntervention"])
+        stall = int(record["safetyStallCount"])
+        left = 50 + index * panel_width
+        border = "#d73a49" if intervention else "#8c959f"
+        body.extend(
+            [
+                f'<rect x="{left:.1f}" y="100" width="{panel_width-10:.1f}" height="250" fill="#f6f8fa" stroke="{border}" stroke-width="3"/>',
+                _svg_text(left + 8, 122, f"T={time_value}"),
+                _svg_text(left + 8, 330, f"Intervention {str(intervention).lower()}", border),
+                _svg_text(left + 8, 348, f"Stall {stall}", "#8250df"),
+            ]
+        )
+        px_left = 25 + index * (590 / max(len(records), 1))
+        commands.extend(
+            [
+                ("rect-outline", (round(px_left), 80, round(570 / max(len(records), 1)), 220, (215, 58, 73) if intervention else (140, 149, 159))),
+                ("text", (round(px_left) + 4, 64, f"T={time_value}", (17, 24, 39))),
+                ("text", (round(px_left) + 4, 304, f"INTERVENTION {int(intervention)}", (215, 58, 73))),
+                ("text", (round(px_left) + 4, 318, f"STALL {stall}", (130, 80, 223))),
+            ]
+        )
+        for robot_index, (robot_id, position) in enumerate(sorted(record["positions"].items())):
+            x = left + 18 + int(position[0]) / max_x * max(panel_width - 45, 1)
+            y = 165 + int(position[1]) / max_y * 100 + robot_index * 16
+            color = "#1f6feb" if robot_index % 2 == 0 else "#2da44e"
+            body.extend(
+                [
+                    f'<circle cx="{x:.1f}" cy="{y:.1f}" r="7" fill="{color}"/>',
+                    _svg_text(x + 9, y + 4, f"{robot_id} [{position[0]},{position[1]}]", color),
+                ]
+            )
+            px = round(px_left + 12 + int(position[0]) / max_x * max(570 / max(len(records), 1) - 28, 1))
+            py = 120 + round(int(position[1]) / max_y * 80) + robot_index * 22
+            commands.extend(
+                [
+                    ("dot", (px, py, (31, 111, 235) if robot_index % 2 == 0 else (45, 164, 78))),
+                    ("text", (px + 5, py - 5, f"{robot_id}[{position[0]},{position[1]}]", (17, 24, 39))),
+                ]
+            )
+    return _svg_document(title, body), _png_document(commands)
+
+
+def _svg_document(title: str, body: list[str]) -> str:
     return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}">'
+        '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450">'
         '<rect width="100%" height="100%" fill="white"/>'
-        f'<text x="{margin}" y="30" font-family="Arial" font-size="20">{title}</text>'
-        f'<line x1="{margin}" y1="{height-margin}" x2="{width-margin}" y2="{height-margin}" stroke="#333"/>'
-        f'<line x1="{margin}" y1="{margin}" x2="{margin}" y2="{height-margin}" stroke="#333"/>'
-        f'<polyline points="{polyline}" fill="none" stroke="#1f6feb" stroke-width="3"/>'
-        f'{circles}</svg>'
+        + _svg_text(40, 30, title, "#111827", 20)
+        + "".join(body)
+        + "</svg>"
     )
 
 
-def _png_chart(values: list[float]) -> bytes:
-    width, height = 320, 180
+def _svg_text(
+    x: float,
+    y: float,
+    text: str,
+    color: str = "#24292f",
+    size: int = 13,
+) -> str:
+    return (
+        f'<text x="{x:.1f}" y="{y:.1f}" fill="{color}" '
+        f'font-family="Arial, sans-serif" font-size="{size}">{html.escape(text)}</text>'
+    )
+
+
+def _average(values) -> float:
+    numeric = [float(value) for value in values]
+    return sum(numeric) / len(numeric) if numeric else 0.0
+
+
+def _png_document(commands: list[tuple[str, object]]) -> bytes:
+    width, height = 640, 360
     pixels = [[255, 255, 255] * width for _ in range(height)]
-    maximum = max(values, default=1.0) or 1.0
-    points: list[tuple[int, int]] = []
-    for index, value in enumerate(values):
-        x = 20 + round(index * ((width - 40) / max(len(values) - 1, 1)))
-        y = height - 20 - round((value / maximum) * (height - 40))
-        points.append((x, y))
-    for first, second in zip(points, points[1:]):
-        _draw_line(pixels, first, second)
-    for x, y in points:
-        for dy in range(-2, 3):
-            for dx in range(-2, 3):
-                _set_pixel(pixels, x + dx, y + dy, (31, 111, 235))
+    for kind, payload in commands:
+        if kind == "text":
+            x, y, text, color = payload
+            _draw_text(pixels, int(x), int(y), str(text), color)
+        elif kind == "rect":
+            x, y, rect_width, rect_height, color = payload
+            _fill_rect(pixels, int(x), int(y), int(rect_width), int(rect_height), color)
+        elif kind == "rect-outline":
+            x, y, rect_width, rect_height, color = payload
+            _draw_rect_outline(pixels, int(x), int(y), int(rect_width), int(rect_height), color)
+        elif kind == "line":
+            x1, y1, x2, y2, color = payload
+            _draw_line(pixels, (int(x1), int(y1)), (int(x2), int(y2)), color)
+        elif kind == "dot":
+            x, y, color = payload
+            _fill_rect(pixels, int(x) - 2, int(y) - 2, 5, 5, color)
     raw = b"".join(b"\x00" + bytes(row) for row in pixels)
     return b"\x89PNG\r\n\x1a\n" + b"".join(
         _png_chunk(kind, payload)
@@ -876,6 +1112,7 @@ def _draw_line(
     pixels: list[list[int]],
     first: tuple[int, int],
     second: tuple[int, int],
+    color: tuple[int, int, int],
 ) -> None:
     x1, y1 = first
     x2, y2 = second
@@ -886,8 +1123,79 @@ def _draw_line(
             pixels,
             round(x1 + (x2 - x1) * ratio),
             round(y1 + (y2 - y1) * ratio),
-            (31, 111, 235),
+            color,
         )
+
+
+def _fill_rect(
+    pixels: list[list[int]],
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    color: tuple[int, int, int],
+) -> None:
+    for row in range(max(y, 0), min(y + max(height, 1), len(pixels))):
+        for column in range(max(x, 0), min(x + max(width, 1), len(pixels[0]) // 3)):
+            _set_pixel(pixels, column, row, color)
+
+
+def _draw_rect_outline(
+    pixels: list[list[int]],
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    color: tuple[int, int, int],
+) -> None:
+    _draw_line(pixels, (x, y), (x + width, y), color)
+    _draw_line(pixels, (x, y + height), (x + width, y + height), color)
+    _draw_line(pixels, (x, y), (x, y + height), color)
+    _draw_line(pixels, (x + width, y), (x + width, y + height), color)
+
+
+_FONT_3X5 = {
+    "A": ("010", "101", "111", "101", "101"), "B": ("110", "101", "110", "101", "110"),
+    "C": ("011", "100", "100", "100", "011"), "D": ("110", "101", "101", "101", "110"),
+    "E": ("111", "100", "110", "100", "111"), "F": ("111", "100", "110", "100", "100"),
+    "G": ("011", "100", "101", "101", "011"), "H": ("101", "101", "111", "101", "101"),
+    "I": ("111", "010", "010", "010", "111"), "J": ("001", "001", "001", "101", "010"),
+    "K": ("101", "101", "110", "101", "101"), "L": ("100", "100", "100", "100", "111"),
+    "M": ("101", "111", "111", "101", "101"), "N": ("101", "111", "111", "111", "101"),
+    "O": ("010", "101", "101", "101", "010"), "P": ("110", "101", "110", "100", "100"),
+    "Q": ("010", "101", "101", "111", "011"), "R": ("110", "101", "110", "101", "101"),
+    "S": ("011", "100", "010", "001", "110"), "T": ("111", "010", "010", "010", "010"),
+    "U": ("101", "101", "101", "101", "111"), "V": ("101", "101", "101", "101", "010"),
+    "W": ("101", "101", "111", "111", "101"), "X": ("101", "101", "010", "101", "101"),
+    "Y": ("101", "101", "010", "010", "010"), "Z": ("111", "001", "010", "100", "111"),
+    "0": ("111", "101", "101", "101", "111"), "1": ("010", "110", "010", "010", "111"),
+    "2": ("110", "001", "010", "100", "111"), "3": ("110", "001", "010", "001", "110"),
+    "4": ("101", "101", "111", "001", "001"), "5": ("111", "100", "110", "001", "110"),
+    "6": ("011", "100", "111", "101", "111"), "7": ("111", "001", "010", "010", "010"),
+    "8": ("111", "101", "111", "101", "111"), "9": ("111", "101", "111", "001", "110"),
+    "-": ("000", "000", "111", "000", "000"), ".": ("000", "000", "000", "000", "010"),
+    "=": ("000", "111", "000", "111", "000"), "/": ("001", "001", "010", "100", "100"),
+    "[": ("110", "100", "100", "100", "110"), "]": ("011", "001", "001", "001", "011"),
+    ",": ("000", "000", "000", "010", "100"), ":": ("000", "010", "000", "010", "000"),
+    " ": ("000", "000", "000", "000", "000"),
+}
+
+
+def _draw_text(
+    pixels: list[list[int]],
+    x: int,
+    y: int,
+    text: str,
+    color: tuple[int, int, int],
+) -> None:
+    cursor = x
+    for character in text.upper():
+        glyph = _FONT_3X5.get(character, ("111", "101", "010", "000", "010"))
+        for row, pattern in enumerate(glyph):
+            for column, enabled in enumerate(pattern):
+                if enabled == "1":
+                    _set_pixel(pixels, cursor + column, y + row, color)
+        cursor += 4
 
 
 def _set_pixel(
@@ -974,6 +1282,24 @@ def main(argv: list[str] | None = None) -> int:
             "seededPressurePlanningTimeBudgetMs": (
                 SEEDED_PRESSURE_PLANNING_TIME_BUDGET_MS
             ),
+            "dispatchParameters": {
+                "integratedDemoWithoutConflictAvoidance": _direct_options(
+                    False
+                ).model_dump(mode="json"),
+                "integratedDemoWithConflictAvoidance": _direct_options(
+                    True
+                ).model_dump(mode="json"),
+                "seededPressure": _seeded_options().model_dump(mode="json"),
+            },
+            "seededPressureCases": [
+                {
+                    "label": label,
+                    "seed": seed,
+                    "robotCount": robot_count,
+                    "taskCount": task_count,
+                }
+                for label, seed, robot_count, task_count in SEEDED_PRESSURE_CASES
+            ],
         }
         runs = run_evidence_cases(
             EVIDENCE_CASES,
