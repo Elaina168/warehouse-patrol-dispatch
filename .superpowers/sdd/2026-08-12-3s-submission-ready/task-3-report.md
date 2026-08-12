@@ -117,3 +117,17 @@
 - `frontend/src/competition/competition.tsx`
 - `frontend/src/competition/competition.test.ts`
 - `.superpowers/sdd/2026-08-12-3s-submission-ready/task-3-report.md`
+
+## Fix round 3/5（2026-08-12）
+
+### 编译 RED 与根因
+
+- RED 命令：`C:\nvm4w\nodejs\npm.cmd run check`。
+- RED 结果：在 frontend build 的 `tsc -b` 阶段退出 1；`competition.tsx:182` 与 `:183` 各报 TS2367，循环条件已把 `runState` 窄化为非终态联合，TypeScript 不会因 `await step()` 重新分析方法内部对 `this.state` 的副作用，因此 completed/failed 比较被静态判为无重叠。
+
+### 最小修复与指定验证
+
+- 仅将 record 停顿判断封装为 `shouldPauseForRecording()`，在方法调用中重新读取最新控制器状态；运行语义保持不变：completed、failed、safety-paused 不停顿，正常非终态 record 步骤仍停顿 350ms。
+- Build 命令：`npm --prefix frontend run build`；结果通过，`tsc -b` 无错误，Vite `1589 modules transformed`，构建耗时 1.83s。
+- 聚焦命令：`npm --prefix frontend test -- src/competition/competition.test.ts`；结果 1 file / 18 tests passed，测试耗时 33ms，总耗时 880ms。
+- 未开始 Task 4，未处理旧 Minor。

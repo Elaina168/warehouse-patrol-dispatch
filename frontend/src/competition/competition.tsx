@@ -177,12 +177,7 @@ export class CompetitionDemoController {
       if (this.state.runState === "idle") await this.prepare();
       while (this.state.runState !== "completed" && this.state.runState !== "failed" && this.state.pauseReason === null) {
         await this.step();
-        if (
-          this.record
-          && this.state.runState !== "completed"
-          && this.state.runState !== "failed"
-          && this.state.pauseReason === null
-        ) {
+        if (this.shouldPauseForRecording()) {
           this.update({ ...this.state, message: "录制讲解停顿中", postcondition: "录制讲解停顿 350ms" });
           await this.wait(350);
         }
@@ -190,6 +185,13 @@ export class CompetitionDemoController {
     } catch (error) {
       this.fail(error instanceof Error ? error.message : "自动演示失败");
     }
+  }
+
+  private shouldPauseForRecording(): boolean {
+    return this.record
+      && this.state.runState !== "completed"
+      && this.state.runState !== "failed"
+      && this.state.pauseReason === null;
   }
 
   async reset(): Promise<void> {
