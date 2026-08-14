@@ -82,7 +82,7 @@ backend/tests/test_competition_manifests.py
 106 passed in 12.58s
 ```
 
-一次不用自定义 basetemp 的复跑曾产生 35 个 setup error；所有 error 都来自 pytest 扫描 `C:\Users\zytx\AppData\Local\Temp\pytest-of-zytx` 时的 `PermissionError`，并同时影响现有 benchmark 的全部 `tmp_path` 测试。第一次自定义 basetemp 选在不存在的 `.runtime` 父目录也产生相同数量的 `FileNotFoundError`。改用现存 worktree 根下 `.pytest-task2` 后，同一测试集合 106/106 通过；临时目录随后按精确绝对路径删除。
+一次不用自定义 basetemp 的复跑曾产生 35 个 setup error；所有 error 都来自 pytest 扫描默认用户临时目录时的 `PermissionError`，并同时影响现有 benchmark 的全部 `tmp_path` 测试。第一次自定义 basetemp 选在不存在的 `.runtime` 父目录也产生相同数量的 `FileNotFoundError`。改用现存 worktree 根下 `.pytest-task2` 后，同一测试集合 106/106 通过；临时目录随后按精确绝对路径删除。
 
 ### 真实默认 35 次 CLI
 

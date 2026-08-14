@@ -35,6 +35,18 @@ try {
     $entryNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($entry in $archive.Entries) {
       $null = $entryNames.Add($entry.FullName)
+      if ($entry.FullName.EndsWith("/", [System.StringComparison]::Ordinal)) {
+        continue
+      }
+      $reader = [System.IO.StreamReader]::new($entry.Open(), [System.Text.UTF8Encoding]::new($false, $false), $true)
+      try {
+        $contents = $reader.ReadToEnd()
+      } finally {
+        $reader.Dispose()
+      }
+      if ($contents -match '(?i)[A-Z]:[\\/]+Users[\\/]+[^\\/\r\n]+') {
+        throw "源码包包含 Windows 用户目录绝对路径：$($entry.FullName)"
+      }
     }
     foreach ($requiredPath in @(
         "backend/requirements.lock.txt",

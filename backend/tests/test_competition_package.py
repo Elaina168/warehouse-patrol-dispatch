@@ -314,3 +314,48 @@ def test_source_package_rejects_a_dirty_worktree(tmp_path: Path) -> None:
     assert completed.returncode != 0
     assert "工作树不干净" in completed.stderr
     assert output_path.exists() is False
+
+
+def test_source_package_rejects_a_tracked_windows_user_profile_path(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    required_files = {
+        "backend/requirements.lock.txt": "fastapi==0.115.14\n",
+        "backend/competition/evidence.py": "print('evidence')\n",
+        "competition/requirements-build.lock.txt": "pyinstaller==6.16.0\n",
+        "competition/BUILDING.md": "# build\n",
+        "competition/launcher.py": "print('launcher')\n",
+        "competition/3s/manifests/main-demo.json": "{}\n",
+        "docs/personal.md": "Do not package C:" + "\\Users\\Example User\\secret.txt\n",
+    }
+    for relative_path, contents in required_files.items():
+        path = repository / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repository, check=True)
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=repository, check=True, capture_output=True)
+    output_path = tmp_path / "WarehousePatrol-source.zip"
+
+    completed = subprocess.run(
+        [
+            str(PROJECT_PWSH),
+            "-NoLogo",
+            "-NoProfile",
+            "-File",
+            str(SOURCE_PACKAGE_SCRIPT),
+            "-RepositoryRoot",
+            str(repository),
+            "-OutputPath",
+            str(output_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert completed.returncode != 0
+    assert "Windows 用户目录绝对路径" in completed.stderr
+    assert output_path.exists() is False
