@@ -49,10 +49,16 @@ try {
       }
     }
     foreach ($requiredPath in @(
+        "package.json",
+        "frontend/package.json",
+        "frontend/package-lock.json",
         "backend/requirements.lock.txt",
         "competition/requirements-build.lock.txt",
         "competition/BUILDING.md",
+        "competition/build-windows-package.ps1",
         "competition/launcher.py",
+        "competition/packaging.py",
+        "competition/warehouse_patrol.spec",
         "competition/3s/manifests/main-demo.json",
         "backend/competition/evidence.py"
       )) {

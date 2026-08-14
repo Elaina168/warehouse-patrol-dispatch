@@ -16,6 +16,7 @@ import uvicorn
 
 
 LOOPBACK_HOST = "127.0.0.1"
+PROJECT_NAME = "仓巡智调——面向动态仓储的多机器人在线调度与安全决策系统"
 
 
 class PortUnavailableError(RuntimeError):
@@ -80,11 +81,11 @@ def show_desktop_window(url: str, stop_callback: Callable[[], None]) -> None:
     from tkinter import ttk
 
     window = tkinter.Tk()
-    window.title("仓巡智调")
+    window.title(PROJECT_NAME)
     window.resizable(False, False)
     frame = ttk.Frame(window, padding=20)
     frame.grid()
-    ttk.Label(frame, text="仓巡智调正在本机运行").grid(column=0, row=0, pady=(0, 8))
+    ttk.Label(frame, text=f"{PROJECT_NAME}正在本机运行").grid(column=0, row=0, pady=(0, 8))
     ttk.Label(frame, text=url).grid(column=0, row=1, pady=(0, 12))
 
     def stop_and_close() -> None:
@@ -156,7 +157,7 @@ def run_headless(port: int, *, application_loader: Callable[[], object] = load_a
 
 def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
     """解析启动器命令行参数。"""
-    parser = argparse.ArgumentParser(description="仓巡智调本地启动器")
+    parser = argparse.ArgumentParser(description=f"{PROJECT_NAME}本地启动器")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--port", type=int)
     parsed = parser.parse_args(arguments)
