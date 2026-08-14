@@ -15,6 +15,7 @@
     "backend:test": ".\\.venv\\Scripts\\python.exe -m pytest backend/tests",
     "benchmark:algorithm": ".\\.venv\\Scripts\\python.exe -m backend.benchmarks.algorithm_boundary",
     "benchmark:adaptive-replan": ".\\.venv\\Scripts\\python.exe -m backend.benchmarks.adaptive_replan_calibration",
+    "competition:package": ".\\.tools\\powershell\\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./competition/build-windows-package.ps1",
     "check": "npm run frontend:build && npm run frontend:test && npm run backend:test"
   },
   "engines": {

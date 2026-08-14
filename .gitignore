@@ -11,4 +11,7 @@ __pycache__/
 Thumbs.db
 .tools/
 .runtime/
+output/
+submission/warehouse-patrol-3s/
+.env
 .vscode/.ropeproject/

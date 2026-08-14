@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -229,5 +230,10 @@ def configure_frontend_static(application: FastAPI, dist_directory: Path) -> boo
     return True
 
 
-FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+FRONTEND_DIST = Path(
+    os.environ.get(
+        "WAREHOUSE_PATROL_FRONTEND_DIST",
+        Path(__file__).resolve().parents[2] / "frontend" / "dist",
+    )
+)
 configure_frontend_static(app, FRONTEND_DIST)
