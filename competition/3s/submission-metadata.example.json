@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "projectName": "仓巡智调——面向动态仓储的多机器人在线调度与安全决策系统",
+  "applicant": {
+    "name": "匿名示例申请人",
+    "studentId": "ANONYMIZED",
+    "phone": "匿名示例联系方式",
+    "email": "anonymous@invalid.local",
+    "school": "匿名示例学校",
+    "major": "匿名示例专业"
+  },
+  "advisors": [
+    {
+      "name": "匿名示例指导人",
+      "role": "指导教师",
+      "professionalTitle": "匿名示例职称"
+    }
+  ],
+  "procedures": {
+    "eligibility": {
+      "verified": false,
+      "statement": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/eligibility",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      }
+    },
+    "majorAndSchoolAcceptance": {
+      "verified": false,
+      "statement": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/acceptance",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      }
+    },
+    "advisorAndRecommenderRequirements": {
+      "verified": false,
+      "statement": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/advisor",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      }
+    },
+    "collegeAndSchoolRecommendation": {
+      "verified": false,
+      "statement": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/recommendation",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      }
+    },
+    "signaturesAndSeals": {
+      "verified": false,
+      "statement": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/signatures",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      }
+    },
+    "internalDeadline": {
+      "verified": false,
+      "statement": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/deadline",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      },
+      "deadline": "2000-01-01T00:00:00Z"
+    },
+    "registrationSystem": {
+      "verified": false,
+      "statement": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/registration",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      },
+      "systemUrl": "https://invalid.local/register"
+    },
+    "materialsMailbox": {
+      "verified": false,
+      "statement": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/mailbox",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      },
+      "email": "materials@invalid.local"
+    },
+    "attachmentConstraints": {
+      "verified": false,
+      "statement": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/attachments",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      },
+      "maximumBytes": 1,
+      "allowedFormats": ["pdf"]
+    }
+  },
+  "requiredMaterials": {
+    "sourceCode": {
+      "verified": false,
+      "required": false,
+      "relationship": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/source",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      }
+    },
+    "runnablePackage": {
+      "verified": false,
+      "required": false,
+      "relationship": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/package",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      }
+    },
+    "video": {
+      "verified": false,
+      "required": false,
+      "relationship": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/video",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      }
+    },
+    "applicationForm": {
+      "verified": false,
+      "required": false,
+      "relationship": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/application",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      }
+    },
+    "technicalReport": {
+      "verified": false,
+      "required": false,
+      "relationship": "匿名结构示例不可用于正式提交。",
+      "source": {
+        "url": "https://invalid.local/report",
+        "attachmentSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "verifiedAt": "2000-01-01T00:00:00Z",
+        "writtenReply": "匿名结构示例不可用于正式提交。"
+      }
+    }
+  }
+}

@@ -4,6 +4,7 @@ frontend/dist/
 .playwright-cli/
 .worktrees/
 .venv/
+.documents-venv/
 .pytest_cache/
 __pycache__/
 *.py[cod]
@@ -13,5 +14,6 @@ Thumbs.db
 .runtime/
 output/
 submission/warehouse-patrol-3s/
+competition/3s/local/
 .env
 .vscode/.ropeproject/

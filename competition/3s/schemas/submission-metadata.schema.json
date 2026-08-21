@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://warehouse-patrol.invalid/schemas/submission-metadata.schema.json",
+  "title": "3S 提交本地元数据",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "projectName",
+    "applicant",
+    "advisors",
+    "procedures",
+    "requiredMaterials"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "projectName": {
+      "const": "仓巡智调——面向动态仓储的多机器人在线调度与安全决策系统"
+    },
+    "applicant": { "$ref": "#/$defs/applicant" },
+    "advisors": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/advisor" }
+    },
+    "procedures": { "$ref": "#/$defs/procedures" },
+    "requiredMaterials": { "$ref": "#/$defs/requiredMaterials" }
+  },
+  "$defs": {
+    "verifiedText": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "pattern": "(^\\s*$|\\b(?:[Tt][Bb][Dd]|[Tt][Oo][Dd][Oo]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr]|[Uu][Nn][Kk][Nn][Oo][Ww][Nn])\\b|[Ee][Xx][Aa][Mm][Pp][Ll][Ee]\\.(?:[Cc][Oo][Mm]|[Oo][Rr][Gg]|[Nn][Ee][Tt])|待确认|待填写|未核验|请填写|占位|^[Xx]{2,}$|^<[^>]+>$)"
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "attachmentSha256", "verifiedAt", "writtenReply"],
+      "properties": {
+        "url": { "type": "string", "pattern": "^https://\\S+$" },
+        "attachmentSha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "writtenReply": { "$ref": "#/$defs/verifiedText" }
+      }
+    },
+    "requirement": {
+      "type": "object",
+      "required": ["verified", "statement", "source"],
+      "properties": {
+        "verified": { "const": true },
+        "statement": { "$ref": "#/$defs/verifiedText" },
+        "source": { "$ref": "#/$defs/source" }
+      }
+    },
+    "applicant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "studentId", "phone", "email", "school", "major"],
+      "properties": {
+        "name": { "$ref": "#/$defs/verifiedText" },
+        "studentId": { "$ref": "#/$defs/verifiedText" },
+        "phone": { "$ref": "#/$defs/verifiedText" },
+        "email": { "type": "string", "format": "email" },
+        "school": { "$ref": "#/$defs/verifiedText" },
+        "major": { "$ref": "#/$defs/verifiedText" }
+      }
+    },
+    "advisor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "role", "professionalTitle"],
+      "properties": {
+        "name": { "$ref": "#/$defs/verifiedText" },
+        "role": { "$ref": "#/$defs/verifiedText" },
+        "professionalTitle": { "$ref": "#/$defs/verifiedText" }
+      }
+    },
+    "procedures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eligibility",
+        "majorAndSchoolAcceptance",
+        "advisorAndRecommenderRequirements",
+        "collegeAndSchoolRecommendation",
+        "signaturesAndSeals",
+        "internalDeadline",
+        "registrationSystem",
+        "materialsMailbox",
+        "attachmentConstraints"
+      ],
+      "properties": {
+        "eligibility": {
+          "$ref": "#/$defs/requirement",
+          "unevaluatedProperties": false
+        },
+        "majorAndSchoolAcceptance": {
+          "$ref": "#/$defs/requirement",
+          "unevaluatedProperties": false
+        },
+        "advisorAndRecommenderRequirements": {
+          "$ref": "#/$defs/requirement",
+          "unevaluatedProperties": false
+        },
+        "collegeAndSchoolRecommendation": {
+          "$ref": "#/$defs/requirement",
+          "unevaluatedProperties": false
+        },
+        "signaturesAndSeals": {
+          "$ref": "#/$defs/requirement",
+          "unevaluatedProperties": false
+        },
+        "internalDeadline": {
+          "allOf": [
+            { "$ref": "#/$defs/requirement" },
+            {
+              "type": "object",
+              "required": ["deadline"],
+              "properties": { "deadline": { "type": "string", "format": "date-time" } }
+            }
+          ],
+          "unevaluatedProperties": false
+        },
+        "registrationSystem": {
+          "allOf": [
+            { "$ref": "#/$defs/requirement" },
+            {
+              "type": "object",
+              "required": ["systemUrl"],
+              "properties": { "systemUrl": { "type": "string", "pattern": "^https://\\S+$" } }
+            }
+          ],
+          "unevaluatedProperties": false
+        },
+        "materialsMailbox": {
+          "allOf": [
+            { "$ref": "#/$defs/requirement" },
+            {
+              "type": "object",
+              "required": ["email"],
+              "properties": { "email": { "type": "string", "format": "email" } }
+            }
+          ],
+          "unevaluatedProperties": false
+        },
+        "attachmentConstraints": {
+          "allOf": [
+            { "$ref": "#/$defs/requirement" },
+            {
+              "type": "object",
+              "required": ["maximumBytes", "allowedFormats"],
+              "properties": {
+                "maximumBytes": { "type": "integer", "minimum": 1 },
+                "allowedFormats": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": { "$ref": "#/$defs/verifiedText" }
+                }
+              }
+            }
+          ],
+          "unevaluatedProperties": false
+        }
+      }
+    },
+    "materialRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verified", "required", "relationship", "source"],
+      "properties": {
+        "verified": { "const": true },
+        "required": { "type": "boolean" },
+        "relationship": { "$ref": "#/$defs/verifiedText" },
+        "source": { "$ref": "#/$defs/source" }
+      }
+    },
+    "requiredMaterials": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceCode", "runnablePackage", "video", "applicationForm", "technicalReport"],
+      "properties": {
+        "sourceCode": { "$ref": "#/$defs/materialRequirement" },
+        "runnablePackage": { "$ref": "#/$defs/materialRequirement" },
+        "video": { "$ref": "#/$defs/materialRequirement" },
+        "applicationForm": { "$ref": "#/$defs/materialRequirement" },
+        "technicalReport": { "$ref": "#/$defs/materialRequirement" }
+      }
+    }
+  }
+}
