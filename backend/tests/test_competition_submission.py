@@ -13,6 +13,9 @@ from backend.competition.submission import (
 )
 
 
+pytest_plugins = ("backend.tests.competition_fixtures",)
+
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -150,14 +153,14 @@ def test_json_schema_composes_extended_requirements_without_rejecting_their_fiel
     ],
 )
 def test_metadata_gate_rejects_unverified_placeholder_weak_source_or_missing_field(
-    tmp_path: Path,
+    repository_tmp_path: Path,
     mutate,
     expected_pointer: str,
 ) -> None:
     payload = verified_metadata()
     payload["applicant"]["name"] = "绝不允许进入异常的敏感姓名"
     mutate(payload)
-    metadata_path = tmp_path / "submission-metadata.json"
+    metadata_path = repository_tmp_path / "submission-metadata.json"
     write_metadata(metadata_path, payload)
 
     with pytest.raises(SubmissionGateError) as captured:
@@ -167,8 +170,10 @@ def test_metadata_gate_rejects_unverified_placeholder_weak_source_or_missing_fie
     assert "绝不允许进入异常的敏感姓名" not in str(captured.value)
 
 
-def test_metadata_gate_accepts_only_a_git_ignored_local_path(tmp_path: Path) -> None:
-    ignored_path = tmp_path / "submission-metadata.json"
+def test_metadata_gate_accepts_only_a_git_ignored_local_path(
+    repository_tmp_path: Path,
+) -> None:
+    ignored_path = repository_tmp_path / "submission-metadata.json"
     write_metadata(ignored_path, verified_metadata())
 
     loaded = load_verified_submission_metadata(ignored_path, REPOSITORY_ROOT)

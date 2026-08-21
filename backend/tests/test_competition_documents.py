@@ -12,12 +12,15 @@ from backend.tests.test_competition_markdown_documents import (
 )
 
 
+pytest_plugins = ("backend.tests.competition_fixtures",)
+
+
 def test_documents_command_without_converted_dir_generates_markdown_only(
-    tmp_path: Path,
+    repository_tmp_path: Path,
 ) -> None:
-    metadata = _write_metadata(tmp_path / "metadata.json")
-    evidence = _write_controlled_evidence(tmp_path / "evidence")
-    output = tmp_path / "documents"
+    metadata = _write_metadata(repository_tmp_path / "metadata.json")
+    evidence = _write_controlled_evidence(repository_tmp_path / "evidence")
+    output = repository_tmp_path / "documents"
 
     result = main(
         [
@@ -43,16 +46,16 @@ def test_documents_command_without_converted_dir_generates_markdown_only(
 
 
 def test_documents_command_with_converted_dir_ingests_and_renders(
-    tmp_path: Path,
+    repository_tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    metadata = _write_metadata(tmp_path / "metadata.json")
-    evidence = _write_controlled_evidence(tmp_path / "evidence")
-    converted = tmp_path / "converted"
+    metadata = _write_metadata(repository_tmp_path / "metadata.json")
+    evidence = _write_controlled_evidence(repository_tmp_path / "evidence")
+    converted = repository_tmp_path / "converted"
     converted.mkdir()
-    output = tmp_path / "documents"
-    pdftoppm = tmp_path / "pdftoppm.exe"
-    pdfinfo = tmp_path / "pdfinfo.exe"
+    output = repository_tmp_path / "documents"
+    pdftoppm = repository_tmp_path / "pdftoppm.exe"
+    pdfinfo = repository_tmp_path / "pdfinfo.exe"
     pdftoppm.write_bytes(b"fake")
     pdfinfo.write_bytes(b"fake")
     calls: list[dict[str, Path]] = []
@@ -109,11 +112,11 @@ def test_documents_command_with_converted_dir_ingests_and_renders(
 
 
 def test_documents_verify_only_requires_current_visual_approval(
-    tmp_path: Path,
+    repository_tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    metadata = _write_metadata(tmp_path / "metadata.json")
-    output = tmp_path / "documents"
+    metadata = _write_metadata(repository_tmp_path / "metadata.json")
+    output = repository_tmp_path / "documents"
     output.mkdir()
     monkeypatch.setattr(document_module, "_verify_existing_documents", lambda *_: False)
     assert main(
@@ -125,7 +128,7 @@ def test_documents_verify_only_requires_current_visual_approval(
             "--verify-only",
         ]
     ) == 1
-    approvals = tmp_path / "visual-approvals.json"
+    approvals = repository_tmp_path / "visual-approvals.json"
     approvals.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(document_module, "_verify_existing_documents", lambda *_: True)
 
@@ -143,9 +146,9 @@ def test_documents_verify_only_requires_current_visual_approval(
 
 
 def test_documents_command_rejects_verify_only_with_converted_dir(
-    tmp_path: Path,
+    repository_tmp_path: Path,
 ) -> None:
-    metadata = _write_metadata(tmp_path / "metadata.json")
+    metadata = _write_metadata(repository_tmp_path / "metadata.json")
 
     with pytest.raises(SystemExit):
         main(
@@ -154,6 +157,6 @@ def test_documents_command_rejects_verify_only_with_converted_dir(
                 str(metadata),
                 "--verify-only",
                 "--converted-dir",
-                str(tmp_path / "converted"),
+                str(repository_tmp_path / "converted"),
             ]
         )

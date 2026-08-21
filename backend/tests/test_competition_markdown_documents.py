@@ -12,6 +12,9 @@ from backend.competition.markdown_documents import generate_markdown_handoff
 from backend.competition.submission import PROJECT_NAME
 
 
+pytest_plugins = ("backend.tests.competition_fixtures",)
+
+
 EXPECTED_FILES = {
     "application-summary.md",
     "technical-report.md",
@@ -177,9 +180,9 @@ def _generate(tmp_path: Path) -> Path:
 
 
 def test_markdown_handoff_contains_exact_documents_sections_and_boundaries(
-    tmp_path: Path,
+    repository_tmp_path: Path,
 ) -> None:
-    output = _generate(tmp_path)
+    output = _generate(repository_tmp_path)
     markdown = output / "markdown"
     assert {path.name for path in markdown.iterdir()} == EXPECTED_FILES
     for path in markdown.iterdir():
@@ -239,8 +242,10 @@ def test_markdown_handoff_contains_exact_documents_sections_and_boundaries(
     assert "正式提交前" in dependencies
 
 
-def test_markdown_manifest_hashes_are_recomputable_and_private(tmp_path: Path) -> None:
-    output = _generate(tmp_path)
+def test_markdown_manifest_hashes_are_recomputable_and_private(
+    repository_tmp_path: Path,
+) -> None:
+    output = _generate(repository_tmp_path)
     manifest_path = output / "markdown-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
@@ -264,7 +269,7 @@ def test_markdown_manifest_hashes_are_recomputable_and_private(tmp_path: Path) -
         "受控测试申请人甲",
         "受控测试指导人乙",
         "受控测试学校",
-        str(tmp_path.resolve()),
+        str(repository_tmp_path.resolve()),
     ):
         assert private_value not in serialized
         assert private_value not in instructions
@@ -278,10 +283,10 @@ def test_markdown_manifest_hashes_are_recomputable_and_private(tmp_path: Path) -
 
 
 def test_markdown_generation_failure_preserves_existing_output(
-    tmp_path: Path,
+    repository_tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    output = _generate(tmp_path)
+    output = _generate(repository_tmp_path)
     before = {
         path.relative_to(output).as_posix(): path.read_bytes()
         for path in output.rglob("*")
@@ -297,8 +302,8 @@ def test_markdown_generation_failure_preserves_existing_output(
     monkeypatch.setattr(markdown_module, "_write_text", fail_on_technical)
     with pytest.raises(OSError, match="controlled staging failure"):
         generate_markdown_handoff(
-            metadata_path=tmp_path / "metadata.json",
-            evidence_directory=tmp_path / "evidence",
+            metadata_path=repository_tmp_path / "metadata.json",
+            evidence_directory=repository_tmp_path / "evidence",
             output_directory=output,
         )
 
@@ -308,4 +313,4 @@ def test_markdown_generation_failure_preserves_existing_output(
         if path.is_file()
     }
     assert after == before
-    assert not list(tmp_path.glob(".documents.*.tmp"))
+    assert not list(repository_tmp_path.glob(".documents.*.tmp"))

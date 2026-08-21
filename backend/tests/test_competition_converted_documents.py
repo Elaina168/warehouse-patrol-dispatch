@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
 from pathlib import Path
 
 import pytest
-from docx import Document
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfgen import canvas
 
 import backend.competition.converted_documents as converted_module
 from backend.competition.converted_documents import (
@@ -39,6 +36,13 @@ EXPECTED_CONVERTED = {
     "third-party-dependencies.docx",
     "third-party-dependencies.pdf",
 }
+DOCUMENTS_RUNTIME_AVAILABLE = all(
+    importlib.util.find_spec(name) is not None for name in ("docx", "pypdf", "reportlab")
+)
+requires_documents_runtime = pytest.mark.skipif(
+    not DOCUMENTS_RUNTIME_AVAILABLE,
+    reason="需要 competition/requirements-documents.lock.txt 中的独立文档依赖",
+)
 
 
 def _write_file_set(path: Path) -> Path:
@@ -59,6 +63,8 @@ def _document_lines(document_id: str) -> list[str]:
 
 
 def _write_docx(path: Path, lines: list[str]) -> None:
+    from docx import Document
+
     document = Document()
     for line in lines:
         document.add_paragraph(line)
@@ -66,6 +72,10 @@ def _write_docx(path: Path, lines: list[str]) -> None:
 
 
 def _write_pdf(path: Path, lines: list[str]) -> None:
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen import canvas
+
     font_name = "ControlledSimHei"
     if font_name not in pdfmetrics.getRegisteredFontNames():
         pdfmetrics.registerFont(TTFont(font_name, r"C:\Windows\Fonts\simhei.ttf"))
@@ -235,6 +245,7 @@ def test_converted_directory_returns_four_pairs_in_fixed_order(tmp_path: Path) -
     } == EXPECTED_CONVERTED
 
 
+@requires_documents_runtime
 def test_converted_content_accepts_valid_searchable_docx_and_pdf(tmp_path: Path) -> None:
     converted = _write_valid_converted_set(tmp_path / "converted")
 
@@ -246,6 +257,7 @@ def test_converted_content_accepts_valid_searchable_docx_and_pdf(tmp_path: Path)
 
 @pytest.mark.parametrize("format_name", ["docx", "pdf"])
 @pytest.mark.parametrize("missing", ["project", "title", "boundary"])
+@requires_documents_runtime
 def test_converted_content_rejects_missing_required_text_without_private_values(
     tmp_path: Path,
     format_name: str,
@@ -282,6 +294,7 @@ def test_converted_content_rejects_missing_required_text_without_private_values(
 
 
 @pytest.mark.parametrize("format_name", ["docx", "pdf"])
+@requires_documents_runtime
 def test_converted_content_rejects_corrupt_packages(
     tmp_path: Path,
     format_name: str,
@@ -299,6 +312,7 @@ def test_converted_content_rejects_corrupt_packages(
         validate_converted_content(pair)
 
 
+@requires_documents_runtime
 def test_ingest_renders_all_documents_and_approval_binds_current_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -343,6 +357,7 @@ def test_ingest_renders_all_documents_and_approval_binds_current_request(
 
 
 @pytest.mark.parametrize("changed", ["markdown", "docx", "pdf", "page", "request"])
+@requires_documents_runtime
 def test_visual_approval_becomes_stale_when_any_bound_input_changes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -371,6 +386,7 @@ def test_visual_approval_becomes_stale_when_any_bound_input_changes(
     assert verify_visual_approvals(output, approvals) is False
 
 
+@requires_documents_runtime
 def test_visual_approval_requires_every_current_page(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -394,6 +410,7 @@ def test_visual_approval_requires_every_current_page(
 
 
 @pytest.mark.parametrize("failure", ["render", "page-count"])
+@requires_documents_runtime
 def test_ingest_failure_rolls_back_existing_markdown_handoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

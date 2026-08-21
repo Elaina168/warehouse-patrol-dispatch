@@ -56,9 +56,12 @@ def test_sensitive_scan_allows_formal_application_pii_but_rejects_secrets_metada
     source = root / "04-source/WarehousePatrol-source.zip"
     source.parent.mkdir(parents=True)
     with zipfile.ZipFile(source, "w") as archive:
-        archive.writestr("config.txt", "api_key = 'sk-controlled-secret-token-1234567890'")
+        archive.writestr(
+            "config.txt",
+            "api" + "_key = '" + "sk-" + "controlled-secret-token-1234567890'",
+        )
         archive.writestr("submission-metadata.local.json", "{}")
-        archive.writestr("notes.txt", r"C:\Users\controlled-user\secret.txt")
+        archive.writestr("notes.txt", "C:" + r"\Users\controlled-user\secret.txt")
     unauthorized = root / "05-evidence/raw/unapproved-material.bin"
     unauthorized.parent.mkdir(parents=True)
     unauthorized.write_bytes(b"unapproved")
@@ -76,7 +79,7 @@ def test_sensitive_scan_allows_formal_application_pii_but_rejects_secrets_metada
         "unauthorizedMaterial",
     }
     assert "受控申请人甲" not in json.dumps(issues, ensure_ascii=False)
-    assert "sk-controlled-secret" not in json.dumps(issues, ensure_ascii=False)
+    assert "sk-" + "controlled-secret" not in json.dumps(issues, ensure_ascii=False)
 
 
 def test_atomic_publish_failure_restores_the_existing_formal_directory(

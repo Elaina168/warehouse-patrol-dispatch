@@ -289,7 +289,7 @@ Run with the bundled documents runtime so pypdf/reportlab availability is part o
 
 ```powershell
 $env:PYTHONPATH=(Resolve-Path '.\.venv\Lib\site-packages').Path
-& 'C:\Users\zytx\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest -q -p no:cacheprovider --noconftest --basetemp=output\pytest-converted-red backend\tests\test_competition_converted_documents.py
+& '.\.documents-venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider --noconftest --basetemp=output\pytest-converted-red backend\tests\test_competition_converted_documents.py
 ```
 
 Expected: collection or import failure because `backend.competition.converted_documents` does not exist.
@@ -340,7 +340,7 @@ Run:
 
 ```powershell
 $env:PYTHONPATH=(Resolve-Path '.\.venv\Lib\site-packages').Path
-& 'C:\Users\zytx\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest -q -p no:cacheprovider --noconftest --basetemp=output\pytest-converted-content backend\tests\test_competition_converted_documents.py
+& '.\.documents-venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider --noconftest --basetemp=output\pytest-converted-content backend\tests\test_competition_converted_documents.py
 ```
 
 Expected: all tests added through this step pass.
@@ -374,7 +374,7 @@ Use a controlled executable test double only at the external Poppler boundary; a
 
 ```powershell
 $env:PYTHONPATH=(Resolve-Path '.\.venv\Lib\site-packages').Path
-& 'C:\Users\zytx\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest -q -p no:cacheprovider --noconftest --basetemp=output\pytest-converted-green backend\tests\test_competition_converted_documents.py backend\tests\test_competition_documents.py
+& '.\.documents-venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider --noconftest --basetemp=output\pytest-converted-green backend\tests\test_competition_converted_documents.py backend\tests\test_competition_documents.py
 ```
 
 Expected: all selected tests pass. The normal path never invokes Word; a real-Poppler integration may skip only when the executable prerequisite is unavailable, and its exact skip reason is recorded.
@@ -531,7 +531,7 @@ Run both environments deliberately:
 
 ```powershell
 $env:PYTHONPATH=(Resolve-Path '.\.venv\Lib\site-packages').Path
-& 'C:\Users\zytx\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' -m pytest -q -p no:cacheprovider --noconftest --basetemp=output\pytest-task5-documents-runtime backend\tests\test_competition_documents.py backend\tests\test_competition_markdown_documents.py backend\tests\test_competition_converted_documents.py
+& '.\.documents-venv\Scripts\python.exe' -m pytest -q -p no:cacheprovider --noconftest --basetemp=output\pytest-task5-documents-runtime backend\tests\test_competition_documents.py backend\tests\test_competition_markdown_documents.py backend\tests\test_competition_converted_documents.py
 ```
 
 Record pass/skip counts separately. Do not count a skipped real Poppler/Word integration as a pass.
@@ -549,7 +549,7 @@ Expected: frontend production build, all frontend tests, and all backend tests e
 With the user's actual ignored metadata path `competition/3s/local/submission-metadata.json` when it exists:
 
 ```powershell
-$env:WAREHOUSE_PATROL_DOCUMENTS_PYTHON='C:\Users\zytx\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+$env:WAREHOUSE_PATROL_DOCUMENTS_PYTHON=(Resolve-Path '.\.documents-venv\Scripts\python.exe').Path
 & 'C:\nvm4w\nodejs\npm.cmd' run competition:documents -- --metadata 'competition\3s\local\submission-metadata.json' --evidence-dir 'output\3s-submission-evidence'
 ```
 
