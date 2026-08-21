@@ -267,6 +267,9 @@ def test_validated_publisher_builds_exact_structure_scans_then_hashes_and_publis
     ):
         (documents / f"{document_id}.docx").write_bytes(b"controlled-docx")
         (documents / f"{document_id}.pdf").write_bytes(b"%PDF-controlled")
+    (documents / "technical-report.md").write_text("private source", encoding="utf-8")
+    (documents / "markdown-manifest.json").write_text("{}", encoding="utf-8")
+    (documents / "conversion-instructions.md").write_text("private", encoding="utf-8")
     (evidence / "results.json").write_text("{}", encoding="utf-8")
     (evidence / "runs.csv").write_text("caseId\n", encoding="utf-8")
     (evidence / "chart.png").write_bytes(b"\x89PNG\r\n\x1a\ncontrolled")
@@ -306,3 +309,8 @@ def test_validated_publisher_builds_exact_structure_scans_then_hashes_and_publis
     assert verify_release_hashes(destination) == []
     assert (destination / "03-software/windows-x64/WarehousePatrol.exe").is_file()
     assert (destination / "04-source/WarehousePatrol-source.zip").is_file()
+    listing = {path.relative_to(destination).as_posix() for path in destination.rglob("*")}
+    assert not any(path.endswith(".md") for path in listing)
+    assert "markdown-manifest.json" not in listing
+    assert "conversion-instructions.md" not in listing
+    assert not any("competition/3s/local" in path for path in listing)

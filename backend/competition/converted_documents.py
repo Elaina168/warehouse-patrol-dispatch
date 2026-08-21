@@ -12,8 +12,6 @@ from pathlib import Path
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile, is_zipfile
 
-from pypdf import PdfReader
-
 from backend.competition.document_support import (
     DocumentGenerationError,
     publish_directory_atomically,
@@ -93,6 +91,8 @@ def extract_pdf_text(path: Path) -> str:
     """从每一页 PDF 中提取可搜索文本。"""
 
     try:
+        from pypdf import PdfReader
+
         reader = PdfReader(path)
         if reader.is_encrypted or len(reader.pages) < 1:
             raise ValueError("invalidPdf")
