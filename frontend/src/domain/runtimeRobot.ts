@@ -109,13 +109,22 @@ export function mergeRuntimeRobotStates(
 export function getVisibleRobotCells(
   paths: Record<string, Cell[]>,
   pathStartTimes: Record<string, number> | undefined,
-  displayTime: number
+  displayTime: number,
+  robotStates: RobotRuntimeState[] = []
 ): Map<string, Cell> {
   const cells = new Map<string, Cell>();
+  const stateByRobotId = new Map(robotStates.map((state) => [state.robotId, state]));
   for (const [robotId, path] of Object.entries(paths)) {
     if (path.length === 0) continue;
     const startTime = pathStartTimes?.[robotId] ?? 0;
-    if (displayTime < startTime) continue;
+    const state = stateByRobotId.get(robotId);
+    const joinedAt = state?.joinedAt ?? startTime;
+    const removedAt = state?.removedAt ?? null;
+    if (
+      displayTime < startTime
+      || displayTime < joinedAt
+      || (removedAt !== null && removedAt !== undefined && displayTime >= removedAt)
+    ) continue;
     const cell = path[Math.min(displayTime - startTime, path.length - 1)];
     if (cell) cells.set(robotId, cell);
   }

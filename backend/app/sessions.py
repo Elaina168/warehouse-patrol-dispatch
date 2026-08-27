@@ -70,6 +70,7 @@ from backend.app.schemas import (
     Metrics,
     MetricSnapshot,
     RemoveBlockRequest,
+    RemoveRobotRequest,
     RestoreRobotRequest,
     Robot,
     RobotRuntimeState,
@@ -112,12 +113,14 @@ class DispatchSession:
     planning_started: bool = False
     robot_positions: dict[str, Cell] = field(default_factory=dict)
     robot_join_times: dict[str, int] = field(default_factory=dict)
+    robot_removed_at: dict[str, int] = field(default_factory=dict)
     robot_path_history: dict[str, list[Cell]] = field(default_factory=dict)
     robot_travelled_distance: dict[str, int] = field(default_factory=dict)
     robot_battery_levels: dict[str, int] = field(default_factory=dict)
     completed_task_ids: set[str] = field(default_factory=set)
     task_completion_times: dict[str, int] = field(default_factory=dict)
     task_payload_positions: dict[str, Cell] = field(default_factory=dict)
+    task_payload_robot_ids: dict[str, str] = field(default_factory=dict)
     task_waypoint_progress: dict[str, int] = field(default_factory=dict)
     task_service_started_times: dict[str, int] = field(default_factory=dict)
     runtime_blocked_cells: list[Cell] = field(default_factory=list)
@@ -235,6 +238,7 @@ def create_session(
         last_accessed_at=now,
         robot_positions={robot.id: robot.start for robot in request.scenario.robots},
         robot_join_times={robot.id: 0 for robot in request.scenario.robots},
+        robot_removed_at={},
         robot_path_history={robot.id: [robot.start] for robot in request.scenario.robots},
         robot_travelled_distance={robot.id: 0 for robot in request.scenario.robots},
         robot_battery_levels={robot.id: robot.battery for robot in request.scenario.robots},
@@ -417,6 +421,66 @@ def add_robot(
         return result
 
 
+def remove_robot(
+    session_id: str,
+    request: RemoveRobotRequest,
+    *,
+    registry: SessionRegistry | None = None,
+) -> SessionResult:
+    with _locked_session(session_id, registry=registry) as session:
+        requested_time = _runtime_request_time(session, request)
+        _require_not_past_time(session, requested_time)
+        robot = next((item for item in session.scenario.robots if item.id == request.robotId), None)
+        if robot is None:
+            raise HTTPException(status_code=404, detail=f"机器人不存在：{request.robotId}")
+
+        transaction_observations: list[ReplanObservation] = []
+        transaction_session = _clone_session_for_preview(session)
+        if session.replan_observer is not None:
+            transaction_session.replan_observer = transaction_observations.append
+
+        previous_time = transaction_session.current_time
+        if _advance_runtime_event(transaction_session, requested_time):
+            _touch_session_if_time_changed(transaction_session, previous_time)
+            result = _build_result(transaction_session)
+            _commit_session_candidate(session, transaction_session, transaction_observations)
+            return result
+        _touch_session_if_time_changed(transaction_session, previous_time)
+
+        if request.robotId in transaction_session.robot_removed_at:
+            result = _build_result(transaction_session)
+            _commit_session_candidate(session, transaction_session, transaction_observations)
+            return result
+
+        current_result = _build_result(transaction_session)
+        _validate_runtime_robot_removal(transaction_session, robot.id, current_result)
+
+        transaction_session.robot_removed_at[robot.id] = transaction_session.current_time
+        transaction_session.runtime_failed_robot_ids = [
+            robot_id
+            for robot_id in transaction_session.runtime_failed_robot_ids
+            if robot_id != robot.id
+        ]
+        transaction_session.active_charging_visits.pop(robot.id, None)
+        transaction_session.preferred_task_robot_ids = {
+            task_id: robot_id
+            for task_id, robot_id in transaction_session.preferred_task_robot_ids.items()
+            if robot_id != robot.id
+        }
+        transaction_session.safety_hold_times.pop(robot.id, None)
+        _clear_safety_stall(transaction_session)
+        _invalidate_plan(transaction_session)
+        _touch_session_updated(transaction_session)
+        _record_session_event(
+            transaction_session,
+            transaction_session.current_time,
+            f"T={transaction_session.current_time} 永久移除机器人：{robot.id} {robot.name}",
+        )
+        result = _build_result(transaction_session)
+        _commit_session_candidate(session, transaction_session, transaction_observations)
+        return result
+
+
 def add_blocked_cell(
     session_id: str,
     request: AddBlockRequest,
@@ -560,6 +624,8 @@ def fail_robot(
         robot_ids = {robot.id for robot in session.scenario.robots}
         if request.robotId not in robot_ids:
             raise HTTPException(status_code=404, detail=f"机器人不存在：{request.robotId}")
+        if request.robotId in session.robot_removed_at:
+            raise HTTPException(status_code=409, detail=f"机器人已永久移除，不能标记故障：{request.robotId}")
         previous_time = session.current_time
         if _advance_runtime_event(session, current_time):
             _touch_session_if_time_changed(session, previous_time)
@@ -590,6 +656,8 @@ def restore_robot(
         robot_ids = {robot.id for robot in session.scenario.robots}
         if request.robotId not in robot_ids:
             raise HTTPException(status_code=404, detail=f"机器人不存在：{request.robotId}")
+        if request.robotId in session.robot_removed_at:
+            raise HTTPException(status_code=409, detail=f"机器人已永久移除，不能恢复：{request.robotId}")
         previous_time = session.current_time
         if _advance_runtime_event(session, current_time):
             _touch_session_if_time_changed(session, previous_time)
@@ -652,7 +720,7 @@ def _require_not_past_time(session: DispatchSession, current_time: int) -> None:
 
 def _runtime_request_time(
     session: DispatchSession,
-    request: AddRobotRequest | AddBlockRequest | RemoveBlockRequest | FailRobotRequest | RestoreRobotRequest,
+    request: AddRobotRequest | RemoveRobotRequest | AddBlockRequest | RemoveBlockRequest | FailRobotRequest | RestoreRobotRequest,
 ) -> int:
     if "currentTime" in request.model_fields_set:
         return request.currentTime
@@ -696,6 +764,7 @@ def _validate_runtime_robot(session: DispatchSession, robot: Robot) -> None:
         (
             existing.id
             for existing in session.scenario.robots
+            if not _is_robot_removed_at(session, existing.id, session.current_time)
             if session.robot_positions.get(existing.id, existing.start) == robot.start
         ),
         None,
@@ -705,6 +774,112 @@ def _validate_runtime_robot(session: DispatchSession, robot: Robot) -> None:
             status_code=409,
             detail=f"机器人接入位置被机器人占用：{occupying_robot_id} ({robot.start[0]}, {robot.start[1]})",
         )
+
+
+def _validate_runtime_robot_removal(
+    session: DispatchSession,
+    robot_id: str,
+    result: SessionResult,
+) -> None:
+    state = next((item for item in result.robotStates if item.robotId == robot_id), None)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"机器人不存在：{robot_id}")
+    if _robot_carries_payload(session, result, robot_id):
+        raise HTTPException(status_code=409, detail=f"机器人仍携带货物，不能移除：{robot_id}")
+    if state.status in {"toPickup", "delivering", "inspecting"}:
+        raise HTTPException(status_code=409, detail=f"机器人正在执行任务，不能移除：{robot_id}")
+    charging_visit = next(
+        (
+            visit
+            for visit in result.result.chargingVisits
+            if visit.robotId == robot_id
+            and visit.departureTime <= session.current_time < visit.completionTime
+        ),
+        None,
+    )
+    if (
+        state.status in {"toCharge", "charging"}
+        or charging_visit is not None
+        or robot_id in session.active_charging_visits
+    ):
+        raise HTTPException(status_code=409, detail=f"机器人正在充电或前往充电，不能移除：{robot_id}")
+
+    locked_task_ids = sorted(
+        task_id
+        for task_id, locked_robot_id in session.locked_task_robot_ids.items()
+        if locked_robot_id == robot_id and task_id not in session.completed_task_ids
+    )
+    if locked_task_ids:
+        raise HTTPException(
+            status_code=409,
+            detail=f"机器人存在硬锁定任务，不能移除：{robot_id} ({', '.join(locked_task_ids)})",
+        )
+    if state.status not in {"idle", "waiting", "failed"}:
+        raise HTTPException(status_code=409, detail=f"机器人当前状态不可移除：{robot_id} ({state.status})")
+
+    unavailable_robot_ids = set(result.result.unavailableRobotIds)
+    remaining_active_robot_ids = [
+        robot.id
+        for robot in session.scenario.robots
+        if robot.id != robot_id
+        and not _is_robot_removed_at(session, robot.id, session.current_time)
+        and robot.id not in unavailable_robot_ids
+    ]
+    if not remaining_active_robot_ids:
+        raise HTTPException(status_code=409, detail="移除后将没有活动机器人")
+
+
+def _robot_carries_payload(
+    session: DispatchSession,
+    result: SessionResult,
+    robot_id: str,
+) -> bool:
+    dispatch_result = result.result
+    completions = _session_task_completion_times(session, dispatch_result)
+    for task_id in session.task_payload_positions:
+        owner = session.task_payload_robot_ids.get(task_id)
+        if owner == robot_id:
+            return True
+        if owner is not None:
+            continue
+        assignment = next(
+            (item for item in dispatch_result.assignments if any(task.id == task_id for task in item.tasks)),
+            None,
+        )
+        if assignment is None or assignment.robotId == robot_id:
+            return True
+
+    for assignment in dispatch_result.assignments:
+        if assignment.robotId != robot_id:
+            continue
+        path = dispatch_result.paths.get(robot_id, [])
+        path_start_time = _session_path_start_time(dispatch_result, session, robot_id)
+        for task in assignment.tasks:
+            if task.type != "delivery" or task.id in session.completed_task_ids:
+                continue
+            completion_time = completions.get(task.id)
+            if completion_time is not None and completion_time <= session.current_time:
+                continue
+            waypoints = task_waypoints(task)
+            if not waypoints:
+                continue
+            release_time = _session_task_release_time(session, task)
+            if _has_visited(
+                path,
+                waypoints[0],
+                session.current_time,
+                release_time,
+                path_start_time,
+            ):
+                return True
+    return False
+
+
+def _is_robot_removed_at(session: DispatchSession, robot_id: str, target_time: int | None = None) -> bool:
+    removed_at = session.robot_removed_at.get(robot_id)
+    if removed_at is None:
+        return False
+    return target_time is None or target_time >= removed_at
 
 
 def _clone_session_for_preview(session: DispatchSession) -> DispatchSession:
@@ -841,12 +1016,14 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.planning_started = False
     session.robot_positions = {robot.id: robot.start for robot in scenario.robots}
     session.robot_join_times = {robot.id: 0 for robot in scenario.robots}
+    session.robot_removed_at.clear()
     session.robot_path_history = {robot.id: [robot.start] for robot in scenario.robots}
     session.robot_travelled_distance = {robot.id: 0 for robot in scenario.robots}
     session.robot_battery_levels = {robot.id: robot.battery for robot in scenario.robots}
     session.completed_task_ids.clear()
     session.task_completion_times.clear()
     session.task_payload_positions.clear()
+    session.task_payload_robot_ids.clear()
     session.task_waypoint_progress.clear()
     session.task_service_started_times.clear()
     session.runtime_blocked_cells.clear()
@@ -1141,7 +1318,28 @@ def _build_idle_result(session: DispatchSession) -> DispatchResult:
     dynamic_active = _is_scenario_dynamic_active(session)
     replan_window_decision = _session_replan_window_decision(session)
     active_dynamic_blocked = session.scenario.dynamic.blockedCells if dynamic_active else []
-    active_dynamic_failed = session.scenario.dynamic.failedRobots if dynamic_active else []
+    active_dynamic_failed = (
+        [
+            robot_id
+            for robot_id in session.scenario.dynamic.failedRobots
+            if not _is_robot_removed_at(session, robot_id, session.current_time)
+        ]
+        if dynamic_active
+        else []
+    )
+    paths: dict[str, list[Cell]] = {}
+    for robot in session.scenario.robots:
+        position = session.robot_positions.get(robot.id, robot.start)
+        removed_at = session.robot_removed_at.get(robot.id)
+        if removed_at is not None and session.current_time >= removed_at:
+            paths[robot.id] = _history_prefix(
+                session.robot_path_history.get(robot.id, [position]),
+                position,
+                removed_at,
+                session.robot_join_times.get(robot.id, 0),
+            )
+        else:
+            paths[robot.id] = [position]
     return DispatchResult(
         scenarioId=session.scenario.id,
         avoidConflicts=session.options.avoidConflicts,
@@ -1156,10 +1354,7 @@ def _build_idle_result(session: DispatchSession) -> DispatchResult:
         extraBlocked=_merge_cells(active_dynamic_blocked, session.runtime_blocked_cells),
         unavailableRobotIds=_merge_text(active_dynamic_failed, session.runtime_failed_robot_ids),
         assignments=[],
-        paths={
-            robot.id: [session.robot_positions.get(robot.id, robot.start)]
-            for robot in session.scenario.robots
-        },
+        paths=paths,
         pathStartTimes={
             robot.id: session.robot_join_times.get(robot.id, 0)
             for robot in session.scenario.robots
@@ -1207,6 +1402,7 @@ def _build_effective_dispatch_input(session: DispatchSession) -> tuple[Scenario,
             "battery": session.robot_battery_levels.get(robot.id, robot.battery),
         })
         for robot in scenario.robots
+        if not _is_robot_removed_at(session, robot.id, session.current_time)
     ]
     scenario.tasks = [
         _make_remaining_task(
@@ -1222,7 +1418,15 @@ def _build_effective_dispatch_input(session: DispatchSession) -> tuple[Scenario,
     scenario.tasks = [task for task in scenario.tasks if task is not None]
 
     base_blocked = scenario.dynamic.blockedCells if dynamic_active else []
-    base_failed = scenario.dynamic.failedRobots if dynamic_active else []
+    base_failed = (
+        [
+            robot_id
+            for robot_id in scenario.dynamic.failedRobots
+            if not _is_robot_removed_at(session, robot_id, session.current_time)
+        ]
+        if dynamic_active
+        else []
+    )
     base_tasks = [
         _make_remaining_task(
             task,
@@ -1237,7 +1441,14 @@ def _build_effective_dispatch_input(session: DispatchSession) -> tuple[Scenario,
     base_tasks = [task for task in base_tasks if task is not None]
 
     blocked_cells = _merge_cells(base_blocked, session.runtime_blocked_cells)
-    failed_robot_ids = _merge_text(base_failed, session.runtime_failed_robot_ids)
+    failed_robot_ids = _merge_text(
+        base_failed,
+        [
+            robot_id
+            for robot_id in session.runtime_failed_robot_ids
+            if not _is_robot_removed_at(session, robot_id, session.current_time)
+        ],
+    )
     relative_dynamic_trigger_time = scenario.dynamic.triggerTime - session.current_time
     scenario.dynamic = scenario.dynamic.model_copy(
         update={
@@ -1256,6 +1467,8 @@ def _build_effective_dispatch_input(session: DispatchSession) -> tuple[Scenario,
 def _relative_active_charging_visits(session: DispatchSession) -> dict[str, ChargingVisit]:
     visits: dict[str, ChargingVisit] = {}
     for robot_id, visit in session.active_charging_visits.items():
+        if _is_robot_removed_at(session, robot_id, session.current_time):
+            continue
         if not (visit.arrivalTime <= session.current_time < visit.completionTime):
             continue
         if session.robot_positions.get(robot_id) != visit.station:
@@ -1300,6 +1513,8 @@ def _first_energy_violation(
 ) -> tuple[int, str] | None:
     violations: list[tuple[int, str]] = []
     for robot in session.scenario.robots:
+        if _is_robot_removed_at(session, robot.id, session.current_time):
+            continue
         battery = session.robot_battery_levels.get(robot.id, robot.battery)
         previous_position = session.robot_positions.get(robot.id, robot.start)
         charging_completion_times = {
@@ -1326,10 +1541,14 @@ def _apply_result_through_time(
     target_time: int,
 ) -> None:
     for visit in result.chargingVisits:
+        if _is_robot_removed_at(session, visit.robotId, session.current_time):
+            continue
         if visit.arrivalTime <= session.current_time < visit.completionTime:
             session.active_charging_visits[visit.robotId] = visit
 
     for robot in session.scenario.robots:
+        if _is_robot_removed_at(session, robot.id, session.current_time):
+            continue
         join_time = session.robot_join_times.get(robot.id, 0)
         if target_time < join_time:
             continue
@@ -1393,6 +1612,15 @@ def _safety_hold_result(session: DispatchSession, result: DispatchResult) -> Dis
     for robot in session.scenario.robots:
         position = session.robot_positions.get(robot.id, robot.start)
         history = session.robot_path_history.get(robot.id, [position])
+        removed_at = session.robot_removed_at.get(robot.id)
+        if removed_at is not None and session.current_time >= removed_at:
+            hold_paths[robot.id] = _history_prefix(
+                history,
+                position,
+                removed_at,
+                session.robot_join_times.get(robot.id, 0),
+            )
+            continue
         prefix = _history_prefix(
             history,
             position,
@@ -1423,6 +1651,8 @@ def _record_safety_hold(
     conflict: Conflict,
 ) -> None:
     for robot in session.scenario.robots:
+        if _is_robot_removed_at(session, robot.id, session.current_time):
+            continue
         session.safety_hold_times.setdefault(robot.id, set()).add(conflict.time)
     session.last_safety_intervention = conflict
     _track_safety_stall(session, conflict)
@@ -1458,6 +1688,8 @@ def _apply_energy_hold(
     hold_result = _safety_hold_result(session, result)
     _apply_result_through_time(session, hold_result, event_time)
     for robot in session.scenario.robots:
+        if _is_robot_removed_at(session, robot.id, session.current_time):
+            continue
         session.safety_hold_times.setdefault(robot.id, set()).add(event_time)
     _record_session_event(
         session,
@@ -1588,6 +1820,7 @@ def _complete_session_task(
     session.completed_task_ids.add(task_id)
     session.task_completion_times[task_id] = completion_time
     session.task_payload_positions.pop(task_id, None)
+    session.task_payload_robot_ids.pop(task_id, None)
     session.preferred_task_robot_ids.pop(task_id, None)
     session.locked_task_robot_ids.pop(task_id, None)
     _record_session_event(session, completion_time, f"任务 {task_id} 已完成")
@@ -1672,17 +1905,28 @@ def _session_replan_window_evaluation(
         if _session_task_release_time(session, task) <= session.current_time
     )
     active_dynamic_failed = (
-        session.scenario.dynamic.failedRobots
+        [
+            robot_id
+            for robot_id in session.scenario.dynamic.failedRobots
+            if not _is_robot_removed_at(session, robot_id, session.current_time)
+        ]
         if _is_scenario_dynamic_active(session)
         else []
     )
     unavailable_robot_ids = _merge_text(
         active_dynamic_failed,
-        session.runtime_failed_robot_ids,
+        [
+            robot_id
+            for robot_id in session.runtime_failed_robot_ids
+            if not _is_robot_removed_at(session, robot_id, session.current_time)
+        ],
     )
     future_task_count = len(tasks) - released_task_count
-    active_robot_count = (
-        len(session.scenario.robots) - len(unavailable_robot_ids)
+    active_robot_count = sum(
+        1
+        for robot in session.scenario.robots
+        if not _is_robot_removed_at(session, robot.id, session.current_time)
+        and robot.id not in unavailable_robot_ids
     )
     decision = decide_replan_window(
         configured_window=session.options.assignmentReplanWindow,
@@ -1854,6 +2098,16 @@ def _restore_absolute_result(
         path = result.paths.get(robot.id, [position])
         history = session.robot_path_history.get(robot.id, [position])
         join_time = session.robot_join_times.get(robot.id, 0)
+        removed_at = session.robot_removed_at.get(robot.id)
+        if removed_at is not None and current_time >= removed_at:
+            absolute_paths[robot.id] = _history_prefix(
+                history,
+                position,
+                removed_at,
+                join_time,
+            )
+            path_start_times[robot.id] = join_time
+            continue
         prefix = _history_prefix(history, position, current_time, join_time)
         future_path = path[1:] if len(path) > 1 else []
         absolute_paths[robot.id] = [*prefix, *future_path]
@@ -2109,7 +2363,9 @@ def _build_robot_states(session: DispatchSession, result: DispatchResult) -> lis
     states: list[RobotRuntimeState] = []
     for robot in session.scenario.robots:
         position = _session_path_at(result, session, robot.id, session.current_time) or session.robot_positions.get(robot.id, robot.start)
-        current_task = _current_task(session, result, robot.id, session.current_time)
+        removed_at = session.robot_removed_at.get(robot.id)
+        is_removed = removed_at is not None and session.current_time >= removed_at
+        current_task = None if is_removed else _current_task(session, result, robot.id, session.current_time)
         current_task_id = current_task.id if current_task is not None else None
         charging_visit = next(
             (
@@ -2119,7 +2375,9 @@ def _build_robot_states(session: DispatchSession, result: DispatchResult) -> lis
             ),
             None,
         )
-        if robot.id in result.unavailableRobotIds:
+        if is_removed:
+            status = "removed"
+        elif robot.id in result.unavailableRobotIds:
             status = "failed"
         elif charging_visit is not None and session.current_time >= charging_visit.arrivalTime:
             status = "charging"
@@ -2149,6 +2407,7 @@ def _build_robot_states(session: DispatchSession, result: DispatchResult) -> lis
                 moveTicks=robot.moveTicks,
                 capabilities=list(robot.capabilities),
                 joinedAt=session.robot_join_times.get(robot.id, 0),
+                removedAt=removed_at,
                 currentTaskId=current_task_id,
             )
         )
@@ -2286,7 +2545,7 @@ def _update_task_robot_preferences(session: DispatchSession, result: DispatchRes
         session.preferred_task_robot_ids.pop(task_id, None)
 
     for task_id, robot_id in list(session.preferred_task_robot_ids.items()):
-        if robot_id in unavailable_robot_ids:
+        if robot_id in unavailable_robot_ids or _is_robot_removed_at(session, robot_id, session.current_time):
             session.preferred_task_robot_ids.pop(task_id, None)
 
     for assignment in result.assignments:
@@ -2500,6 +2759,11 @@ def _update_task_waypoint_progress(
                 session.task_waypoint_progress[task.id] = completed_count
                 if pickup_time is not None and completed_count >= 1:
                     outbound_pickup_times[task.id] = pickup_time
+            if (
+                task.type == "delivery"
+                and 0 < completed_count < len(task_waypoints(task))
+            ):
+                session.task_payload_robot_ids[task.id] = assignment.robotId
             _update_payload_position(
                 session,
                 task,
@@ -2575,6 +2839,7 @@ def _update_payload_position(
         return
     if completed_count >= len(waypoints):
         session.task_payload_positions.pop(task.id, None)
+        session.task_payload_robot_ids.pop(task.id, None)
         return
     position = path_at(path, max(0, target_time - path_start_time))
     if position is not None:
@@ -2844,6 +3109,8 @@ def _path_contains_cell(
 def _robot_at_cell_at_time(session: DispatchSession, cell: Cell, target_time: int) -> str | None:
     result = session.last_result or _preview_dispatch_result(session)
     for robot in session.scenario.robots:
+        if _is_robot_removed_at(session, robot.id, target_time):
+            continue
         position = _session_path_at(result, session, robot.id, target_time) or session.robot_positions.get(robot.id, robot.start)
         if position == cell:
             return robot.id
@@ -2892,6 +3159,8 @@ def _validate_runtime_task(session: DispatchSession, task: Task) -> list[str]:
 def _has_reachable_robot_for_task_definition(session: DispatchSession, task: Task, waypoints: list[Cell]) -> bool:
     # 运行时封锁和故障是可恢复状态，新任务应进入队列并由 failureDetails 暴露恢复动作。
     for robot in session.scenario.robots:
+        if _is_robot_removed_at(session, robot.id, session.current_time):
+            continue
         if not robot_can_handle_task(robot, task):
             continue
         cursor = session.robot_positions.get(robot.id, robot.start)

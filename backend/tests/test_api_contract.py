@@ -159,6 +159,7 @@ def test_frontend_types_match_backend_api_model_fields() -> None:
         ("RemoveBlockRequest", schemas.RemoveBlockRequest),
         ("FailRobotRequest", schemas.FailRobotRequest),
         ("RestoreRobotRequest", schemas.RestoreRobotRequest),
+        ("RemoveRobotRequest", schemas.RemoveRobotRequest),
         ("DispatchResult", schemas.DispatchResult),
         ("SessionResult", schemas.SessionResult),
         ("SessionSummary", schemas.SessionSummary),
@@ -241,6 +242,7 @@ def test_frontend_request_optional_fields_match_backend_defaults() -> None:
         ("RemoveBlockRequest", schemas.RemoveBlockRequest),
         ("FailRobotRequest", schemas.FailRobotRequest),
         ("RestoreRobotRequest", schemas.RestoreRobotRequest),
+        ("RemoveRobotRequest", schemas.RemoveRobotRequest),
     ]
 
     for type_name, model in request_model_pairs:
@@ -328,6 +330,18 @@ def test_runtime_robot_onboarding_contract_is_exposed() -> None:
     assert _response_schema_ref(openapi, "/api/sessions/{session_id}/robots", "post") == "SessionResult"
 
 
+def test_runtime_robot_removal_contract_is_exposed() -> None:
+    assert hasattr(schemas, "RemoveRobotRequest")
+    assert {"removedAt"} <= _backend_fields(schemas.RobotRuntimeState)
+    assert {"removedAt"} <= _frontend_fields("RobotRuntimeState")
+    assert "removed" in _frontend_string_literal_union("RobotRuntimeStatus")
+    assert "removed" in _backend_field_string_literals(schemas.RobotRuntimeState, "status")
+
+    openapi = app.openapi()
+    assert _request_schema_ref(openapi, "/api/sessions/{session_id}/robots/remove", "post") == "RemoveRobotRequest"
+    assert _response_schema_ref(openapi, "/api/sessions/{session_id}/robots/remove", "post") == "SessionResult"
+
+
 def test_openapi_session_routes_use_expected_request_models() -> None:
     openapi = app.openapi()
     expected_request_refs = {
@@ -345,6 +359,7 @@ def test_openapi_session_routes_use_expected_request_models() -> None:
         ("/api/sessions/{session_id}/blocked-cells/remove", "post"): "RemoveBlockRequest",
         ("/api/sessions/{session_id}/failed-robots", "post"): "FailRobotRequest",
         ("/api/sessions/{session_id}/failed-robots/restore", "post"): "RestoreRobotRequest",
+        ("/api/sessions/{session_id}/robots/remove", "post"): "RemoveRobotRequest",
     }
 
     for (path, method), schema_name in expected_request_refs.items():
@@ -373,6 +388,7 @@ def test_openapi_dispatch_and_session_routes_use_expected_response_models() -> N
         ("/api/sessions/{session_id}/blocked-cells/remove", "post"): "SessionResult",
         ("/api/sessions/{session_id}/failed-robots", "post"): "SessionResult",
         ("/api/sessions/{session_id}/failed-robots/restore", "post"): "SessionResult",
+        ("/api/sessions/{session_id}/robots/remove", "post"): "SessionResult",
     }
 
     for (path, method), schema_name in expected_response_refs.items():
@@ -400,6 +416,7 @@ def test_openapi_exposes_expected_session_routes() -> None:
         ("/api/sessions/{session_id}/blocked-cells/remove", "post"),
         ("/api/sessions/{session_id}/failed-robots", "post"),
         ("/api/sessions/{session_id}/failed-robots/restore", "post"),
+        ("/api/sessions/{session_id}/robots/remove", "post"),
     }
 
     for path, method in expected_routes:

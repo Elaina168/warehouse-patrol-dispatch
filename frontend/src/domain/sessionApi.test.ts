@@ -4,6 +4,7 @@ import {
   addRobot,
   createSession,
   deleteSession,
+  removeRobot,
   resetSession,
   settleCreatedSession
 } from "./sessionApi";
@@ -15,6 +16,45 @@ import type {
 } from "./types";
 
 describe("session API helpers", () => {
+  it("posts an encoded runtime robot removal request with the exact body", async () => {
+    const request = { robotId: "R5", currentTime: 12 };
+    const payload = { sessionId: "session-removed" } as SessionResult;
+    const fetcher = vi.fn(async () => (
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      })
+    ));
+
+    const result = await removeRobot("/api", "session/1", request, fetcher);
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/sessions/session%2F1/robots/remove",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request)
+      }
+    );
+    expect(result).toEqual(payload);
+  });
+
+  it("preserves backend removal detail when the request is rejected", async () => {
+    const fetcher = vi.fn(async () => (
+      new Response(JSON.stringify({ detail: "机器人正在执行任务：R5" }), {
+        status: 409,
+        headers: { "Content-Type": "application/json" }
+      })
+    ));
+
+    await expect(removeRobot(
+      "http://127.0.0.1:8011",
+      "session-1",
+      { robotId: "R5" },
+      fetcher
+    )).rejects.toThrow("session robot removal failed: 机器人正在执行任务：R5");
+  });
+
   it("posts an encoded runtime robot onboarding request with the exact body", async () => {
     const request = {
       robot: {

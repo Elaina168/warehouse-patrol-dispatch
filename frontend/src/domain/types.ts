@@ -3,7 +3,7 @@ export type Cell = [number, number];
 export type TaskType = "inspection" | "delivery" | "emergency";
 export type ConflictType = "vertex" | "edge";
 export type ConflictStatus = "active" | "resolved";
-export type RobotRuntimeStatus = "idle" | "waiting" | "toPickup" | "delivering" | "inspecting" | "toCharge" | "charging" | "failed";
+export type RobotRuntimeStatus = "idle" | "waiting" | "toPickup" | "delivering" | "inspecting" | "toCharge" | "charging" | "failed" | "removed";
 export type TaskRuntimeStatus = "pending" | "running" | "completed" | "unassigned";
 export type TaskFailureCategory = "temporary" | "permanent";
 export type ShelfStatus = "empty" | "inboundReserved" | "occupied" | "outboundReserved";
@@ -197,6 +197,7 @@ export type RobotRuntimeState = {
   moveTicks: number;
   capabilities?: TaskType[];
   joinedAt?: number;
+  removedAt?: number | null;
   currentTaskId: string | null;
 };
 
@@ -266,6 +267,11 @@ export type AddTaskRequest = {
 
 export type AddRobotRequest = {
   robot: Robot;
+  currentTime?: number;
+};
+
+export type RemoveRobotRequest = {
+  robotId: string;
   currentTime?: number;
 };
 

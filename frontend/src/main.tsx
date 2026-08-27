@@ -1,17 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { ArrowUp, Crosshair, Download, Lock, Pause, Play, Plus, RefreshCcw, Server, ShieldX, Square, TriangleAlert, Unlock, Upload } from "lucide-react";
+import { ArrowUp, Crosshair, Download, Lock, Pause, Play, Plus, RefreshCcw, Server, ShieldX, Square, Trash2, TriangleAlert, Unlock, Upload } from "lucide-react";
 import { apiErrorFromResponse } from "./domain/apiError";
 import {
   addRobot,
   createSession,
   deleteSession,
+  removeRobot,
   resetSession,
   settleCreatedSession
 } from "./domain/sessionApi";
 import {
   canControlOnlinePlayback,
   canAddRuntimeRobot,
+  canRemoveRuntimeRobot,
   canMutateOnlineSession,
   classifySessionRequestFailure,
   historicalPlaybackNotice,
@@ -26,8 +28,8 @@ import {
   applyMapPickToRuntimeRobot,
   buildRuntimeRobot,
   createRuntimeRobotForm,
+  getVisibleRobotCells,
   mergeRuntimeRobotStates,
-  runtimeRobotPathCell,
   type RuntimeRobotForm,
   validateRuntimeRobotForm
 } from "./domain/runtimeRobot";
@@ -271,6 +273,7 @@ export function App() {
   );
   const [runtimeRobotError, setRuntimeRobotError] = useState<string | null>(null);
   const [runtimeRobotSubmitting, setRuntimeRobotSubmitting] = useState(false);
+  const [runtimeRobotRemovingId, setRuntimeRobotRemovingId] = useState<string | null>(null);
   const [mapPickTarget, setMapPickTarget] = useState<MapPickTarget | null>(null);
   const [latestConflictAlert, setLatestConflictAlert] = useState<ConflictAlert | null>(null);
   const [latestConflictResolved, setLatestConflictResolved] = useState(false);
@@ -329,6 +332,13 @@ export function App() {
     displayTime: time,
     sessionCurrentTime: session?.currentTime ?? null
   }) && !runtimeRobotSubmitting;
+  const runtimeRobotRemoveEnabled = canRemoveRuntimeRobot({
+    hasSession: session !== null,
+    dispatchStatus,
+    tickInFlight,
+    displayTime: time,
+    sessionCurrentTime: session?.currentTime ?? null
+  }) && !runtimeRobotSubmitting && runtimeRobotRemovingId === null;
   const playbackControlEnabled = canControlOnlinePlayback({
     hasResult: result !== null,
     dispatchStatus,
@@ -363,6 +373,7 @@ export function App() {
     setRandomGeneratorEnabled(false);
     setLastRandomTaskTime(null);
     setTickInFlight(false);
+    setRuntimeRobotRemovingId(null);
     setRouteHintsEnabled(false);
   }
 
@@ -392,6 +403,7 @@ export function App() {
     setRuntimeRobotForm(createRuntimeRobotForm(scenario));
     setRuntimeRobotError(null);
     setRuntimeRobotSubmitting(false);
+    setRuntimeRobotRemovingId(null);
     setMapPickTarget(null);
     resetSessionConflictState(setLatestConflictAlert, setLatestConflictResolved);
     setFailedRobotId(scenario.robots[0]?.id ?? "");
@@ -628,6 +640,45 @@ export function App() {
     }
   }
 
+  async function removeRuntimeRobot(robotId: string) {
+    if (!runtimeRobotRemoveEnabled || !session) return;
+    const robotState = session.robotStates.find((state) => state.robotId === robotId);
+    if (!robotState || robotState.status === "removed") return;
+    if (!window.confirm(`确认在当前会话 T=${runtimeActionTime} 永久移除机器人 ${robotId}？该操作只可通过重置会话撤销。`)) return;
+
+    setPlaying(false);
+    const requestGeneration = sessionRequestCoordinator.currentGeneration();
+    setRuntimeRobotRemovingId(robotId);
+    setDispatchStatus("loading");
+    setDispatchError(null);
+    setOperationError(null);
+    setRuntimeRobotError(null);
+    try {
+      const payload = await sessionRequestCoordinator.enqueue(() => removeRobot(
+        API_BASE,
+        session.sessionId,
+        { robotId, currentTime: runtimeActionTime }
+      ));
+      if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
+      applySessionPayload(payload);
+      setRuntimeRobotForm(createRuntimeRobotForm(
+        mergeRuntimeRobotStates(scenario, payload.robotStates)
+      ));
+    } catch (error) {
+      if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
+      const decision = applySessionRequestFailure(
+        error,
+        { hasUsableSession: true },
+        { setApiStatus, setDispatchStatus, setDispatchError, setOperationError }
+      );
+      if (decision.invalidateSession) invalidateActiveSession();
+      if (decision.pausePlayback) setPlaying(false);
+      setRuntimeRobotError(error instanceof Error ? error.message : "机器人移除失败。");
+    } finally {
+      if (sessionRequestCoordinator.isCurrent(requestGeneration)) setRuntimeRobotRemovingId(null);
+    }
+  }
+
   async function pushGeneratedTask() {
     if (!onlineMutationEnabled) return;
     if (!result) return;
@@ -636,7 +687,8 @@ export function App() {
       runtimeActionTime,
       displayScenario,
       randomTaskSequenceRef.current + 1,
-      session?.shelfStates ?? []
+      session?.shelfStates ?? [],
+      session?.robotStates ?? []
     );
     if (!task) return;
     randomTaskSequenceRef.current += 1;
@@ -755,6 +807,7 @@ export function App() {
     setPlaying(false);
     setMapPickTarget(null);
     setRuntimeRobotSubmitting(false);
+    setRuntimeRobotRemovingId(null);
     setRuntimeRobotError(null);
     setRandomGeneratorEnabled(false);
     setLastRandomTaskTime(null);
@@ -1207,6 +1260,37 @@ export function App() {
                   接入机器人
                 </button>
               </form>
+              <section className="runtime-robot-management" aria-label="当前机器人管理">
+                <h3>当前机器人管理</h3>
+                {session ? (
+                  <div className="runtime-robot-list">
+                    {session.robotStates.map((robotState) => (
+                      <div className={`runtime-robot-row ${robotState.status === "removed" ? "removed" : ""}`} key={robotState.robotId}>
+                        <div className="runtime-robot-summary">
+                          <strong>{robotState.robotId} · {robotState.name}</strong>
+                          <span>状态：{robotRuntimeStatusLabel(robotState.status)}</span>
+                          <span>接入时间：T={robotState.joinedAt ?? 0}</span>
+                          {robotState.removedAt !== null && robotState.removedAt !== undefined ? (
+                            <span>移除时间：T={robotState.removedAt}</span>
+                          ) : null}
+                        </div>
+                        <button
+                          aria-label={`永久移除机器人 ${robotState.robotId}`}
+                          className="danger-action"
+                          disabled={!runtimeRobotRemoveEnabled || robotState.status === "removed"}
+                          onClick={() => void removeRuntimeRobot(robotState.robotId)}
+                          type="button"
+                        >
+                          <Trash2 size={14} />
+                          {robotState.status === "removed" ? "已永久移除" : "永久移除"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="session-note">当前会话建立后可管理机器人。</p>
+                )}
+              </section>
             </Panel>
 
             <Panel title="在线任务">
@@ -1732,8 +1816,8 @@ export function MapBoard({
   const occupied = useMemo(
     () => useRuntimeRobotSnapshot
       ? getCellsFromRobotStates(runtimeOverlay.robotStates)
-      : getCellsOnPaths(result.paths, result.pathStartTimes, time),
-    [result.pathStartTimes, result.paths, runtimeOverlay.robotStates, time, useRuntimeRobotSnapshot]
+      : getCellsOnPaths(result.paths, result.pathStartTimes, time, robotStates),
+    [result.pathStartTimes, result.paths, robotStates, runtimeOverlay.robotStates, time, useRuntimeRobotSnapshot]
   );
   const occupiedKeys = useMemo(
     () => new Set([...occupied.values()].map(cellKey)),
@@ -1931,19 +2015,16 @@ export function MapBoard({
 function getCellsOnPaths(
   paths: Record<string, Cell[]>,
   pathStartTimes: Record<string, number> | undefined,
-  time: number
+  time: number,
+  robotStates: SessionResult["robotStates"] = []
 ): Map<string, Cell> {
-  const cells = new Map<string, Cell>();
-  for (const [robotId, path] of Object.entries(paths)) {
-    const cell = runtimeRobotPathCell(path, time, pathStartTimes?.[robotId] ?? 0);
-    if (cell) cells.set(robotId, cell);
-  }
-  return cells;
+  return getVisibleRobotCells(paths, pathStartTimes, time, robotStates);
 }
 
 function getCellsFromRobotStates(robotStates: SessionResult["robotStates"]): Map<string, Cell> {
   const cells = new Map<string, Cell>();
   for (const robotState of robotStates) {
+    if (robotState.status === "removed") continue;
     cells.set(robotState.robotId, robotState.position);
   }
   return cells;
@@ -2380,6 +2461,7 @@ function allowsRobotRecovery(action: RecoveryAction): boolean {
 }
 
 function robotRuntimeStatusLabel(status: SessionResult["robotStates"][number]["status"]): string {
+  if (status === "removed") return "已移除";
   if (status === "failed") return "故障";
   if (status === "toCharge") return "前往充电";
   if (status === "charging") return "充电中";
@@ -2857,11 +2939,15 @@ export function buildRandomGeneratedTask(
   currentTime: number,
   scenario: Scenario,
   sequence: number,
-  shelfStates: ShelfRuntimeState[]
+  shelfStates: ShelfRuntimeState[],
+  robotStates: SessionResult["robotStates"] = []
 ): Task | null {
   const id = nextGeneratedTaskId(tasks);
   const seed = Math.abs(currentTime * 31 + sequence * 17);
-  const supportedTypes = supportedTaskTypes(scenario.robots);
+  const robotStateById = new Map(robotStates.map((state) => [state.robotId, state]));
+  const supportedTypes = supportedTaskTypes(
+    scenario.robots.filter((robot) => robotStateById.get(robot.id)?.status !== "removed")
+  );
   const baseCandidates = scenario.shelves.length > 0
     ? buildWarehouseGeneratedTaskCandidates(scenario, shelfStates, seed)
     : buildGeneratedTaskCandidates(scenario);

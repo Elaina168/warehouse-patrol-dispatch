@@ -70,6 +70,10 @@ export function canAddRuntimeRobot(input: MutationAvailabilityInput): boolean {
   return canMutateOnlineSession(input);
 }
 
+export function canRemoveRuntimeRobot(input: MutationAvailabilityInput): boolean {
+  return canMutateOnlineSession(input);
+}
+
 export function canControlOnlinePlayback(input: PlaybackAvailabilityInput): boolean {
   return input.hasResult
     && input.dispatchStatus === "ready"

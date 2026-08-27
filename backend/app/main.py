@@ -33,6 +33,7 @@ from backend.app.schemas import (
     OnlinePressureExperimentResult,
     ReplanWindowExperimentRequest,
     ReplanWindowExperimentResult,
+    RemoveRobotRequest,
     RemoveBlockRequest,
     RestoreRobotRequest,
     ScaleExperimentRequest,
@@ -53,6 +54,7 @@ from backend.app.sessions import (
     get_session,
     list_sessions,
     remove_blocked_cell,
+    remove_robot,
     reset_session,
     restore_robot,
     tick_session,
@@ -176,6 +178,11 @@ def session_add_task(session_id: str, request: AddTaskRequest) -> SessionResult:
 @app.post("/api/sessions/{session_id}/robots", response_model=SessionResult)
 def session_add_robot(session_id: str, request: AddRobotRequest) -> SessionResult:
     return add_robot(session_id, request)
+
+
+@app.post("/api/sessions/{session_id}/robots/remove", response_model=SessionResult)
+def session_remove_robot(session_id: str, request: RemoveRobotRequest) -> SessionResult:
+    return remove_robot(session_id, request)
 
 
 @app.post("/api/sessions/{session_id}/tick", response_model=SessionResult)

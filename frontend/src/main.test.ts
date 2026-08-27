@@ -81,6 +81,8 @@ describe("session request coordination", () => {
   it("renders the runtime robot onboarding panel in the main dashboard", () => {
     const markup = renderToStaticMarkup(createElement(App));
     expect(markup).toContain("机器人接入");
+    expect(markup).toContain("当前机器人管理");
+    expect(markup).toContain("当前会话建立后可管理机器人。");
     expect(markup).toContain("接入位置");
     expect(markup).toContain("能力");
   });
@@ -556,6 +558,53 @@ describe("warehouse shelf map", () => {
     expect(markup).toContain("cell robot-cell failed-robot-cell");
   });
 
+  it("hides a removed robot from the current map but keeps its pre-removal history visible", () => {
+    const scenario = buildWarehouseGeneratorScenario();
+    const robot = scenario.robots[0];
+    const result: DispatchResult = {
+      ...buildMapTestResult(scenario),
+      paths: { [robot.id]: [robot.start, [1, 0], [2, 0]] },
+      pathStartTimes: { [robot.id]: 0 }
+    };
+    const removedState: SessionResult["robotStates"][number] = {
+      robotId: robot.id,
+      name: robot.name,
+      position: [2, 0],
+      status: "removed",
+      battery: robot.battery,
+      load: robot.load,
+      moveTicks: robot.moveTicks ?? 1,
+      joinedAt: 0,
+      removedAt: 2,
+      currentTaskId: null
+    };
+    const renderMap = (time: number, historicalPlayback: boolean) => renderToStaticMarkup(createElement(MapBoard, {
+      scenario,
+      result,
+      robotStates: [removedState],
+      shelfStates: [],
+      sessionCurrentTime: 2,
+      time,
+      routeHintsEnabled: false,
+      selectedRobotId: "",
+      onSelectRobot: () => undefined,
+      mapPickTarget: null,
+      onPickCell: () => undefined,
+      unresolvedConflictAlert: null,
+      safetyIntervention: null,
+      contextMenu: null,
+      historicalPlayback,
+      canManageBlocks: false,
+      onOpenContextMenu: () => undefined,
+      onCloseContextMenu: () => undefined,
+      onRunContextAction: () => undefined
+    }));
+
+    expect(renderMap(2, false)).not.toContain("robot-marker");
+    expect(renderMap(1, true)).toContain("robot-marker");
+    expect(renderMap(1, true)).toContain(robot.id);
+  });
+
   it("does not render current runtime overlays during historical playback", () => {
     const scenario = buildWarehouseGeneratorScenario();
     const robot = scenario.robots[0];
@@ -740,6 +789,83 @@ describe("robot task capabilities", () => {
     for (let sequence = 1; sequence <= 6; sequence += 1) {
       expect(buildRandomGeneratedTask([], 8, scenario, sequence, buildWarehouseShelfStates())?.type).toBe("inspection");
     }
+  });
+
+  it("excludes removed robots from random task capability candidates", () => {
+    const scenario: Scenario = {
+      id: "removed-robot-task-capability",
+      name: "removed-robot-task-capability",
+      description: "",
+      width: 4,
+      height: 2,
+      obstacles: [],
+      zones: {
+        warehouse: [[0, 0]],
+        inspection: [[2, 0]],
+        delivery: []
+      },
+      shelves: [],
+      robots: [
+        {
+          id: "R-REMOVED",
+          name: "已移除突发机器人",
+          start: [0, 0],
+          battery: 90,
+          load: 1,
+          capabilities: ["emergency"]
+        },
+        {
+          id: "R-ACTIVE",
+          name: "当前巡检机器人",
+          start: [1, 0],
+          battery: 90,
+          load: 1,
+          capabilities: ["inspection"]
+        }
+      ],
+      tasks: [],
+      dynamic: { triggerTime: 20, blockedCells: [], failedRobots: [], tasks: [] }
+    };
+    const robotStates: SessionResult["robotStates"] = [
+      {
+        robotId: "R-REMOVED",
+        name: "已移除突发机器人",
+        start: [0, 0],
+        position: [0, 0],
+        status: "removed",
+        battery: 90,
+        load: 1,
+        moveTicks: 1,
+        capabilities: ["emergency"],
+        joinedAt: 0,
+        removedAt: 0,
+        currentTaskId: null
+      },
+      {
+        robotId: "R-ACTIVE",
+        name: "当前巡检机器人",
+        start: [1, 0],
+        position: [1, 0],
+        status: "idle",
+        battery: 90,
+        load: 1,
+        moveTicks: 1,
+        capabilities: ["inspection"],
+        joinedAt: 0,
+        removedAt: null,
+        currentTaskId: null
+      }
+    ];
+    const generate = buildRandomGeneratedTask as unknown as (
+      tasks: Task[],
+      currentTime: number,
+      scenario: Scenario,
+      sequence: number,
+      shelfStates: ShelfRuntimeState[],
+      robotStates: SessionResult["robotStates"]
+    ) => Task | null;
+
+    expect(generate([], 0, scenario, 1, [], robotStates)?.type).toBe("inspection");
   });
 });
 

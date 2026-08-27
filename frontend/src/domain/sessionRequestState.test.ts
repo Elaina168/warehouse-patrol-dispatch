@@ -4,6 +4,7 @@ import { ApiRequestError } from "./apiError";
 import {
   canControlOnlinePlayback,
   canAddRuntimeRobot,
+  canRemoveRuntimeRobot,
   canMutateOnlineSession,
   classifySessionRequestFailure,
   historicalPlaybackNotice,
@@ -141,6 +142,11 @@ describe("online mutation availability", () => {
     { name: "historical playback", input: { ...available, displayTime: 4 } }
   ])("disables runtime robot onboarding for $name", ({ input }) => {
     expect(canAddRuntimeRobot(input)).toBe(false);
+  });
+
+  it("uses the same latest-ready-session gate for permanent robot removal", () => {
+    expect(canRemoveRuntimeRobot(available)).toBe(true);
+    expect(canRemoveRuntimeRobot({ ...available, displayTime: 4 })).toBe(false);
   });
 });
 

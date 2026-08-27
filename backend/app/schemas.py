@@ -305,6 +305,11 @@ class RestoreRobotRequest(ApiModel):
     currentTime: SessionTimeInt = 0
 
 
+class RemoveRobotRequest(ApiModel):
+    robotId: IdentifierStr
+    currentTime: SessionTimeInt = 0
+
+
 class Assignment(ApiModel):
     robotId: str
     tasks: list[Task]
@@ -375,13 +380,14 @@ class RobotRuntimeState(ApiModel):
     name: str
     start: Cell
     position: Cell
-    status: Literal["idle", "waiting", "toPickup", "delivering", "inspecting", "toCharge", "charging", "failed"]
+    status: Literal["idle", "waiting", "toPickup", "delivering", "inspecting", "toCharge", "charging", "failed", "removed"]
     battery: int
     batteryCapacity: PositiveInt = 100
     load: int
     moveTicks: int
     capabilities: list[TaskType]
     joinedAt: SessionTimeInt
+    removedAt: SessionTimeInt | None = None
     currentTaskId: str | None = None
 
 

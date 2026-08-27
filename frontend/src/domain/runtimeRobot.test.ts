@@ -8,7 +8,7 @@ import {
   mergeRuntimeRobotStates,
   validateRuntimeRobotForm
 } from "./runtimeRobot";
-import type { Scenario } from "./types";
+import type { RobotRuntimeState, Scenario } from "./types";
 
 const scenario = {
   id: "runtime-robot",
@@ -115,5 +115,48 @@ describe("runtime robot session synchronization", () => {
     const paths = { R1: [[0, 0], [1, 0]], R5: [[2, 0], [3, 0]] } as Record<string, [number, number][]>;
     expect(getVisibleRobotCells(paths, { R1: 0, R5: 12 }, 11)).toEqual(new Map([["R1", [1, 0]]]));
     expect(getVisibleRobotCells(paths, { R1: 0, R5: 12 }, 12)).toEqual(new Map([["R1", [1, 0]], ["R5", [2, 0]]]));
+  });
+
+  it("keeps the path start boundary even when runtime metadata starts earlier", () => {
+    const paths = { R5: [[2, 0], [3, 0]] } as Record<string, [number, number][]>;
+    const states: RobotRuntimeState[] = [{
+      robotId: "R5",
+      name: "R5",
+      start: [2, 0] as [number, number],
+      position: [3, 0] as [number, number],
+      status: "idle",
+      battery: 100,
+      load: 0,
+      moveTicks: 1,
+      capabilities: ["inspection"],
+      joinedAt: 0,
+      removedAt: null,
+      currentTaskId: null
+    }];
+
+    expect(getVisibleRobotCells(paths, { R5: 12 }, 11, states)).toEqual(new Map());
+    expect(getVisibleRobotCells(paths, { R5: 12 }, 12, states)).toEqual(new Map([["R5", [2, 0]]]));
+  });
+
+  it("hides a removed robot at and after removedAt while retaining its earlier history", () => {
+    const paths = { R1: [[0, 0], [1, 0], [2, 0], [3, 0]] } as Record<string, [number, number][]>;
+    const states: RobotRuntimeState[] = [{
+      robotId: "R1",
+      name: "R1",
+      start: [0, 0] as [number, number],
+      position: [3, 0] as [number, number],
+      status: "removed",
+      battery: 90,
+      load: 0,
+      moveTicks: 1,
+      capabilities: ["inspection"],
+      joinedAt: 0,
+      removedAt: 3,
+      currentTaskId: null
+    }];
+
+    expect(getVisibleRobotCells(paths, { R1: 0 }, 2, states)).toEqual(new Map([["R1", [2, 0]]]));
+    expect(getVisibleRobotCells(paths, { R1: 0 }, 3, states)).toEqual(new Map());
+    expect(getVisibleRobotCells(paths, { R1: 0 }, 8, states)).toEqual(new Map());
   });
 });
