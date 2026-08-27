@@ -142,6 +142,12 @@ describe("scenario data", () => {
     expect(integrated).toBeDefined();
 
     expect(integrated?.robots).toHaveLength(4);
+    expect(integrated?.robots.map(({ id, moveTicks }) => ({ id, moveTicks }))).toEqual([
+      { id: "R1", moveTicks: 1 },
+      { id: "R2", moveTicks: 1 },
+      { id: "R3", moveTicks: 2 },
+      { id: "R4", moveTicks: 2 }
+    ]);
     for (const robot of integrated?.robots ?? []) {
       expect(robot.capabilities).toEqual(["inspection", "delivery", "emergency"]);
     }

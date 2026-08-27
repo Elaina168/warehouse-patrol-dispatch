@@ -1392,77 +1392,79 @@ export function App() {
               </form>
             </Panel>
 
-            <Panel title="随机事件生成器">
-              <label className="toggle-row">
-                <input
-                  checked={randomGeneratorEnabled}
-                  type="checkbox"
-                  onChange={(event) => {
-                    setRandomGeneratorEnabled(event.target.checked);
-                    setLastRandomTaskTime(null);
-                  }}
-                />
-                <span>自动生成并推入任务队列</span>
-              </label>
-              <label className="event-select">
-                <span>生成间隔（tick）</span>
-                <input
-                  inputMode="numeric"
-                  min={MIN_RANDOM_TASK_INTERVAL}
-                  max={MAX_RANDOM_TASK_INTERVAL}
-                  step={1}
-                  type="number"
-                  value={randomTaskIntervalInput}
-                  onBlur={commitRandomTaskInterval}
-                  onChange={(event) => setRandomTaskIntervalInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") return;
-                    event.preventDefault();
-                    commitRandomTaskInterval();
-                  }}
-                />
-              </label>
-            </Panel>
+            <div className="control-panel-stack">
+              <Panel title="随机事件生成器">
+                <label className="toggle-row">
+                  <input
+                    checked={randomGeneratorEnabled}
+                    type="checkbox"
+                    onChange={(event) => {
+                      setRandomGeneratorEnabled(event.target.checked);
+                      setLastRandomTaskTime(null);
+                    }}
+                  />
+                  <span>自动生成并推入任务队列</span>
+                </label>
+                <label className="event-select">
+                  <span>生成间隔（tick）</span>
+                  <input
+                    inputMode="numeric"
+                    min={MIN_RANDOM_TASK_INTERVAL}
+                    max={MAX_RANDOM_TASK_INTERVAL}
+                    step={1}
+                    type="number"
+                    value={randomTaskIntervalInput}
+                    onBlur={commitRandomTaskInterval}
+                    onChange={(event) => setRandomTaskIntervalInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") return;
+                      event.preventDefault();
+                      commitRandomTaskInterval();
+                    }}
+                  />
+                </label>
+              </Panel>
 
-            <Panel title="仿真启动">
-              <div className="control-row">
-                <button type="button" onClick={togglePlayback} disabled={!playbackControlEnabled}>
-                  {playing ? <Pause size={16} /> : <Play size={16} />}
-                  {playing ? "暂停" : "播放"}
-                </button>
-                <button type="button" onClick={resetCurrentSession} disabled={!result || tickInFlight}>
-                  <Square size={15} />
-                  重置
-                </button>
-              </div>
-              <label className="slider-row">
-                <span>当前时间：{simulationTimeLabel(time)}</span>
-                <strong className="time-readout">{simulationTimeLabel(time)}</strong>
-              </label>
-              <label className="slider-row">
-                <span>播放速度（tick/s）</span>
-                <input
-                  className="speed-input"
-                  inputMode="decimal"
-                  max={MAX_PLAYBACK_RATE}
-                  min={MIN_PLAYBACK_RATE}
-                  step={0.1}
-                  type="number"
-                  value={playbackRateInput}
-                  onBlur={commitPlaybackRate}
-                  onChange={(event) => setPlaybackRateInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") return;
-                    event.preventDefault();
-                    commitPlaybackRate();
-                  }}
-                />
-              </label>
-              <p className="session-note">
-                {playing ? "仿真运行中" : "仿真已暂停"} · {dispatchSynchronizationLabel(tickInFlight, dispatchStatus)}
-              </p>
-              <OperationalErrorNotice message={operationError} />
-            </Panel>
+              <Panel title="仿真启动">
+                <div className="control-row">
+                  <button type="button" onClick={togglePlayback} disabled={!playbackControlEnabled}>
+                    {playing ? <Pause size={16} /> : <Play size={16} />}
+                    {playing ? "暂停" : "播放"}
+                  </button>
+                  <button type="button" onClick={resetCurrentSession} disabled={!result || tickInFlight}>
+                    <Square size={15} />
+                    重置
+                  </button>
+                </div>
+                <label className="slider-row">
+                  <span>当前时间：{simulationTimeLabel(time)}</span>
+                  <strong className="time-readout">{simulationTimeLabel(time)}</strong>
+                </label>
+                <label className="slider-row">
+                  <span>播放速度（tick/s）</span>
+                  <input
+                    className="speed-input"
+                    inputMode="decimal"
+                    max={MAX_PLAYBACK_RATE}
+                    min={MIN_PLAYBACK_RATE}
+                    step={0.1}
+                    type="number"
+                    value={playbackRateInput}
+                    onBlur={commitPlaybackRate}
+                    onChange={(event) => setPlaybackRateInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") return;
+                      event.preventDefault();
+                      commitPlaybackRate();
+                    }}
+                  />
+                </label>
+                <p className="session-note">
+                  {playing ? "仿真运行中" : "仿真已暂停"} · {dispatchSynchronizationLabel(tickInFlight, dispatchStatus)}
+                </p>
+                <OperationalErrorNotice message={operationError} />
+              </Panel>
+            </div>
           </section>
 
         </section>

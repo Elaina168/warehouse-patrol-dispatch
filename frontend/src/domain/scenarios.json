@@ -112,7 +112,7 @@
         "battery": 510,
         "batteryCapacity": 512,
         "load": 2,
-        "moveTicks": 2,
+        "moveTicks": 1,
         "capabilities": ["inspection", "delivery", "emergency"]
       },
       {
@@ -122,7 +122,7 @@
         "battery": 508,
         "batteryCapacity": 512,
         "load": 1,
-        "moveTicks": 3,
+        "moveTicks": 2,
         "capabilities": ["inspection", "delivery", "emergency"]
       },
       {
@@ -132,7 +132,7 @@
         "battery": 506,
         "batteryCapacity": 512,
         "load": 2,
-        "moveTicks": 4,
+        "moveTicks": 2,
         "capabilities": ["inspection", "delivery", "emergency"]
       }
     ],

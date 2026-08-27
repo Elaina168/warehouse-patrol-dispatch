@@ -385,6 +385,21 @@ describe("execution safety intervention", () => {
 });
 
 describe("warehouse shelf map", () => {
+  it("places the simulation startup panel below the random event generator", () => {
+    const source = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
+    const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    const controlPanelStackRule = styles.match(
+      /(?:^|\r?\n)\.control-panel-stack\s*\{(?<rule>[^}]*)\}/
+    )?.groups?.rule;
+
+    expect(source).toMatch(
+      /<div className="control-panel-stack">\s*<Panel title="随机事件生成器">[\s\S]*?<Panel title="仿真启动">/
+    );
+    expect(controlPanelStackRule).toBeDefined();
+    expect(controlPanelStackRule).toMatch(/display:\s*grid;/);
+    expect(controlPanelStackRule).toMatch(/gap:\s*12px;/);
+  });
+
   it("keeps robot markers circular and bounded by responsive map cells", () => {
     const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
     const robotMarkerRule = styles.match(/(?:^|\r?\n)\.robot-marker\s*\{(?<rule>[^}]*)\}/)?.groups?.rule;

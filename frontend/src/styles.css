@@ -792,6 +792,12 @@ input {
   align-items: start;
 }
 
+.control-panel-stack {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
 .board-header {
   display: flex;
   align-items: flex-start;
