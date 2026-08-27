@@ -13,6 +13,7 @@
 - 在线会话删除：`DELETE /api/sessions/{session_id}`
 - 在线会话重置：`POST /api/sessions/{session_id}/reset`
 - 在线任务追加：`POST /api/sessions/{session_id}/tasks`
+- 运行中新机器人接入：`POST /api/sessions/{session_id}/robots`
 - 会话时间推进：`POST /api/sessions/{session_id}/tick`
 - 运行时封锁：`POST /api/sessions/{session_id}/blocked-cells`
 - 解除运行时封锁：`POST /api/sessions/{session_id}/blocked-cells/remove`
@@ -57,6 +58,16 @@ emergency
 旧场景省略 `capabilities` 时，后端默认该机器人支持全部三种任务；显式提供时必须是非空、无重复值的合法子集。默认 `integrated-demo` 的四台机器人均显式配置为 `["inspection", "delivery", "emergency"]`，因此主演示仍是全能力车队，不通过专业分工改变既有六任务结果。
 
 统一资格判断先检查任务类型是否在 `capabilities` 中，再对配送任务检查 `robot.load >= task.demand`。当前默认、手工和随机配送任务继续使用 `demand: 1`；本功能不增加重量单位、多级货物或动态载重。任务类型不兼容和配送载重不足使用不同失败说明。
+
+## 运行中新机器人接入
+
+在线会话可以在当前任意 tick 暂停后接入机器人。请求体包含完整的 `robot` 配置（`id`、`name`、`start`、`battery`、`batteryCapacity`、`load`、`moveTicks`、`capabilities`），以及可省略的 `currentTime`；省略时后端使用会话当前时间，显式过去时间会被拒绝。
+
+接入在同会话锁内使用候选副本完成：候选副本先推进到请求时间，再检查机器人总数不超过 `MAX_SCENARIO_ROBOTS = 32`、ID 唯一、坐标在地图内且不位于固定障碍、货架实体格、当前封锁格或其他机器人当前占用格。普通可通行格、空闲充电格和可通行作业格可以作为接入位置；机器人自身的 Pydantic 约束（能力至少一项且无重复、电量不超过容量、载重和 `moveTicks` 范围等）继续生效。只有候选完成加入、初始化、旧计划失效、重规划和结果构建后才发布；校验、重规划或结果构建失败都不改变权威会话的时间、路径、指标、事件和缓存。
+
+初始机器人保存 `joinedAt = 0`，运行时机器人保存真实接入 tick。`SessionResult.robotStates` 对每台当前机器人返回完整配置、当前位置、运行状态、电量、载重、能力和 `joinedAt`；`DispatchResult.pathStartTimes` 标记路径的绝对起点。运行时机器人的路径历史和累计距离从接入时刻开始，历史回放在接入前不会显示它，也不会把接入位置伪造为 T=0 的历史。接入事件以 `T=<time> 新机器人接入：<id> <name>` 写入事件日志。
+
+接入后机器人直接参与既有启发式分配、A*、时空预约避碰、冲突检测、动态重规划和执行安全门；它也复用现有故障与恢复接口。新任务或规则允许重新分配的待执行任务可以被它接管，已取货配送任务仍遵循原有货物进度和锁语义。`reset` 恢复初始场景、移除运行时机器人，并将初始机器人接入时间恢复为 `0`。该功能不代表任意输入下的零冲突保证、完整 MAPF/CBS、实体通信或边缘端部署。
 
 ## 机器人移动速度
 

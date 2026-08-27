@@ -276,6 +276,11 @@ class AddTaskRequest(ApiModel):
     task: Task
 
 
+class AddRobotRequest(ApiModel):
+    robot: Robot
+    currentTime: SessionTimeInt = 0
+
+
 class SessionTickRequest(ApiModel):
     currentTime: SessionTimeInt
 
@@ -368,12 +373,15 @@ class ChargingVisit(ApiModel):
 class RobotRuntimeState(ApiModel):
     robotId: str
     name: str
+    start: Cell
     position: Cell
     status: Literal["idle", "waiting", "toPickup", "delivering", "inspecting", "toCharge", "charging", "failed"]
     battery: int
     batteryCapacity: PositiveInt = 100
     load: int
     moveTicks: int
+    capabilities: list[TaskType]
+    joinedAt: SessionTimeInt
     currentTaskId: str | None = None
 
 
@@ -408,6 +416,7 @@ class DispatchResult(ApiModel):
     unavailableRobotIds: list[str]
     assignments: list[Assignment]
     paths: dict[str, list[Cell]]
+    pathStartTimes: dict[str, SessionTimeInt] = Field(default_factory=dict)
     conflicts: list[Conflict]
     conflictStates: list[ConflictState] = Field(default_factory=list)
     metrics: Metrics

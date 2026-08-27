@@ -18,6 +18,7 @@ from backend.app.experiments import (
 )
 from backend.app.schemas import (
     AddBlockRequest,
+    AddRobotRequest,
     AddTaskRequest,
     ConflictAvoidanceExperimentRequest,
     ConflictAvoidanceExperimentResult,
@@ -44,6 +45,7 @@ from backend.app.schemas import (
 )
 from backend.app.sessions import (
     add_blocked_cell,
+    add_robot,
     add_task,
     create_session,
     delete_session,
@@ -169,6 +171,11 @@ def session_reset(session_id: str) -> SessionResult:
 @app.post("/api/sessions/{session_id}/tasks", response_model=SessionResult)
 def session_add_task(session_id: str, request: AddTaskRequest) -> SessionResult:
     return add_task(session_id, request)
+
+
+@app.post("/api/sessions/{session_id}/robots", response_model=SessionResult)
+def session_add_robot(session_id: str, request: AddRobotRequest) -> SessionResult:
+    return add_robot(session_id, request)
 
 
 @app.post("/api/sessions/{session_id}/tick", response_model=SessionResult)

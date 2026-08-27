@@ -152,6 +152,7 @@ def test_frontend_types_match_backend_api_model_fields() -> None:
         ("DispatchOptions", schemas.DispatchOptions),
         ("DispatchRequest", schemas.DispatchRequest),
         ("CreateSessionRequest", schemas.CreateSessionRequest),
+        ("AddRobotRequest", schemas.AddRobotRequest),
         ("AddTaskRequest", schemas.AddTaskRequest),
         ("SessionTickRequest", schemas.SessionTickRequest),
         ("AddBlockRequest", schemas.AddBlockRequest),
@@ -235,6 +236,7 @@ def test_frontend_request_optional_fields_match_backend_defaults() -> None:
     request_model_pairs: list[tuple[str, type[BaseModel]]] = [
         ("DispatchRequest", schemas.DispatchRequest),
         ("CreateSessionRequest", schemas.CreateSessionRequest),
+        ("AddRobotRequest", schemas.AddRobotRequest),
         ("AddBlockRequest", schemas.AddBlockRequest),
         ("RemoveBlockRequest", schemas.RemoveBlockRequest),
         ("FailRobotRequest", schemas.FailRobotRequest),
@@ -314,6 +316,18 @@ def test_frontend_robot_capabilities_is_optional_when_backend_provides_a_default
     assert "capabilities" in _backend_optional_fields(schemas.Robot)
 
 
+def test_runtime_robot_onboarding_contract_is_exposed() -> None:
+    assert hasattr(schemas, "AddRobotRequest")
+    assert {"start", "capabilities", "joinedAt"} <= _backend_fields(schemas.RobotRuntimeState)
+    assert {"start", "capabilities", "joinedAt"} <= _frontend_fields("RobotRuntimeState")
+    assert "pathStartTimes" in _backend_fields(schemas.DispatchResult)
+    assert "pathStartTimes" in _frontend_fields("DispatchResult")
+
+    openapi = app.openapi()
+    assert _request_schema_ref(openapi, "/api/sessions/{session_id}/robots", "post") == "AddRobotRequest"
+    assert _response_schema_ref(openapi, "/api/sessions/{session_id}/robots", "post") == "SessionResult"
+
+
 def test_openapi_session_routes_use_expected_request_models() -> None:
     openapi = app.openapi()
     expected_request_refs = {
@@ -324,6 +338,7 @@ def test_openapi_session_routes_use_expected_request_models() -> None:
         ("/api/experiments/seeded-pressure", "post"): "SeededPressureExperimentRequest",
         ("/api/experiments/online-pressure", "post"): "OnlinePressureExperimentRequest",
         ("/api/sessions", "post"): "CreateSessionRequest",
+        ("/api/sessions/{session_id}/robots", "post"): "AddRobotRequest",
         ("/api/sessions/{session_id}/tasks", "post"): "AddTaskRequest",
         ("/api/sessions/{session_id}/tick", "post"): "SessionTickRequest",
         ("/api/sessions/{session_id}/blocked-cells", "post"): "AddBlockRequest",
@@ -351,6 +366,7 @@ def test_openapi_dispatch_and_session_routes_use_expected_response_models() -> N
         ("/api/sessions/{session_id}", "get"): "SessionResult",
         ("/api/sessions/{session_id}", "delete"): "DeleteSessionResult",
         ("/api/sessions/{session_id}/reset", "post"): "SessionResult",
+        ("/api/sessions/{session_id}/robots", "post"): "SessionResult",
         ("/api/sessions/{session_id}/tasks", "post"): "SessionResult",
         ("/api/sessions/{session_id}/tick", "post"): "SessionResult",
         ("/api/sessions/{session_id}/blocked-cells", "post"): "SessionResult",
@@ -377,6 +393,7 @@ def test_openapi_exposes_expected_session_routes() -> None:
         ("/api/sessions/{session_id}", "get"),
         ("/api/sessions/{session_id}", "delete"),
         ("/api/sessions/{session_id}/reset", "post"),
+        ("/api/sessions/{session_id}/robots", "post"),
         ("/api/sessions/{session_id}/tasks", "post"),
         ("/api/sessions/{session_id}/tick", "post"),
         ("/api/sessions/{session_id}/blocked-cells", "post"),

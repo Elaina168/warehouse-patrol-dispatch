@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ApiRequestError } from "./apiError";
 import {
   canControlOnlinePlayback,
+  canAddRuntimeRobot,
   canMutateOnlineSession,
   classifySessionRequestFailure,
   historicalPlaybackNotice,
@@ -131,6 +132,15 @@ describe("online mutation availability", () => {
     expect(isHistoricalPlayback(5, 5)).toBe(false);
     expect(isHistoricalPlayback(6, 5)).toBe(false);
     expect(isHistoricalPlayback(0, null)).toBe(false);
+  });
+
+  it.each([
+    { name: "no session", input: { ...available, hasSession: false } },
+    { name: "dispatch not ready", input: { ...available, dispatchStatus: "loading" as const } },
+    { name: "tick in flight", input: { ...available, tickInFlight: true } },
+    { name: "historical playback", input: { ...available, displayTime: 4 } }
+  ])("disables runtime robot onboarding for $name", ({ input }) => {
+    expect(canAddRuntimeRobot(input)).toBe(false);
   });
 });
 

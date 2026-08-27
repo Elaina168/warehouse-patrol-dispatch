@@ -68,7 +68,8 @@ import {
   RIGHTBAR_TASK_QUEUE_CLASS,
   sortTaskSnapshotsForDisplay,
   splitTaskSnapshotsForDisplay,
-  taskTimingFields
+  taskTimingFields,
+  App
 } from "./main";
 import { scenarios } from "./domain/scenarios";
 import { ApiRequestError } from "./domain/apiError";
@@ -77,6 +78,13 @@ import { runOnlineMutation } from "./domain/sessionRequestState";
 import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, ShelfRuntimeState, Task, TaskType } from "./domain/types";
 
 describe("session request coordination", () => {
+  it("renders the runtime robot onboarding panel in the main dashboard", () => {
+    const markup = renderToStaticMarkup(createElement(App));
+    expect(markup).toContain("机器人接入");
+    expect(markup).toContain("接入位置");
+    expect(markup).toContain("能力");
+  });
+
   type RequestFailureTestState = {
     apiStatus: "checking" | "online" | "offline" | "error";
     dispatchStatus: "loading" | "ready" | "error";
@@ -203,11 +211,12 @@ describe("session request coordination", () => {
     expect(result).toBeNull();
   });
 
-  it("does not label an error state as synchronized", () => {
+  it("keeps the synchronization label stable while a tick is in flight", () => {
     expect(dispatchSynchronizationLabel(false, "ready")).toBe("调度结果已同步");
+    expect(dispatchSynchronizationLabel(true, "ready")).toBe("调度结果已同步");
     expect(dispatchSynchronizationLabel(false, "loading")).toBe("等待重规划结果");
     expect(dispatchSynchronizationLabel(false, "error")).toBe("调度同步失败");
-    expect(dispatchSynchronizationLabel(true, "error")).toBe("后端 tick 同步中");
+    expect(dispatchSynchronizationLabel(true, "error")).toBe("调度同步失败");
   });
 
   it("does not call a blocked online mutation request", async () => {
@@ -384,6 +393,63 @@ describe("warehouse shelf map", () => {
     expect(robotMarkerRule).toMatch(/aspect-ratio:\s*1;/);
     expect(robotMarkerRule).toMatch(/border-radius:\s*50%;/);
     expect(robotMarkerRule).not.toMatch(/height:\s*28px;/);
+  });
+
+  it("keeps the runtime robot form visually stable while tick controls are disabled", () => {
+    const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    const disabledRule = styles.match(
+      /(?:^|\r?\n)\.runtime-robot-form input:disabled,\s*\.runtime-robot-form button:disabled\s*\{(?<rule>[^}]*)\}/
+    )?.groups?.rule;
+
+    expect(disabledRule).toBeDefined();
+    expect(disabledRule).toMatch(/opacity:\s*1;/);
+  });
+
+  it("uses a stable custom glyph when tick requests toggle capability checkbox disabled state", () => {
+    const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    const checkboxRule = styles.match(
+      /(?:^|\r?\n)\.capability-option input\s*\{(?<rule>[^}]*)\}/
+    )?.groups?.rule;
+    const checkedGlyphRule = styles.match(
+      /\.capability-option input:checked\s*\+\s*span::before\s*\{(?<rule>[^}]*)\}/
+    )?.groups?.rule;
+
+    expect(checkboxRule).toBeDefined();
+    expect(checkboxRule).toMatch(/appearance:\s*none;/);
+    expect(checkboxRule).toMatch(/position:\s*absolute;/);
+    expect(checkedGlyphRule).toBeDefined();
+  });
+
+  it("keeps runtime robot control cursors stable while tick disabled state changes", () => {
+    const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    const textInputRule = styles.match(
+      /(?:^|\r?\n)\.runtime-robot-form input:not\(\[type=\"checkbox\"\]\)\s*\{(?<rule>[^}]*)\}/
+    )?.groups?.rule;
+    const buttonRule = styles.match(
+      /(?:^|\r?\n)\.runtime-robot-form button\s*\{(?<rule>[^}]*)\}/
+    )?.groups?.rule;
+    const disabledRule = styles.match(
+      /(?:^|\r?\n)\.runtime-robot-form input:disabled,\s*\.runtime-robot-form button:disabled\s*\{(?<rule>[^}]*)\}/
+    )?.groups?.rule;
+    const disabledCapabilityRule = styles.match(
+      /(?:^|\r?\n)\.capability-option input:disabled\s*\+\s*span\s*\{(?<rule>[^}]*)\}/
+    )?.groups?.rule;
+
+    expect(textInputRule).toBeDefined();
+    expect(textInputRule).toMatch(/cursor:\s*text;/);
+    expect(buttonRule).toBeDefined();
+    expect(buttonRule).toMatch(/cursor:\s*pointer;/);
+    expect(disabledRule).toBeDefined();
+    expect(disabledRule).not.toMatch(/cursor:\s*not-allowed;/);
+    expect(disabledCapabilityRule).toBeUndefined();
+  });
+
+  it("pauses playback when an editable runtime robot field receives focus", () => {
+    const source = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
+
+    expect(source).toMatch(
+      /<form className="task-form runtime-robot-form"[\s\S]*onFocusCapture=\{\(\) => \{\s*if \(playing\) setPlaying\(false\);\s*\}\}/
+    );
   });
 
   it("renders shelf stock classes and labels from the session shelf states", () => {
@@ -1750,6 +1816,7 @@ describe("timeline navigation", () => {
 
     expect(shouldUseRuntimeRobotSnapshot(2, 5, robotStates)).toBe(false);
     expect(shouldUseRuntimeRobotSnapshot(5, 5, robotStates)).toBe(true);
+    expect(shouldUseRuntimeRobotSnapshot(6, 5, robotStates)).toBe(false);
     expect(shouldUseRuntimeRobotSnapshot(5, null, robotStates)).toBe(false);
     expect(shouldUseRuntimeRobotSnapshot(5, 5, [])).toBe(false);
   });
@@ -1847,6 +1914,30 @@ describe("active route hints", () => {
     expect(buildActiveRouteArrows(result, 2, [], true)).toEqual([]);
   });
 
+  it("uses a runtime robot path start time for replay and active route hints", () => {
+    const runtimeTask: DispatchResult["tasks"][number] = {
+      id: "RUNTIME-TASK",
+      type: "inspection",
+      title: "运行时巡检",
+      priority: 1,
+      releaseTime: 12,
+      targets: [[4, 0]]
+    };
+    const runtimeResult = {
+      ...result,
+      assignments: [{ robotId: "R5", tasks: [runtimeTask] }],
+      paths: { R5: [[2, 0], [3, 0], [4, 0]] },
+      pathStartTimes: { R5: 12 },
+      tasks: [runtimeTask]
+    } satisfies DispatchResult;
+
+    expect(buildActiveRouteArrows(runtimeResult, 11, [], true)).toEqual([]);
+    expect(buildActiveRouteArrows(runtimeResult, 12, [], true)).toEqual([
+      { robotId: "R5", cell: [3, 0], angle: 90, lane: 0 },
+      { robotId: "R5", cell: [4, 0], angle: 90, lane: 0 }
+    ]);
+  });
+
   it("accepts only supported playback speed input", () => {
     expect(parsePlaybackSpeed("2.4")).toBe(2.4);
     expect(parsePlaybackSpeed("0.1")).toBeNull();
@@ -1862,9 +1953,12 @@ describe("active route hints", () => {
     expect(parsePositiveIntegerInput("invalid", 2, 60)).toBeNull();
   });
 
-  it("uses stable robot colors and skips route arrows on task label cells", () => {
+  it("assigns unique robot colors for all supported robot slots and skips route arrows on task label cells", () => {
+    const colors = Array.from({ length: 32 }, (_, index) => robotColorForIndex(index));
+    expect(new Set(colors).size).toBe(colors.length);
     expect(robotColorForIndex(0)).not.toBe(robotColorForIndex(1));
-    expect(robotColorForIndex(4)).toBe(robotColorForIndex(0));
+    expect(robotColorForIndex(4)).not.toBe(robotColorForIndex(0));
+    expect(robotColorForIndex(31)).not.toBe(robotColorForIndex(0));
     expect(filterActiveRouteArrows([
       { robotId: "R1", cell: [1, 0], angle: 90, lane: 0 },
       { robotId: "R2", cell: [2, 0], angle: 90, lane: 1 }

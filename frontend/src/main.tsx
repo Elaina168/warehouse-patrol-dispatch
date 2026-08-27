@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { ArrowUp, Crosshair, Download, Lock, Pause, Play, Plus, RefreshCcw, Server, ShieldX, Square, TriangleAlert, Unlock, Upload } from "lucide-react";
 import { apiErrorFromResponse } from "./domain/apiError";
 import {
+  addRobot,
   createSession,
   deleteSession,
   resetSession,
@@ -10,6 +11,7 @@ import {
 } from "./domain/sessionApi";
 import {
   canControlOnlinePlayback,
+  canAddRuntimeRobot,
   canMutateOnlineSession,
   classifySessionRequestFailure,
   historicalPlaybackNotice,
@@ -20,6 +22,15 @@ import {
 import { buildShelfCellPresentations, buildWarehouseDeliveryCandidates } from "./domain/inventory";
 import { importScenarioCandidate, MAX_TASK_SERVICE_TIME } from "./domain/scenarioImport";
 import { buildZoneCellPresentations, cellKey, getRobotStateAt } from "./domain/view";
+import {
+  applyMapPickToRuntimeRobot,
+  buildRuntimeRobot,
+  createRuntimeRobotForm,
+  mergeRuntimeRobotStates,
+  runtimeRobotPathCell,
+  type RuntimeRobotForm,
+  validateRuntimeRobotForm
+} from "./domain/runtimeRobot";
 import { scenarios } from "./domain/scenarios";
 import { CompetitionApp, resolveCompetitionEntry } from "./competition/competition";
 import type { Cell, Conflict, ConflictState, CreateSessionRequest, DispatchOptions, DispatchResult, RecoveryAction, Robot, SafetyStall, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
@@ -34,7 +45,40 @@ const MAX_PLAYBACK_RATE = 10;
 const DEFAULT_RANDOM_TASK_INTERVAL = 8;
 const MIN_RANDOM_TASK_INTERVAL = 2;
 const MAX_RANDOM_TASK_INTERVAL = 60;
-export const ROBOT_COLORS = ["#1c6dd0", "#117a8b", "#5e8b2f", "#c23b22"] as const;
+export const ROBOT_COLORS = [
+  "#1c6dd0",
+  "#117a8b",
+  "#5e8b2f",
+  "#c23b22",
+  "#7b2cbf",
+  "#d97706",
+  "#b83280",
+  "#0f766e",
+  "#2563eb",
+  "#65a30d",
+  "#9f1239",
+  "#6d28d9",
+  "#c2410c",
+  "#0369a1",
+  "#15803d",
+  "#be185d",
+  "#4338ca",
+  "#a16207",
+  "#047857",
+  "#b91c1c",
+  "#1d4ed8",
+  "#7e22ce",
+  "#0e7490",
+  "#4d7c0f",
+  "#9a3412",
+  "#be123c",
+  "#1e3a8a",
+  "#6b21a8",
+  "#155e75",
+  "#3f6212",
+  "#7f1d1d",
+  "#713f12"
+] as const;
 export const RIGHTBAR_EVENT_LOG_CLASS = "rightbar-event-log";
 export const RIGHTBAR_TASK_QUEUE_CLASS = "rightbar-task-queue";
 const allTaskTypes: TaskType[] = ["inspection", "delivery", "emergency"];
@@ -63,7 +107,7 @@ type ManualTaskForm = {
   dropoff: string;
 };
 
-export type MapPickTarget = "target" | "pickup" | "dropoff";
+export type MapPickTarget = "target" | "pickup" | "dropoff" | "robotStart";
 export type ConflictAlert = Conflict;
 
 type TaskRuntimeStatus = "pending" | "active" | "done" | "unassigned";
@@ -190,16 +234,15 @@ export function clearSessionViewState(setters: {
 }
 
 export function dispatchSynchronizationLabel(
-  tickInFlight: boolean,
+  _tickInFlight: boolean,
   dispatchStatus: "loading" | "ready" | "error"
 ): string {
-  if (tickInFlight) return "后端 tick 同步中";
   if (dispatchStatus === "loading") return "等待重规划结果";
   if (dispatchStatus === "error") return "调度同步失败";
   return "调度结果已同步";
 }
 
-function App() {
+export function App() {
   const [importedScenario, setImportedScenario] = useState<Scenario | null>(null);
   const [avoidConflicts, setAvoidConflicts] = useState(true);
   const [assignmentReplanWindow, setAssignmentReplanWindow] = useState(DEFAULT_ASSIGNMENT_REPLAN_WINDOW);
@@ -223,6 +266,11 @@ function App() {
   const [operationError, setOperationError] = useState<string | null>(null);
   const [manualTask, setManualTask] = useState<ManualTaskForm>(() => createManualTaskForm(scenarios[0]));
   const [manualTaskError, setManualTaskError] = useState<string | null>(null);
+  const [runtimeRobotForm, setRuntimeRobotForm] = useState<RuntimeRobotForm>(
+    () => createRuntimeRobotForm(scenarios[0])
+  );
+  const [runtimeRobotError, setRuntimeRobotError] = useState<string | null>(null);
+  const [runtimeRobotSubmitting, setRuntimeRobotSubmitting] = useState(false);
   const [mapPickTarget, setMapPickTarget] = useState<MapPickTarget | null>(null);
   const [latestConflictAlert, setLatestConflictAlert] = useState<ConflictAlert | null>(null);
   const [latestConflictResolved, setLatestConflictResolved] = useState(false);
@@ -237,6 +285,10 @@ function App() {
   const sessionRequestCoordinator = sessionRequestCoordinatorRef.current;
 
   const scenario = importedScenario ?? scenarios[0];
+  const displayScenario = useMemo(
+    () => mergeRuntimeRobotStates(scenario, session?.robotStates ?? []),
+    [scenario, session?.robotStates]
+  );
   const historicalPlayback = isHistoricalPlayback(time, session?.currentTime ?? null);
   const historyNotice = historicalPlaybackNotice(historicalPlayback);
 
@@ -270,6 +322,13 @@ function App() {
     displayTime: time,
     sessionCurrentTime: session?.currentTime ?? null
   });
+  const runtimeRobotSubmitEnabled = canAddRuntimeRobot({
+    hasSession: session !== null,
+    dispatchStatus,
+    tickInFlight,
+    displayTime: time,
+    sessionCurrentTime: session?.currentTime ?? null
+  }) && !runtimeRobotSubmitting;
   const playbackControlEnabled = canControlOnlinePlayback({
     hasResult: result !== null,
     dispatchStatus,
@@ -330,6 +389,9 @@ function App() {
     setRouteHintsEnabled(false);
     setManualTask(createManualTaskForm(scenario));
     setManualTaskError(null);
+    setRuntimeRobotForm(createRuntimeRobotForm(scenario));
+    setRuntimeRobotError(null);
+    setRuntimeRobotSubmitting(false);
     setMapPickTarget(null);
     resetSessionConflictState(setLatestConflictAlert, setLatestConflictResolved);
     setFailedRobotId(scenario.robots[0]?.id ?? "");
@@ -494,6 +556,12 @@ function App() {
 
   function pickManualTaskCell(cell: Cell) {
     if (!mapPickTarget) return;
+    if (mapPickTarget === "robotStart") {
+      setRuntimeRobotForm((form) => applyMapPickToRuntimeRobot(form, cell));
+      setRuntimeRobotError(null);
+      setMapPickTarget(null);
+      return;
+    }
     setManualTask((task) => applyMapPickToManualTask(task, mapPickTarget, cell));
     setManualTaskError(null);
     setMapPickTarget(nextMapPickTarget(mapPickTarget));
@@ -511,13 +579,62 @@ function App() {
     );
   }
 
+  async function submitRuntimeRobot(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!runtimeRobotSubmitEnabled || !session) return;
+
+    setPlaying(false);
+    const validationErrors = validateRuntimeRobotForm(runtimeRobotForm, displayScenario);
+    if (validationErrors.length > 0) {
+      setRuntimeRobotError(validationErrors.join(" "));
+      return;
+    }
+    const robot = buildRuntimeRobot(runtimeRobotForm, displayScenario);
+    if (!robot) {
+      setRuntimeRobotError("机器人配置无效，请检查表单字段。");
+      return;
+    }
+
+    const requestGeneration = sessionRequestCoordinator.currentGeneration();
+    setRuntimeRobotSubmitting(true);
+    setDispatchStatus("loading");
+    setDispatchError(null);
+    setOperationError(null);
+    setRuntimeRobotError(null);
+    try {
+      const payload = await sessionRequestCoordinator.enqueue(() => addRobot(
+        API_BASE,
+        session.sessionId,
+        { robot, currentTime: runtimeActionTime }
+      ));
+      if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
+      applySessionPayload(payload);
+      setRuntimeRobotForm(createRuntimeRobotForm(
+        mergeRuntimeRobotStates(scenario, payload.robotStates)
+      ));
+      setMapPickTarget(null);
+    } catch (error) {
+      if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
+      const decision = applySessionRequestFailure(
+        error,
+        { hasUsableSession: true },
+        { setApiStatus, setDispatchStatus, setDispatchError, setOperationError }
+      );
+      if (decision.invalidateSession) invalidateActiveSession();
+      if (decision.pausePlayback) setPlaying(false);
+      setRuntimeRobotError(error instanceof Error ? error.message : "机器人接入失败。");
+    } finally {
+      if (sessionRequestCoordinator.isCurrent(requestGeneration)) setRuntimeRobotSubmitting(false);
+    }
+  }
+
   async function pushGeneratedTask() {
     if (!onlineMutationEnabled) return;
     if (!result) return;
     const task = buildRandomGeneratedTask(
       result.tasks,
       runtimeActionTime,
-      scenario,
+      displayScenario,
       randomTaskSequenceRef.current + 1,
       session?.shelfStates ?? []
     );
@@ -636,6 +753,9 @@ function App() {
     }
 
     setPlaying(false);
+    setMapPickTarget(null);
+    setRuntimeRobotSubmitting(false);
+    setRuntimeRobotError(null);
     setRandomGeneratorEnabled(false);
     setLastRandomTaskTime(null);
     randomTaskSequenceRef.current = 0;
@@ -647,6 +767,9 @@ function App() {
       const payload = await sessionRequestCoordinator.enqueue(() => resetSession(API_BASE, session.sessionId));
       if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
       applySessionPayload(payload);
+      setRuntimeRobotForm(createRuntimeRobotForm(
+        mergeRuntimeRobotStates(scenario, payload.robotStates)
+      ));
     } catch (error) {
       if (!sessionRequestCoordinator.isCurrent(requestGeneration)) return;
       const decision = applySessionRequestFailure(
@@ -898,7 +1021,7 @@ function App() {
                 </div>
                 {result ? (
                   <MapBoard
-                    scenario={scenario}
+                    scenario={displayScenario}
                     result={result}
                     robotStates={session?.robotStates ?? []}
                     shelfStates={session?.shelfStates ?? []}
@@ -955,6 +1078,137 @@ function App() {
           </section>
 
           <section className="control-panels">
+            <Panel title="机器人接入">
+              <form className="task-form runtime-robot-form" onFocusCapture={() => {
+                if (playing) setPlaying(false);
+              }} onSubmit={submitRuntimeRobot}>
+                <label>
+                  <span>机器人 ID</span>
+                  <input
+                    aria-label="机器人 ID"
+                    disabled={!runtimeRobotSubmitEnabled}
+                    value={runtimeRobotForm.id}
+                    onChange={(event) => {
+                      setRuntimeRobotForm((form) => ({ ...form, id: event.target.value }));
+                      setRuntimeRobotError(null);
+                    }}
+                  />
+                </label>
+                <label>
+                  <span>机器人名称</span>
+                  <input
+                    aria-label="机器人名称"
+                    disabled={!runtimeRobotSubmitEnabled}
+                    value={runtimeRobotForm.name}
+                    onChange={(event) => {
+                      setRuntimeRobotForm((form) => ({ ...form, name: event.target.value }));
+                      setRuntimeRobotError(null);
+                    }}
+                  />
+                </label>
+                <CoordinateInput
+                  label="接入位置"
+                  value={runtimeRobotForm.start}
+                  disabled={!runtimeRobotSubmitEnabled}
+                  onChange={(start) => {
+                    setRuntimeRobotForm((form) => ({ ...form, start }));
+                    setRuntimeRobotError(null);
+                  }}
+                  onPick={() => setMapPickTarget("robotStart")}
+                  picking={mapPickTarget === "robotStart"}
+                />
+                <div className="form-grid">
+                  <label>
+                    <span>电量</span>
+                    <input
+                      aria-label="机器人电量"
+                      disabled={!runtimeRobotSubmitEnabled}
+                      min={0}
+                      type="number"
+                      value={runtimeRobotForm.battery}
+                      onChange={(event) => {
+                        setRuntimeRobotForm((form) => ({ ...form, battery: event.target.value }));
+                        setRuntimeRobotError(null);
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>电池上限</span>
+                    <input
+                      aria-label="电池上限"
+                      disabled={!runtimeRobotSubmitEnabled}
+                      min={1}
+                      type="number"
+                      value={runtimeRobotForm.batteryCapacity}
+                      onChange={(event) => {
+                        setRuntimeRobotForm((form) => ({ ...form, batteryCapacity: event.target.value }));
+                        setRuntimeRobotError(null);
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>载重</span>
+                    <input
+                      aria-label="机器人载重"
+                      disabled={!runtimeRobotSubmitEnabled}
+                      min={0}
+                      type="number"
+                      value={runtimeRobotForm.load}
+                      onChange={(event) => {
+                        setRuntimeRobotForm((form) => ({ ...form, load: event.target.value }));
+                        setRuntimeRobotError(null);
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>每格移动 tick</span>
+                    <input
+                      aria-label="每格移动 tick"
+                      disabled={!runtimeRobotSubmitEnabled}
+                      max={4}
+                      min={1}
+                      type="number"
+                      value={runtimeRobotForm.moveTicks}
+                      onChange={(event) => {
+                        setRuntimeRobotForm((form) => ({ ...form, moveTicks: event.target.value }));
+                        setRuntimeRobotError(null);
+                      }}
+                    />
+                  </label>
+                </div>
+                <fieldset className="capability-field">
+                  <legend>能力（至少一项）</legend>
+                  <div className="capability-options">
+                    {allTaskTypes.map((taskType) => (
+                      <label className="capability-option" key={taskType}>
+                        <input
+                          checked={runtimeRobotForm.capabilities.includes(taskType)}
+                          disabled={!runtimeRobotSubmitEnabled}
+                          type="checkbox"
+                          onChange={() => {
+                            setRuntimeRobotForm((form) => ({
+                              ...form,
+                              capabilities: form.capabilities.includes(taskType)
+                                ? form.capabilities.filter((item) => item !== taskType)
+                                : [...form.capabilities, taskType]
+                            }));
+                            setRuntimeRobotError(null);
+                          }}
+                        />
+                        <span>{taskTypeLabels[taskType]}</span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+                <p className="session-note">将在当前会话 T={runtimeActionTime} 接入；提交会暂停播放。</p>
+                {runtimeRobotError ? <p className="runtime-robot-error">{runtimeRobotError}</p> : null}
+                <button className="wide-action" type="submit" disabled={!runtimeRobotSubmitEnabled}>
+                  <Plus size={16} />
+                  接入机器人
+                </button>
+              </form>
+            </Panel>
+
             <Panel title="在线任务">
               <form className="task-form" onSubmit={submitManualTask}>
                 <label>
@@ -1287,12 +1541,14 @@ function ReplanStatusPanel({
 function CoordinateInput({
   label,
   value,
+  disabled = false,
   onChange,
   onPick,
   picking
 }: {
   label: string;
   value: string;
+  disabled?: boolean;
   onChange: (value: string) => void;
   onPick: () => void;
   picking: boolean;
@@ -1302,6 +1558,7 @@ function CoordinateInput({
       <legend>{label}</legend>
       <input
         aria-label={`${label}坐标`}
+        disabled={disabled}
         inputMode="text"
         placeholder="例如 3, 0"
         value={value}
@@ -1310,6 +1567,7 @@ function CoordinateInput({
       <button
         aria-label={`从地图选择${label}坐标`}
         className={picking ? "coordinate-pick active" : "coordinate-pick"}
+        disabled={disabled}
         onClick={onPick}
         title={`从地图选择${label}坐标`}
         type="button"
@@ -1462,6 +1720,10 @@ export function MapBoard({
     () => buildShelfCellPresentations(scenario.shelves ?? [], runtimeOverlay.shelfStates),
     [runtimeOverlay.shelfStates, scenario.shelves]
   );
+  const shelfCellKeys = useMemo(
+    () => new Set((scenario.shelves ?? []).map((shelf) => cellKey(shelf.cell))),
+    [scenario.shelves]
+  );
   const useRuntimeRobotSnapshot = shouldUseRuntimeRobotSnapshot(
     time,
     sessionCurrentTime,
@@ -1470,8 +1732,8 @@ export function MapBoard({
   const occupied = useMemo(
     () => useRuntimeRobotSnapshot
       ? getCellsFromRobotStates(runtimeOverlay.robotStates)
-      : getCellsOnPaths(result.paths, time),
-    [result.paths, runtimeOverlay.robotStates, time, useRuntimeRobotSnapshot]
+      : getCellsOnPaths(result.paths, result.pathStartTimes, time),
+    [result.pathStartTimes, result.paths, runtimeOverlay.robotStates, time, useRuntimeRobotSnapshot]
   );
   const occupiedKeys = useMemo(
     () => new Set([...occupied.values()].map(cellKey)),
@@ -1483,7 +1745,8 @@ export function MapBoard({
       time,
       unresolvedConflictAlert,
       result.paths,
-      result.conflictStates
+      result.conflictStates,
+      result.pathStartTimes
     );
     return new Map(
       mergeSafetyInterventionMarker(plannedMarkers, safetyIntervention, time)
@@ -1495,7 +1758,8 @@ export function MapBoard({
       result,
       time,
       useRuntimeRobotSnapshot ? runtimeOverlay.robotStates : [],
-      routeHintsEnabled
+      routeHintsEnabled,
+      result.pathStartTimes
     ),
     [result, routeHintsEnabled, runtimeOverlay.robotStates, time, useRuntimeRobotSnapshot]
   );
@@ -1519,6 +1783,13 @@ export function MapBoard({
       const shelfPresentation = shelfCellPresentations.get(key);
       const robot = robotId ? scenario.robots.find((item) => item.id === robotId) : null;
       const robotColor = robotId ? robotColors.get(robotId) : undefined;
+      const runtimeRobotPickable = mapPickTarget === "robotStart"
+        && !obstacles.has(key)
+        && !blocked.has(key)
+        && !shelfCellKeys.has(key)
+        && !occupiedKeys.has(key);
+      const mapPickable = mapPickTarget !== null
+        && (mapPickTarget === "robotStart" ? runtimeRobotPickable : !obstacles.has(key));
       const runtimeState = useRuntimeRobotSnapshot && robotId
         ? runtimeOverlay.robotStates.find((item) => item.robotId === robotId)
         : null;
@@ -1528,7 +1799,8 @@ export function MapBoard({
           result.paths[robotId] ?? [robot.start],
           time,
           runtimeOverlay.unavailableRobotIds,
-          runtimeState ?? null
+          runtimeState ?? null,
+          result.pathStartTimes?.[robotId] ?? 0
         )
         : null;
       const currentTask = robotId ? getCurrentTaskLabel(result, robotId, time, runtimeState?.currentTaskId) : null;
@@ -1540,7 +1812,7 @@ export function MapBoard({
         ...(zonePresentation?.classNames ?? []),
         ...(shelfPresentation?.classNames ?? []),
         displayedConflict ? "conflict-cell" : "",
-        mapPickTarget && !obstacles.has(key) ? "map-pickable-cell" : "",
+        mapPickable ? "map-pickable-cell" : "",
         robotId ? "robot-cell" : "",
         runtimeState?.status === "failed" ? "failed-robot-cell" : "",
         isSafetyInterventionRobot(robotId, safetyIntervention, time) ? "safety-intervention-robot-cell" : "",
@@ -1557,7 +1829,7 @@ export function MapBoard({
           title={shelfPresentation?.label}
           onClick={() => {
             onCloseContextMenu();
-            if (mapPickTarget && !obstacles.has(key)) {
+            if (mapPickTarget && mapPickable) {
               onPickCell(cell);
               return;
             }
@@ -1656,10 +1928,14 @@ export function MapBoard({
   );
 }
 
-function getCellsOnPaths(paths: Record<string, Cell[]>, time: number): Map<string, Cell> {
+function getCellsOnPaths(
+  paths: Record<string, Cell[]>,
+  pathStartTimes: Record<string, number> | undefined,
+  time: number
+): Map<string, Cell> {
   const cells = new Map<string, Cell>();
   for (const [robotId, path] of Object.entries(paths)) {
-    const cell = path[Math.min(time, path.length - 1)];
+    const cell = runtimeRobotPathCell(path, time, pathStartTimes?.[robotId] ?? 0);
     if (cell) cells.set(robotId, cell);
   }
   return cells;
@@ -1678,9 +1954,15 @@ function getDisplayRobotState(
   path: Cell[],
   time: number,
   unavailableRobotIds: string[],
-  runtimeState: SessionResult["robotStates"][number] | null
+  runtimeState: SessionResult["robotStates"][number] | null,
+  pathStartTime: number
 ) {
-  const fallback = getRobotStateAt(robot, path, time, unavailableRobotIds);
+  const fallback = getRobotStateAt(
+    robot,
+    path,
+    Math.max(0, time - pathStartTime),
+    unavailableRobotIds
+  );
   if (!runtimeState) return fallback;
   return {
     ...fallback,
@@ -1831,7 +2113,10 @@ export function buildLiveMetrics(
     completedTaskCount: snapshots.filter((snapshot) => snapshot.status === "done").length,
     activeTaskCount: snapshots.filter((snapshot) => snapshot.status === "active").length,
     pendingTaskCount: snapshots.filter((snapshot) => snapshot.status === "pending").length,
-    travelledDistance: Object.values(result.paths).reduce((sum, path) => sum + distanceUntil(path, time), 0),
+    travelledDistance: Object.entries(result.paths).reduce(
+      (sum, [robotId, path]) => sum + distanceUntil(path, time, result.pathStartTimes?.[robotId] ?? 0),
+      0
+    ),
     activeConflictCount: result.conflictStates !== undefined
       ? result.conflictStates.filter((conflict) => isConflictStateActiveAtTime(conflict, time)).length
       : result.conflicts.filter((conflict) => conflict.time === time).length,
@@ -1899,6 +2184,7 @@ function getTaskCompletionMap(result: DispatchResult): Map<string, number> {
   const completions = new Map<string, number>();
   for (const assignment of result.assignments) {
     const path = result.paths[assignment.robotId] ?? [];
+    const pathStartTime = result.pathStartTimes?.[assignment.robotId] ?? 0;
     let cursorIndex = 0;
     for (const task of assignment.tasks) {
       let completionIndex: number | null = null;
@@ -1911,7 +2197,7 @@ function getTaskCompletionMap(result: DispatchResult): Map<string, number> {
         completionIndex = foundIndex;
         cursorIndex = foundIndex;
       }
-      if (completionIndex !== null) completions.set(task.id, completionIndex);
+      if (completionIndex !== null) completions.set(task.id, pathStartTime + completionIndex);
     }
   }
   return completions;
@@ -1944,7 +2230,8 @@ export function buildActiveRouteArrows(
   result: DispatchResult,
   time: number,
   runtimeStates: SessionResult["robotStates"],
-  enabled: boolean
+  enabled: boolean,
+  pathStartTimes: Record<string, number> | undefined = result.pathStartTimes
 ): ActiveRouteArrow[] {
   if (!enabled) return [];
 
@@ -1956,7 +2243,9 @@ export function buildActiveRouteArrows(
     const path = result.paths[assignment.robotId] ?? [];
     if (path.length < 2) continue;
 
-    const pathIndex = clamp(Math.trunc(time), 0, path.length - 1);
+    const pathStartTime = pathStartTimes?.[assignment.robotId] ?? 0;
+    if (time < pathStartTime) continue;
+    const pathIndex = clamp(Math.trunc(time - pathStartTime), 0, path.length - 1);
     const runtimeTaskId = runtimeStates.find((state) => state.robotId === assignment.robotId)?.currentTaskId;
     const task = findActiveRouteTask(assignment.tasks, assignment.robotId, runtimeTaskId, completions, time);
     if (!task) continue;
@@ -2023,8 +2312,9 @@ function findNextVisit(path: Cell[], waypoint: Cell, startIndex: number): number
   return null;
 }
 
-function distanceUntil(path: Cell[], time: number): number {
-  const end = Math.min(time, path.length - 1);
+function distanceUntil(path: Cell[], time: number, pathStartTime = 0): number {
+  const end = Math.min(time - pathStartTime, path.length - 1);
+  if (end <= 0) return 0;
   let distance = 0;
   for (let index = 1; index <= end; index += 1) {
     if (cellKey(path[index]) !== cellKey(path[index - 1])) distance += 1;
@@ -2282,7 +2572,7 @@ export function shouldUseRuntimeRobotSnapshot(
   sessionCurrentTime: number | null,
   robotStates: SessionResult["robotStates"]
 ): boolean {
-  return sessionCurrentTime !== null && displayTime >= sessionCurrentTime && robotStates.length > 0;
+  return sessionCurrentTime !== null && displayTime === sessionCurrentTime && robotStates.length > 0;
 }
 
 export function getVisibleMetricsHistory(
@@ -2337,7 +2627,7 @@ function formatCoordinateInput(cell: Cell): string {
 
 export function applyMapPickToManualTask(
   form: ManualTaskForm,
-  target: MapPickTarget,
+  target: Exclude<MapPickTarget, "robotStart">,
   cell: Cell
 ): ManualTaskForm {
   return { ...form, [target]: formatCoordinateInput(cell) };
@@ -2371,7 +2661,8 @@ export function selectMapConflictMarkers(
   currentTime: number,
   unresolvedAlert: ConflictAlert | null = null,
   paths: Record<string, Cell[]> = {},
-  conflictStates?: ConflictState[]
+  conflictStates?: ConflictState[],
+  pathStartTimes: Record<string, number> | undefined = {}
 ): Conflict[] {
   if (conflictStates !== undefined) {
     return conflictStates
@@ -2387,7 +2678,7 @@ export function selectMapConflictMarkers(
   if (!unresolvedAlert || currentConflicts.some((conflict) => sameConflictAlert(conflict, unresolvedAlert))) {
     return currentConflicts;
   }
-  if (!isConflictActiveOnPaths(unresolvedAlert, paths, currentTime)) {
+  if (!isConflictActiveOnPaths(unresolvedAlert, paths, currentTime, pathStartTimes)) {
     return currentConflicts;
   }
   return [...currentConflicts, unresolvedAlert];
@@ -2471,15 +2762,16 @@ function isConflictStateActiveAtTime(conflict: ConflictState, currentTime: numbe
 function isConflictActiveOnPaths(
   conflict: ConflictAlert,
   paths: Record<string, Cell[]>,
-  currentTime: number
+  currentTime: number,
+  pathStartTimes: Record<string, number>
 ): boolean {
   const [firstRobotId, secondRobotId] = conflict.robots;
   if (!firstRobotId || !secondRobotId) return false;
 
   const firstPath = paths[firstRobotId] ?? [];
   const secondPath = paths[secondRobotId] ?? [];
-  const firstNow = pathCellAt(firstPath, currentTime);
-  const secondNow = pathCellAt(secondPath, currentTime);
+  const firstNow = pathCellAt(firstPath, currentTime, pathStartTimes[firstRobotId] ?? 0);
+  const secondNow = pathCellAt(secondPath, currentTime, pathStartTimes[secondRobotId] ?? 0);
   if (!firstNow || !secondNow) return false;
 
   if (conflict.type === "vertex") {
@@ -2487,16 +2779,17 @@ function isConflictActiveOnPaths(
   }
 
   if (currentTime <= 0) return false;
-  const firstPrevious = pathCellAt(firstPath, currentTime - 1);
-  const secondPrevious = pathCellAt(secondPath, currentTime - 1);
+  const firstPrevious = pathCellAt(firstPath, currentTime - 1, pathStartTimes[firstRobotId] ?? 0);
+  const secondPrevious = pathCellAt(secondPath, currentTime - 1, pathStartTimes[secondRobotId] ?? 0);
   if (!firstPrevious || !secondPrevious) return false;
   return cellKey(firstPrevious) === cellKey(secondNow) && cellKey(secondPrevious) === cellKey(firstNow);
 }
 
 
-function pathCellAt(path: Cell[], time: number): Cell | null {
+function pathCellAt(path: Cell[], time: number, pathStartTime = 0): Cell | null {
   if (path.length === 0) return null;
-  return path[Math.min(Math.max(0, time), path.length - 1)];
+  if (time < pathStartTime) return null;
+  return path[Math.min(time - pathStartTime, path.length - 1)];
 }
 
 
@@ -2508,6 +2801,7 @@ function conflictTypeLabel(type: Conflict["type"]): string {
 function mapPickLabel(target: MapPickTarget): string {
   if (target === "pickup") return "取货";
   if (target === "dropoff") return "送达";
+  if (target === "robotStart") return "接入位置";
   return "目标";
 }
 

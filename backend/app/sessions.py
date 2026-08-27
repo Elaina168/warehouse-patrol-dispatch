@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from backend.app.limits import (
     MAX_PLANNED_PATH_TICKS,
+    MAX_SCENARIO_ROBOTS,
     MAX_SCENARIO_TASKS,
     MAX_SESSION_CURRENT_TIME,
 )
@@ -52,11 +53,13 @@ from backend.app.replan_window import (
 )
 from backend.app.schemas import (
     AddBlockRequest,
+    AddRobotRequest,
     AddTaskRequest,
     Assignment,
     Cell,
     ChargingVisit,
     Conflict,
+    ConflictState,
     CreateSessionRequest,
     DeleteSessionResult,
     DispatchOptions,
@@ -68,6 +71,7 @@ from backend.app.schemas import (
     MetricSnapshot,
     RemoveBlockRequest,
     RestoreRobotRequest,
+    Robot,
     RobotRuntimeState,
     SafetyStall,
     Scenario,
@@ -107,6 +111,7 @@ class DispatchSession:
     runtime_task_count: int = 0
     planning_started: bool = False
     robot_positions: dict[str, Cell] = field(default_factory=dict)
+    robot_join_times: dict[str, int] = field(default_factory=dict)
     robot_path_history: dict[str, list[Cell]] = field(default_factory=dict)
     robot_travelled_distance: dict[str, int] = field(default_factory=dict)
     robot_battery_levels: dict[str, int] = field(default_factory=dict)
@@ -229,6 +234,7 @@ def create_session(
         updated_at=now,
         last_accessed_at=now,
         robot_positions={robot.id: robot.start for robot in request.scenario.robots},
+        robot_join_times={robot.id: 0 for robot in request.scenario.robots},
         robot_path_history={robot.id: [robot.start] for robot in request.scenario.robots},
         robot_travelled_distance={robot.id: 0 for robot in request.scenario.robots},
         robot_battery_levels={robot.id: robot.battery for robot in request.scenario.robots},
@@ -367,6 +373,48 @@ def add_task(
         _touch_session_updated(session)
         _record_session_event(session, session.current_time, f"手动录入任务：{task.id} {task.title}")
         return _build_result(session)
+
+
+def add_robot(
+    session_id: str,
+    request: AddRobotRequest,
+    *,
+    registry: SessionRegistry | None = None,
+) -> SessionResult:
+    with _locked_session(session_id, registry=registry) as session:
+        requested_time = _runtime_request_time(session, request)
+        _require_not_past_time(session, requested_time)
+
+        transaction_observations: list[ReplanObservation] = []
+        transaction_session = _clone_session_for_preview(session)
+        if session.replan_observer is not None:
+            transaction_session.replan_observer = transaction_observations.append
+
+        previous_time = transaction_session.current_time
+        _advance_runtime_event(transaction_session, requested_time)
+        _touch_session_if_time_changed(transaction_session, previous_time)
+        join_time = transaction_session.current_time
+        robot = request.robot.model_copy(deep=True)
+        _validate_runtime_robot(transaction_session, robot)
+
+        transaction_session.scenario.robots.append(robot)
+        transaction_session.robot_positions[robot.id] = robot.start
+        transaction_session.robot_join_times[robot.id] = join_time
+        transaction_session.robot_path_history[robot.id] = [robot.start]
+        transaction_session.robot_travelled_distance[robot.id] = 0
+        transaction_session.robot_battery_levels[robot.id] = robot.battery
+        transaction_session.safety_hold_times.pop(robot.id, None)
+        _clear_safety_stall(transaction_session)
+        _invalidate_plan(transaction_session)
+        _touch_session_updated(transaction_session)
+        _record_session_event(
+            transaction_session,
+            join_time,
+            f"T={join_time} 新机器人接入：{robot.id} {robot.name}",
+        )
+        result = _build_result(transaction_session)
+        _commit_session_candidate(session, transaction_session, transaction_observations)
+        return result
 
 
 def add_blocked_cell(
@@ -604,11 +652,59 @@ def _require_not_past_time(session: DispatchSession, current_time: int) -> None:
 
 def _runtime_request_time(
     session: DispatchSession,
-    request: AddBlockRequest | RemoveBlockRequest | FailRobotRequest | RestoreRobotRequest,
+    request: AddRobotRequest | AddBlockRequest | RemoveBlockRequest | FailRobotRequest | RestoreRobotRequest,
 ) -> int:
     if "currentTime" in request.model_fields_set:
         return request.currentTime
     return session.current_time
+
+
+def _validate_runtime_robot(session: DispatchSession, robot: Robot) -> None:
+    if len(session.scenario.robots) >= MAX_SCENARIO_ROBOTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"机器人总数已达上限：{MAX_SCENARIO_ROBOTS}",
+        )
+    if any(existing.id == robot.id for existing in session.scenario.robots):
+        raise HTTPException(status_code=409, detail=f"机器人 ID 已存在：{robot.id}")
+    if not _is_inside(robot.start, session.scenario):
+        raise HTTPException(
+            status_code=422,
+            detail=f"机器人接入位置超出地图范围：{robot.start[0]},{robot.start[1]}",
+        )
+    if any(shelf.cell == robot.start for shelf in session.scenario.shelves):
+        raise HTTPException(
+            status_code=409,
+            detail=f"机器人接入位置是货架格：({robot.start[0]}, {robot.start[1]})",
+        )
+    if robot.start in session.scenario.obstacles:
+        raise HTTPException(
+            status_code=409,
+            detail=f"机器人接入位置是固定障碍：({robot.start[0]}, {robot.start[1]})",
+        )
+
+    blocked_cells = list(session.runtime_blocked_cells)
+    if _is_scenario_dynamic_active(session):
+        blocked_cells.extend(session.scenario.dynamic.blockedCells)
+    if robot.start in blocked_cells:
+        raise HTTPException(
+            status_code=409,
+            detail=f"机器人接入位置当前封锁：({robot.start[0]}, {robot.start[1]})",
+        )
+
+    occupying_robot_id = next(
+        (
+            existing.id
+            for existing in session.scenario.robots
+            if session.robot_positions.get(existing.id, existing.start) == robot.start
+        ),
+        None,
+    )
+    if occupying_robot_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"机器人接入位置被机器人占用：{occupying_robot_id} ({robot.start[0]}, {robot.start[1]})",
+        )
 
 
 def _clone_session_for_preview(session: DispatchSession) -> DispatchSession:
@@ -744,6 +840,7 @@ def _reset_session_runtime(session: DispatchSession, updated: bool = False) -> N
     session.runtime_task_count = 0
     session.planning_started = False
     session.robot_positions = {robot.id: robot.start for robot in scenario.robots}
+    session.robot_join_times = {robot.id: 0 for robot in scenario.robots}
     session.robot_path_history = {robot.id: [robot.start] for robot in scenario.robots}
     session.robot_travelled_distance = {robot.id: 0 for robot in scenario.robots}
     session.robot_battery_levels = {robot.id: robot.battery for robot in scenario.robots}
@@ -986,7 +1083,7 @@ def _build_result(session: DispatchSession) -> SessionResult:
 
             session.last_result = result
         result = result.model_copy(
-            update={"conflictStates": _build_conflict_states(result.conflicts, result.paths, session.current_time)}
+            update={"conflictStates": _build_session_conflict_states(session, result)}
         )
         session.last_result = result
         result = result.model_copy(update={"eventLog": _build_session_event_log(session, result)})
@@ -1061,6 +1158,10 @@ def _build_idle_result(session: DispatchSession) -> DispatchResult:
         assignments=[],
         paths={
             robot.id: [session.robot_positions.get(robot.id, robot.start)]
+            for robot in session.scenario.robots
+        },
+        pathStartTimes={
+            robot.id: session.robot_join_times.get(robot.id, 0)
             for robot in session.scenario.robots
         },
         conflicts=[],
@@ -1201,14 +1302,13 @@ def _first_energy_violation(
     for robot in session.scenario.robots:
         battery = session.robot_battery_levels.get(robot.id, robot.battery)
         previous_position = session.robot_positions.get(robot.id, robot.start)
-        path = result.paths.get(robot.id, [previous_position])
         charging_completion_times = {
             visit.completionTime
             for visit in result.chargingVisits
             if visit.robotId == robot.id
         }
         for tick_time in range(session.current_time + 1, target_time + 1):
-            current_position = path_at(path, tick_time) or previous_position
+            current_position = _session_path_at(result, session, robot.id, tick_time) or previous_position
             if current_position != previous_position:
                 if battery <= 0:
                     violations.append((tick_time, robot.id))
@@ -1230,14 +1330,20 @@ def _apply_result_through_time(
             session.active_charging_visits[visit.robotId] = visit
 
     for robot in session.scenario.robots:
-        path = result.paths.get(robot.id, [session.robot_positions.get(robot.id, robot.start)])
+        join_time = session.robot_join_times.get(robot.id, 0)
+        if target_time < join_time:
+            continue
         history = session.robot_path_history.setdefault(robot.id, [robot.start])
-        while len(history) <= target_time:
-            next_position = path_at(path, len(history)) or history[-1]
+        target_index = target_time - join_time
+        while len(history) <= target_index:
+            absolute_time = join_time + len(history)
+            next_position = _session_path_at(result, session, robot.id, absolute_time) or history[-1]
             history.append(next_position)
         for tick_time in range(session.current_time + 1, target_time + 1):
-            previous = history[tick_time - 1]
-            current = history[tick_time]
+            if tick_time <= join_time:
+                continue
+            previous = history[tick_time - join_time - 1]
+            current = history[tick_time - join_time]
             if current != previous:
                 session.robot_travelled_distance[robot.id] = session.robot_travelled_distance.get(robot.id, 0) + 1
                 session.robot_battery_levels[robot.id] = max(0, session.robot_battery_levels.get(robot.id, robot.battery) - 1)
@@ -1253,7 +1359,7 @@ def _apply_result_through_time(
                     session.robot_battery_levels[robot.id] = robot.batteryCapacity
                     session.active_charging_visits.pop(robot.id, None)
                     _record_session_event(session, tick_time, f"{robot.id} 完成充电")
-        session.robot_positions[robot.id] = history[target_time]
+        session.robot_positions[robot.id] = history[target_index]
 
     _update_locked_task_assignments(session, result, target_time)
     outbound_pickup_times = _update_task_waypoint_progress(session, result, target_time)
@@ -1287,7 +1393,12 @@ def _safety_hold_result(session: DispatchSession, result: DispatchResult) -> Dis
     for robot in session.scenario.robots:
         position = session.robot_positions.get(robot.id, robot.start)
         history = session.robot_path_history.get(robot.id, [position])
-        prefix = _history_prefix(history, position, session.current_time)
+        prefix = _history_prefix(
+            history,
+            position,
+            session.current_time,
+            session.robot_join_times.get(robot.id, 0),
+        )
         hold_paths[robot.id] = prefix
 
     active_charging_visits = [
@@ -1298,6 +1409,10 @@ def _safety_hold_result(session: DispatchSession, result: DispatchResult) -> Dis
     return result.model_copy(
         update={
             "paths": hold_paths,
+            "pathStartTimes": {
+                robot.id: session.robot_join_times.get(robot.id, 0)
+                for robot in session.scenario.robots
+            },
             "chargingVisits": active_charging_visits,
         }
     )
@@ -1733,13 +1848,16 @@ def _restore_absolute_result(
     session: DispatchSession,
 ) -> DispatchResult:
     absolute_paths: dict[str, list[Cell]] = {}
+    path_start_times: dict[str, int] = {}
     for robot in session.scenario.robots:
         position = session.robot_positions.get(robot.id, robot.start)
         path = result.paths.get(robot.id, [position])
         history = session.robot_path_history.get(robot.id, [position])
-        prefix = _history_prefix(history, position, current_time)
+        join_time = session.robot_join_times.get(robot.id, 0)
+        prefix = _history_prefix(history, position, current_time, join_time)
         future_path = path[1:] if len(path) > 1 else []
         absolute_paths[robot.id] = [*prefix, *future_path]
+        path_start_times[robot.id] = join_time
 
     assignments = [
         Assignment(
@@ -1750,7 +1868,12 @@ def _restore_absolute_result(
     ]
     tasks = list(task_lookup.values())
     conflicts = [conflict.model_copy(update={"time": conflict.time + current_time}) for conflict in result.conflicts]
-    conflict_states = _build_conflict_states(conflicts, absolute_paths, current_time)
+    conflict_states = _build_session_conflict_states_for_paths(
+        conflicts,
+        absolute_paths,
+        path_start_times,
+        current_time,
+    )
     event_log = [event.model_copy(update={"time": event.time + current_time}) for event in result.eventLog]
     charging_visits: list[ChargingVisit] = []
     restored_active_robot_ids: set[str] = set()
@@ -1790,6 +1913,7 @@ def _restore_absolute_result(
             "dynamicTriggerTime": dynamic_trigger_time,
             "assignments": assignments,
             "paths": absolute_paths,
+            "pathStartTimes": path_start_times,
             "conflicts": conflicts,
             "conflictStates": conflict_states,
             "metrics": metrics,
@@ -1797,6 +1921,126 @@ def _restore_absolute_result(
             "chargingVisits": charging_visits,
             "tasks": tasks,
         }
+    )
+
+
+def _session_path_start_time(
+    result: DispatchResult,
+    session: DispatchSession,
+    robot_id: str,
+) -> int:
+    return result.pathStartTimes.get(robot_id, session.robot_join_times.get(robot_id, 0))
+
+
+def _session_path_at(
+    result: DispatchResult,
+    session: DispatchSession,
+    robot_id: str,
+    absolute_time: int,
+) -> Cell | None:
+    path = result.paths.get(robot_id, [])
+    start_time = _session_path_start_time(result, session, robot_id)
+    if absolute_time < start_time:
+        return None
+    return path_at(path, absolute_time - start_time)
+
+
+def _session_path_end_time(
+    result: DispatchResult,
+    session: DispatchSession,
+    robot_id: str,
+) -> int:
+    path = result.paths.get(robot_id, [])
+    if not path:
+        return _session_path_start_time(result, session, robot_id) - 1
+    return _session_path_start_time(result, session, robot_id) + len(path) - 1
+
+
+def _is_session_conflict_active(
+    conflict: Conflict,
+    paths: dict[str, list[Cell]],
+    path_start_times: dict[str, int],
+    current_time: int,
+) -> bool:
+    if len(conflict.robots) < 2:
+        return False
+    first_robot_id, second_robot_id = conflict.robots[:2]
+
+    def path_cell(robot_id: str, absolute_time: int) -> Cell | None:
+        path = paths.get(robot_id, [])
+        start_time = path_start_times.get(robot_id, 0)
+        if absolute_time < start_time:
+            return None
+        return path_at(path, absolute_time - start_time)
+
+    first_now = path_cell(first_robot_id, current_time)
+    second_now = path_cell(second_robot_id, current_time)
+    if first_now is None or second_now is None:
+        return False
+    if conflict.type == "vertex":
+        return first_now == conflict.cell and second_now == conflict.cell
+    if current_time <= 0:
+        return False
+    first_previous = path_cell(first_robot_id, current_time - 1)
+    second_previous = path_cell(second_robot_id, current_time - 1)
+    if first_previous is None or second_previous is None:
+        return False
+    return first_previous == second_now and second_previous == first_now
+
+
+def _session_conflict_resolved_time(
+    conflict: Conflict,
+    paths: dict[str, list[Cell]],
+    path_start_times: dict[str, int],
+) -> int | None:
+    horizon = max(
+        (
+            path_start_times.get(robot_id, 0) + len(path)
+            for robot_id, path in paths.items()
+        ),
+        default=0,
+    )
+    for time_index in range(conflict.time, horizon):
+        if not _is_session_conflict_active(conflict, paths, path_start_times, time_index):
+            return time_index
+    return None
+
+
+def _build_session_conflict_states_for_paths(
+    conflicts: list[Conflict],
+    paths: dict[str, list[Cell]],
+    path_start_times: dict[str, int],
+    current_time: int,
+) -> list[ConflictState]:
+    states: list[ConflictState] = []
+    for conflict in conflicts:
+        active = _is_session_conflict_active(conflict, paths, path_start_times, current_time)
+        resolved_at = _session_conflict_resolved_time(conflict, paths, path_start_times)
+        if conflict.time > current_time and not active:
+            continue
+        states.append(
+            ConflictState(
+                time=conflict.time,
+                type=conflict.type,
+                robots=conflict.robots,
+                cell=conflict.cell,
+                status="active" if active else "resolved",
+                startedAt=conflict.time,
+                resolvedAt=resolved_at,
+            )
+        )
+    return states
+
+
+def _build_session_conflict_states(
+    session: DispatchSession,
+    result: DispatchResult,
+) -> list[ConflictState]:
+    return _build_session_conflict_states_for_paths(
+        result.conflicts,
+        result.paths,
+        result.pathStartTimes,
+        session.current_time,
     )
 
 
@@ -1864,7 +2108,7 @@ def _is_dynamic_block_count_event(text: str) -> bool:
 def _build_robot_states(session: DispatchSession, result: DispatchResult) -> list[RobotRuntimeState]:
     states: list[RobotRuntimeState] = []
     for robot in session.scenario.robots:
-        position = path_at(result.paths.get(robot.id, []), session.current_time) or session.robot_positions.get(robot.id, robot.start)
+        position = _session_path_at(result, session, robot.id, session.current_time) or session.robot_positions.get(robot.id, robot.start)
         current_task = _current_task(session, result, robot.id, session.current_time)
         current_task_id = current_task.id if current_task is not None else None
         charging_visit = next(
@@ -1882,7 +2126,12 @@ def _build_robot_states(session: DispatchSession, result: DispatchResult) -> lis
         elif charging_visit is not None:
             status = "toCharge"
         elif current_task is not None:
-            status = _robot_task_status(current_task, result.paths.get(robot.id, []), session.current_time)
+            status = _robot_task_status(
+                current_task,
+                result.paths.get(robot.id, []),
+                session.current_time,
+                _session_path_start_time(result, session, robot.id),
+            )
         elif _has_future_task(result, robot.id, session.current_time):
             status = "waiting"
         else:
@@ -1891,12 +2140,15 @@ def _build_robot_states(session: DispatchSession, result: DispatchResult) -> lis
             RobotRuntimeState(
                 robotId=robot.id,
                 name=robot.name,
+                start=robot.start,
                 position=position,
                 status=status,
                 battery=session.robot_battery_levels.get(robot.id, robot.battery),
                 batteryCapacity=robot.batteryCapacity,
                 load=robot.load,
                 moveTicks=robot.moveTicks,
+                capabilities=list(robot.capabilities),
+                joinedAt=session.robot_join_times.get(robot.id, 0),
                 currentTaskId=current_task_id,
             )
         )
@@ -2050,11 +2302,22 @@ def _session_task_completion_times(session: DispatchSession, result: DispatchRes
     completions = dict(session.task_completion_times)
     for assignment in result.assignments:
         path = result.paths.get(assignment.robotId, [])
-        ignored_indices = session.safety_hold_times.get(assignment.robotId, set())
-        cursor_index = min(session.current_time, max(0, len(path) - 1))
+        path_start_time = _session_path_start_time(result, session, assignment.robotId)
+        ignored_indices = {
+            time_index - path_start_time
+            for time_index in session.safety_hold_times.get(assignment.robotId, set())
+            if time_index >= path_start_time
+        }
+        cursor_index = min(
+            max(0, session.current_time - path_start_time),
+            max(0, len(path) - 1),
+        )
         for task in assignment.tasks:
             if task.id in completions:
-                cursor_index = max(cursor_index, completions[task.id] + 1)
+                cursor_index = max(
+                    cursor_index,
+                    completions[task.id] + 1 - path_start_time,
+                )
                 continue
             if task.id in result.failureReasons:
                 continue
@@ -2064,15 +2327,22 @@ def _session_task_completion_times(session: DispatchSession, result: DispatchRes
                 task,
                 completed_before,
                 cursor_index,
-                len(path) - 1,
+                _session_path_end_time(result, session, assignment.robotId),
                 ignored_indices,
+                path_start_time,
             )
             if _is_task_fully_completed(task, completed_count):
-                service_started_at = session.task_service_started_times.get(task.id, completion_index)
+                service_started_at = session.task_service_started_times.get(
+                    task.id,
+                    path_start_time + completion_index if completion_index is not None else None,
+                )
                 if service_started_at is not None:
                     completion_time = service_started_at + task_service_time(task)
                     completions[task.id] = completion_time
-                    cursor_index = completion_time + 1
+                    cursor_index = max(
+                        cursor_index,
+                        completion_time + 1 - path_start_time,
+                    )
     return completions
 
 
@@ -2121,12 +2391,26 @@ def _session_task_start_times(session: DispatchSession, result: DispatchResult) 
     starts: dict[str, int] = {}
     for assignment in result.assignments:
         path = result.paths.get(assignment.robotId, [])
-        ignored_indices = session.safety_hold_times.get(assignment.robotId, set())
-        cursor_index = min(session.current_time, max(0, len(path) - 1))
+        path_start_time = _session_path_start_time(result, session, assignment.robotId)
+        ignored_indices = {
+            time_index - path_start_time
+            for time_index in session.safety_hold_times.get(assignment.robotId, set())
+            if time_index >= path_start_time
+        }
+        cursor_index = min(
+            max(0, session.current_time - path_start_time),
+            max(0, len(path) - 1),
+        )
         for task in assignment.tasks:
-            start_index, cursor_index = _task_execution_window(path, task, cursor_index, ignored_indices)
+            start_index, cursor_index = _task_execution_window(
+                path,
+                task,
+                cursor_index,
+                ignored_indices,
+                path_start_time,
+            )
             if start_index is not None:
-                starts[task.id] = start_index
+                starts[task.id] = path_start_time + start_index
     return starts
 
 
@@ -2135,6 +2419,7 @@ def _task_execution_window(
     task: Task,
     start_index: int,
     ignored_indices: set[int],
+    path_start_time: int = 0,
 ) -> tuple[int | None, int]:
     if not path:
         return None, start_index
@@ -2144,7 +2429,8 @@ def _task_execution_window(
         return None, start_index
 
     release_time = task.releaseTime if task.releaseTime is not None else 0
-    cursor_index = max(start_index, release_time)
+    release_index = max(0, release_time - path_start_time)
+    cursor_index = max(start_index, release_index)
     if cursor_index >= len(path):
         return None, start_index
 
@@ -2157,7 +2443,7 @@ def _task_execution_window(
         cursor_index = found_index
 
     next_cursor_index = completion_index + task_service_time(task) + 1 if completion_index is not None else cursor_index
-    return max(start_index, release_time), next_cursor_index
+    return max(start_index, release_index), next_cursor_index
 
 
 def _update_task_waypoint_progress(
@@ -2168,12 +2454,20 @@ def _update_task_waypoint_progress(
     outbound_pickup_times: dict[str, int] = {}
     for assignment in result.assignments:
         path = result.paths.get(assignment.robotId, [])
-        ignored_indices = session.safety_hold_times.get(assignment.robotId, set())
-        cursor_index = min(session.current_time, max(0, len(path) - 1))
+        path_start_time = _session_path_start_time(result, session, assignment.robotId)
+        ignored_indices = {
+            time_index - path_start_time
+            for time_index in session.safety_hold_times.get(assignment.robotId, set())
+            if time_index >= path_start_time
+        }
+        cursor_index = min(
+            max(0, session.current_time - path_start_time),
+            max(0, len(path) - 1),
+        )
         for task in assignment.tasks:
             completion_time = session.task_completion_times.get(task.id)
             if completion_time is not None:
-                cursor_index = max(cursor_index, completion_time + 1)
+                cursor_index = max(cursor_index, completion_time + 1 - path_start_time)
                 continue
             completed_before = session.task_waypoint_progress.get(task.id, 0)
             pickup_time: int | None = None
@@ -2189,8 +2483,8 @@ def _update_task_waypoint_progress(
                 pickup_time = _find_next_visit_until(
                     path,
                     task.pickup,
-                    max(cursor_index, release_time),
-                    min(target_time, len(path) - 1),
+                    max(cursor_index, max(0, release_time - path_start_time)),
+                    min(max(0, target_time - path_start_time), len(path) - 1),
                     ignored_indices,
                 )
             completed_count, cursor_index, completion_index = _completed_remaining_waypoints(
@@ -2200,18 +2494,32 @@ def _update_task_waypoint_progress(
                 cursor_index,
                 target_time,
                 ignored_indices,
+                path_start_time,
             )
             if completed_count > completed_before:
                 session.task_waypoint_progress[task.id] = completed_count
                 if pickup_time is not None and completed_count >= 1:
                     outbound_pickup_times[task.id] = pickup_time
-            _update_payload_position(session, task, path, target_time, completed_count)
+            _update_payload_position(
+                session,
+                task,
+                path,
+                target_time,
+                completed_count,
+                path_start_time,
+            )
             if _is_task_fully_completed(task, completed_count):
-                service_started_at = session.task_service_started_times.get(task.id, completion_index)
+                service_started_at = session.task_service_started_times.get(
+                    task.id,
+                    path_start_time + completion_index if completion_index is not None else None,
+                )
                 if service_started_at is not None:
                     session.task_service_started_times.setdefault(task.id, service_started_at)
                     completion_time = service_started_at + task_service_time(task)
-                    cursor_index = max(cursor_index, completion_time + 1)
+                    cursor_index = max(
+                        cursor_index,
+                        completion_time + 1 - path_start_time,
+                    )
     return outbound_pickup_times
 
 
@@ -2222,16 +2530,17 @@ def _completed_remaining_waypoints(
     start_index: int,
     target_time: int,
     ignored_indices: set[int],
+    path_start_time: int = 0,
 ) -> tuple[int, int, int | None]:
     if not path:
         return completed_before, start_index, None
 
     waypoints = task_waypoints(task)
-    end_index = min(target_time, len(path) - 1)
+    end_index = min(max(0, target_time - path_start_time), len(path) - 1)
     release_time = task.releaseTime if task.releaseTime is not None else 0
     if target_time < release_time:
         return completed_before, start_index, None
-    cursor_index = max(start_index, release_time)
+    cursor_index = max(start_index, max(0, release_time - path_start_time))
     if cursor_index > end_index:
         return completed_before, cursor_index, None
     completed_count = min(completed_before, len(waypoints))
@@ -2257,6 +2566,7 @@ def _update_payload_position(
     path: list[Cell],
     target_time: int,
     completed_count: int,
+    path_start_time: int = 0,
 ) -> None:
     if task.type != "delivery":
         return
@@ -2266,7 +2576,7 @@ def _update_payload_position(
     if completed_count >= len(waypoints):
         session.task_payload_positions.pop(task.id, None)
         return
-    position = path_at(path, target_time)
+    position = path_at(path, max(0, target_time - path_start_time))
     if position is not None:
         session.task_payload_positions[task.id] = position
 
@@ -2311,14 +2621,25 @@ def _release_locks_for_blocked_cell(
     released_task_ids: list[str] = []
     for assignment in result.assignments:
         path = result.paths.get(assignment.robotId, [])
+        path_start_time = _session_path_start_time(result, session, assignment.robotId)
         for task in assignment.tasks:
             if session.locked_task_robot_ids.get(task.id) != assignment.robotId:
                 continue
             completion_time = completions.get(task.id)
             if completion_time is not None and completion_time <= event_time:
                 continue
-            end_time = completion_time if completion_time is not None else len(path) - 1
-            if _path_contains_cell(path, blocked_cell, event_time, end_time):
+            end_time = (
+                completion_time
+                if completion_time is not None
+                else _session_path_end_time(result, session, assignment.robotId)
+            )
+            if _path_contains_cell(
+                path,
+                blocked_cell,
+                event_time,
+                end_time,
+                path_start_time,
+            ):
                 released_task_ids.append(task.id)
 
     for task_id in sorted(set(released_task_ids)):
@@ -2437,18 +2758,29 @@ def _current_task(session: DispatchSession, result: DispatchResult, robot_id: st
     if assignment is None:
         return None
     for task in assignment.tasks:
-        release_time = task.releaseTime if task.releaseTime is not None else 0
+        release_time = _session_task_release_time(session, task)
         completion_time = completions.get(task.id)
         if current_time >= release_time and (completion_time is None or current_time < completion_time):
             return task
     return None
 
 
-def _robot_task_status(task: Task, path: list[Cell], current_time: int) -> str:
+def _robot_task_status(
+    task: Task,
+    path: list[Cell],
+    current_time: int,
+    path_start_time: int = 0,
+) -> str:
     if task.type == "delivery":
         pickup = task_waypoints(task)[0] if task_waypoints(task) else None
         release_time = task.releaseTime if task.releaseTime is not None else 0
-        if pickup is not None and not _has_visited(path, pickup, current_time, release_time):
+        if pickup is not None and not _has_visited(
+            path,
+            pickup,
+            current_time,
+            release_time,
+            path_start_time,
+        ):
             return "toPickup"
         return "delivering"
     return "inspecting"
@@ -2458,38 +2790,61 @@ def _has_future_task(result: DispatchResult, robot_id: str, current_time: int) -
     assignment = next((item for item in result.assignments if item.robotId == robot_id), None)
     if assignment is None:
         return False
-    return any((task.releaseTime if task.releaseTime is not None else 0) > current_time for task in assignment.tasks)
+    return any(
+        (task.releaseTime if task.releaseTime is not None else 0) > current_time
+        for task in assignment.tasks
+    )
 
 
-def _has_visited(path: list[Cell], target: Cell, current_time: int, start_time: int = 0) -> bool:
-    start_index = max(0, min(start_time, len(path) - 1))
-    end_index = min(current_time, len(path) - 1)
+def _has_visited(
+    path: list[Cell],
+    target: Cell,
+    current_time: int,
+    start_time: int = 0,
+    path_start_time: int = 0,
+) -> bool:
+    start_index = max(0, min(start_time - path_start_time, len(path) - 1))
+    end_index = min(current_time - path_start_time, len(path) - 1)
+    if end_index < start_index:
+        return False
     return any(path[index] == target for index in range(start_index, end_index + 1))
 
 
-def _path_distance_between(path: list[Cell], start_time: int, target_time: int) -> int:
+def _path_distance_between(
+    path: list[Cell],
+    start_time: int,
+    target_time: int,
+    path_start_time: int = 0,
+) -> int:
     if not path or target_time <= start_time:
         return 0
-    end_index = min(target_time, len(path) - 1)
+    start_index = max(0, start_time - path_start_time)
+    end_index = min(target_time - path_start_time, len(path) - 1)
     distance = 0
-    for index in range(start_time + 1, end_index + 1):
+    for index in range(max(start_index + 1, 1), end_index + 1):
         if path[index] != path[index - 1]:
             distance += 1
     return distance
 
 
-def _path_contains_cell(path: list[Cell], cell: Cell, start_time: int, end_time: int) -> bool:
+def _path_contains_cell(
+    path: list[Cell],
+    cell: Cell,
+    start_time: int,
+    end_time: int,
+    path_start_time: int = 0,
+) -> bool:
     if not path:
         return False
-    start_index = max(0, min(start_time, len(path) - 1))
-    end_index = max(start_index, min(end_time, len(path) - 1))
+    start_index = max(0, min(start_time - path_start_time, len(path) - 1))
+    end_index = max(start_index, min(end_time - path_start_time, len(path) - 1))
     return any(path[index] == cell for index in range(start_index, end_index + 1))
 
 
 def _robot_at_cell_at_time(session: DispatchSession, cell: Cell, target_time: int) -> str | None:
     result = session.last_result or _preview_dispatch_result(session)
     for robot in session.scenario.robots:
-        position = path_at(result.paths.get(robot.id, []), target_time) or session.robot_positions.get(robot.id, robot.start)
+        position = _session_path_at(result, session, robot.id, target_time) or session.robot_positions.get(robot.id, robot.start)
         if position == cell:
             return robot.id
     return None
@@ -2636,13 +2991,19 @@ def _make_remaining_task(
     return relative_task.model_copy(update={"target": remaining[0]})
 
 
-def _history_prefix(history: list[Cell], fallback_position: Cell, current_time: int) -> list[Cell]:
-    if current_time < 0:
+def _history_prefix(
+    history: list[Cell],
+    fallback_position: Cell,
+    current_time: int,
+    history_start_time: int = 0,
+) -> list[Cell]:
+    if current_time < history_start_time:
         return []
-    prefix = history[: current_time + 1]
+    history_index = current_time - history_start_time
+    prefix = history[: history_index + 1]
     if not prefix:
         prefix = [fallback_position]
-    while len(prefix) <= current_time:
+    while len(prefix) <= history_index:
         prefix.append(prefix[-1])
     return prefix
 

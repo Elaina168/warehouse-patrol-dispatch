@@ -1,4 +1,5 @@
 import type {
+  AddRobotRequest,
   CreateSessionRequest,
   DeleteSessionResult,
   SessionResult
@@ -6,6 +7,23 @@ import type {
 import { apiErrorFromResponse } from "./apiError";
 
 export type FetchLike = typeof fetch;
+
+export async function addRobot(
+  apiBase: string,
+  sessionId: string,
+  request: AddRobotRequest,
+  fetcher: FetchLike = fetch
+): Promise<SessionResult> {
+  const response = await fetcher(`${apiBase}/sessions/${encodeURIComponent(sessionId)}/robots`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request)
+  });
+  if (!response.ok) {
+    throw await apiErrorFromResponse(response, "session robot onboarding failed");
+  }
+  return await response.json() as SessionResult;
+}
 
 export async function createSession(
   apiBase: string,

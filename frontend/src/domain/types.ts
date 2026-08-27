@@ -188,12 +188,15 @@ export type RecoveryAction =
 export type RobotRuntimeState = {
   robotId: string;
   name: string;
+  start?: Cell;
   position: Cell;
   status: RobotRuntimeStatus;
   battery: number;
   batteryCapacity?: number;
   load: number;
   moveTicks: number;
+  capabilities?: TaskType[];
+  joinedAt?: number;
   currentTaskId: string | null;
 };
 
@@ -228,6 +231,7 @@ export type DispatchResult = {
   unavailableRobotIds: string[];
   assignments: Assignment[];
   paths: Record<string, Cell[]>;
+  pathStartTimes?: Record<string, number>;
   conflicts: Conflict[];
   conflictStates?: ConflictState[];
   metrics: Metrics;
@@ -258,6 +262,11 @@ export type CreateSessionRequest = {
 
 export type AddTaskRequest = {
   task: Task;
+};
+
+export type AddRobotRequest = {
+  robot: Robot;
+  currentTime?: number;
 };
 
 export type SessionTickRequest = {

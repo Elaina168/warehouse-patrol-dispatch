@@ -66,6 +66,10 @@ export function canMutateOnlineSession(input: MutationAvailabilityInput): boolea
     && !isHistoricalPlayback(input.displayTime, input.sessionCurrentTime);
 }
 
+export function canAddRuntimeRobot(input: MutationAvailabilityInput): boolean {
+  return canMutateOnlineSession(input);
+}
+
 export function canControlOnlinePlayback(input: PlaybackAvailabilityInput): boolean {
   return input.hasResult
     && input.dispatchStatus === "ready"
