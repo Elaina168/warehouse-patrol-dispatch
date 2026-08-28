@@ -976,7 +976,7 @@ export function App() {
       <header className="topbar">
         <div>
           <p className="eyebrow">竞赛演示控制台</p>
-          <h1>仓库物流与园区巡检一体化调度系统</h1>
+          <h1>仓巡智调——面向动态仓储的多机器人在线调度与安全决策系统</h1>
         </div>
         <div className="status-strip">
           <span>T={time}</span>

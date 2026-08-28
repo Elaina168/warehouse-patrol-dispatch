@@ -43,6 +43,8 @@ pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\competition\build-window
 .\output\3s-competition-build\WarehousePatrol\WarehousePatrol.exe --headless --port 8123
 ```
 
-无头模式可通过 Windows `Ctrl+Break`（`CTRL_BREAK_EVENT`）正常停止，退出后会释放自己的监听端口。目标目录已包含 Python 运行时、后端、前端产物和竞赛资源；目标机不需要安装 Node.js、Python，也不需要联网下载依赖。
+无头模式可通过 Windows `Ctrl+Break`（`CTRL_BREAK_EVENT`）正常停止，退出后会释放自己的监听端口。目标目录已包含 Python 运行时、后端、前端产物和竞赛运行清单；目标机不需要安装 Node.js、Python，也不需要联网下载依赖。
+
+便携软件仅携带运行所需的前端产物和主演示/安全专项清单，不包含人工验收文档、申报材料、本地元数据、实验输出或源码。上述内容分别通过源码包和最终提交目录管理，避免混入面向评审运行的软件目录。
 
 正式仓库路径生成的源码包只允许来自干净 Git 工作树；它包含前后端依赖清单、构建脚本、构建说明、竞赛清单和证据生成器，并自然排除未跟踪或被忽略的 `.git`、虚拟环境、`node_modules`、缓存、运行输出、`.env`、个人元数据和已填写申报表。

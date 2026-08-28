@@ -1,0 +1,8 @@
+﻿caseId,runCount,completedRunCount,timeoutCount,errorCount,acceptedRunCount,acceptedRunRatePercent,medianWallClockMs,p95WallClockMs,medianReplanTimeMs,p95ReplanTimeMs
+integrated-demo-without-conflict-avoidance,5,5,0,0,5,100.0,470.32,509.44,87.45,112.29
+integrated-demo-with-conflict-avoidance,5,5,0,0,5,100.0,421.65,430.57,45.94,50.16
+main-demo-online,5,5,0,0,5,100.0,888.6,912.44,7.84,9.19
+seed-17,5,5,0,0,5,100.0,427.54,429.63,37.1,42.44
+seed-29,5,5,0,0,5,100.0,463.73,477.11,83.37,85.39
+seed-31,5,5,0,0,5,100.0,519.92,525.05,136.09,137.15
+safety-gate-boundary,5,5,0,0,5,100.0,380.54,395.34,,

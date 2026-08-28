@@ -202,10 +202,10 @@ def test_desktop_launch_opens_loopback_url_and_exposes_stop_to_gui_boundary() ->
     assert len(stop_callbacks) == 1
 
 
-def test_pyinstaller_resource_mapping_includes_frontend_and_competition_assets() -> None:
+def test_pyinstaller_resource_mapping_includes_frontend_and_only_runtime_manifests() -> None:
     assert PYINSTALLER_DATA_MAPPINGS == (
         ("frontend/dist", "frontend/dist"),
-        ("competition/3s", "competition/3s"),
+        ("competition/3s/manifests", "competition/3s/manifests"),
     )
 
 

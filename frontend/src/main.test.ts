@@ -77,6 +77,24 @@ import { settleCreatedSession } from "./domain/sessionApi";
 import { runOnlineMutation } from "./domain/sessionRequestState";
 import type { DispatchResult, RobotRuntimeStatus, Scenario, SessionResult, ShelfRuntimeState, Task, TaskType } from "./domain/types";
 
+describe("project branding", () => {
+  it("renders the official project name as the dashboard heading", () => {
+    const markup = renderToStaticMarkup(createElement(App));
+
+    expect(markup).toContain(
+      "<h1>仓巡智调——面向动态仓储的多机器人在线调度与安全决策系统</h1>"
+    );
+  });
+
+  it("uses the official project name as the browser document title", () => {
+    const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+
+    expect(html).toContain(
+      "<title>仓巡智调——面向动态仓储的多机器人在线调度与安全决策系统</title>"
+    );
+  });
+});
+
 describe("session request coordination", () => {
   it("renders the runtime robot onboarding panel in the main dashboard", () => {
     const markup = renderToStaticMarkup(createElement(App));
