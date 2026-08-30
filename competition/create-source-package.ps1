@@ -22,11 +22,97 @@ if (@($status).Count -ne 0) {
 $outputDirectory = Split-Path -Parent $resolvedOutputPath
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 $temporaryPath = Join-Path $outputDirectory ("." + [System.IO.Path]::GetRandomFileName() + ".zip")
+$sourcePackagePaths = @(
+  ".editorconfig",
+  ".gitignore",
+  "README.md",
+  "package.json",
+  "frontend/package.json",
+  "frontend/package-lock.json",
+  "frontend/index.html",
+  "frontend/vite.config.ts",
+  "frontend/tsconfig.json",
+  "frontend/tsconfig.app.json",
+  "frontend/tsconfig.node.json",
+  "frontend/src",
+  "backend/requirements.txt",
+  "backend/requirements.lock.txt",
+  "backend/app",
+  "competition/requirements-build.lock.txt",
+  "competition/BUILDING.md",
+  "competition/build-windows-package.ps1",
+  "competition/create-source-package.ps1",
+  "competition/launcher.py",
+  "competition/packaging.py",
+  "competition/warehouse_patrol.spec",
+  "competition/3s/manifests",
+  "scripts",
+  "docs/algorithm.md",
+  "docs/baseline.md",
+  "docs/demo.md",
+  "docs/environment.md",
+  "docs/testing-guide.md"
+)
+$requiredSourceFiles = @(
+  "README.md",
+  "package.json",
+  "frontend/package.json",
+  "frontend/package-lock.json",
+  "frontend/index.html",
+  "frontend/vite.config.ts",
+  "frontend/src/main.tsx",
+  "backend/requirements.txt",
+  "backend/requirements.lock.txt",
+  "backend/app/main.py",
+  "competition/requirements-build.lock.txt",
+  "competition/BUILDING.md",
+  "competition/build-windows-package.ps1",
+  "competition/create-source-package.ps1",
+  "competition/launcher.py",
+  "competition/packaging.py",
+  "competition/warehouse_patrol.spec",
+  "competition/3s/manifests/main-demo.json",
+  "competition/3s/manifests/safety-demo.json",
+  "scripts/start-dev.ps1",
+  "scripts/stop-dev.ps1",
+  "docs/algorithm.md",
+  "docs/baseline.md",
+  "docs/demo.md",
+  "docs/environment.md",
+  "docs/testing-guide.md"
+)
+$restrictedText = @(
+  ([char[]](71, 80, 84) -join ""),
+  ([char[]](67, 104, 97, 116, 71, 80, 84) -join ""),
+  ([char[]](79, 112, 101, 110, 65, 73) -join ""),
+  ([char[]](20154, 24037, 26234, 33021) -join ""),
+  ([char[]](26426, 22120, 23398, 20064) -join ""),
+  ([char[]](23398, 20064, 22411) -join ""),
+  ([char[]](22823, 27169, 22411) -join ""),
+  ([char[]](29983, 25104, 24335) -join "")
+)
 
 try {
-  & git -C $resolvedRepositoryRoot archive --format=zip "--output=$temporaryPath" HEAD
+  $treeEntries = @(& git -C $resolvedRepositoryRoot ls-tree -r --name-only HEAD)
   if ($LASTEXITCODE -ne 0) {
-    throw "git archive HEAD 生成源码包失败。"
+    throw "无法读取 Git 提交树。"
+  }
+  foreach ($requiredPath in $requiredSourceFiles) {
+    if (-not $treeEntries.Contains($requiredPath)) {
+      throw "源码包缺少必需文件：$requiredPath"
+    }
+  }
+
+  $archiveArguments = @(
+    "archive",
+    "--format=zip",
+    "--output=$temporaryPath",
+    "HEAD",
+    "--"
+  ) + $sourcePackagePaths
+  & git -C $resolvedRepositoryRoot @archiveArguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "生成源码包失败。"
   }
 
   Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -38,6 +124,27 @@ try {
       if ($entry.FullName.EndsWith("/", [System.StringComparison]::Ordinal)) {
         continue
       }
+      $allowed = $false
+      foreach ($sourcePath in $sourcePackagePaths) {
+        if (
+          $entry.FullName.Equals($sourcePath, [System.StringComparison]::Ordinal) -or
+          $entry.FullName.StartsWith(
+            "$sourcePath/",
+            [System.StringComparison]::Ordinal
+          )
+        ) {
+          $allowed = $true
+          break
+        }
+      }
+      if (-not $allowed) {
+        throw "源码包包含未批准路径：$($entry.FullName)"
+      }
+      foreach ($term in $restrictedText) {
+        if ($entry.FullName.IndexOf($term, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+          throw "源码包文件名包含受限文字：$($entry.FullName)"
+        }
+      }
       $reader = [System.IO.StreamReader]::new($entry.Open(), [System.Text.UTF8Encoding]::new($false, $false), $true)
       try {
         $contents = $reader.ReadToEnd()
@@ -47,21 +154,13 @@ try {
       if ($contents -match '(?i)[A-Z]:[\\/]+Users[\\/]+[^\\/\r\n]+') {
         throw "源码包包含 Windows 用户目录绝对路径：$($entry.FullName)"
       }
+      foreach ($term in $restrictedText) {
+        if ($contents.IndexOf($term, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+          throw "源码包包含受限文字：$($entry.FullName)"
+        }
+      }
     }
-    foreach ($requiredPath in @(
-        "package.json",
-        "frontend/package.json",
-        "frontend/package-lock.json",
-        "backend/requirements.lock.txt",
-        "competition/requirements-build.lock.txt",
-        "competition/BUILDING.md",
-        "competition/build-windows-package.ps1",
-        "competition/launcher.py",
-        "competition/packaging.py",
-        "competition/warehouse_patrol.spec",
-        "competition/3s/manifests/main-demo.json",
-        "backend/competition/evidence.py"
-      )) {
+    foreach ($requiredPath in $requiredSourceFiles) {
       if (-not $entryNames.Contains($requiredPath)) {
         throw "源码包缺少必需文件：$requiredPath"
       }

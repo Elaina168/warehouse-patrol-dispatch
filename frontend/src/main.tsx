@@ -34,7 +34,6 @@ import {
   validateRuntimeRobotForm
 } from "./domain/runtimeRobot";
 import { scenarios } from "./domain/scenarios";
-import { CompetitionApp, resolveCompetitionEntry } from "./competition/competition";
 import type { Cell, Conflict, ConflictState, CreateSessionRequest, DispatchOptions, DispatchResult, RecoveryAction, Robot, SafetyStall, Scenario, SessionResult, ShelfRuntimeState, Task, TaskFailureDetail, TaskType } from "./domain/types";
 import "./styles.css";
 
@@ -975,7 +974,7 @@ export function App() {
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">竞赛演示控制台</p>
+          <p className="eyebrow">在线调度控制台</p>
           <h1>仓巡智调——面向动态仓储的多机器人在线调度与安全决策系统</h1>
         </div>
         <div className="status-strip">
@@ -3120,9 +3119,8 @@ async function responseError(response: Response, prefix: string): Promise<never>
   throw await apiErrorFromResponse(response, prefix);
 }
 
-export function RootApplication({ search }: { search: string }) {
-  const competitionEntry = resolveCompetitionEntry(search);
-  return competitionEntry ? <CompetitionApp entry={competitionEntry} /> : <App />;
+export function RootApplication({ search: _search }: { search: string }) {
+  return <App />;
 }
 
 if (typeof document !== "undefined") {

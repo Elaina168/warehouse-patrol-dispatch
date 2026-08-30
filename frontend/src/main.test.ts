@@ -69,7 +69,8 @@ import {
   sortTaskSnapshotsForDisplay,
   splitTaskSnapshotsForDisplay,
   taskTimingFields,
-  App
+  App,
+  RootApplication
 } from "./main";
 import { scenarios } from "./domain/scenarios";
 import { ApiRequestError } from "./domain/apiError";
@@ -92,6 +93,23 @@ describe("project branding", () => {
     expect(html).toContain(
       "<title>仓巡智调——面向动态仓储的多机器人在线调度与安全决策系统</title>"
     );
+  });
+
+  it("routes legacy competition query URLs to the full online dashboard", () => {
+    const mainMarkup = renderToStaticMarkup(createElement(RootApplication, {
+      search: "?competition=3s&demo=main&record=1"
+    }));
+    const safetyMarkup = renderToStaticMarkup(createElement(RootApplication, {
+      search: "?competition=3s&demo=safety"
+    }));
+
+    for (const markup of [mainMarkup, safetyMarkup]) {
+      expect(markup).toContain('<p class="eyebrow">在线调度控制台</p>');
+      expect(markup).toContain("仓巡智调——面向动态仓储的多机器人在线调度与安全决策系统");
+      expect(markup).not.toContain("3S 杯主演示模式");
+      expect(markup).not.toContain("3S 杯安全门演示模式");
+      expect(markup).not.toContain("竞赛演示控制");
+    }
   });
 });
 

@@ -190,7 +190,7 @@ http://127.0.0.1:8011/health
 - 随机事件生成器生成的任务没有明显重复，不会导致任务流程回退。
 - 冲突未解决时地图持续闪烁；后端结构化冲突状态提供 `resolvedAt`，参与机器人离开重叠格或边交换关系的那一刻，地图冲突提示会停止并消失，右侧解释区显示冲突已解决。
 
-2026-08-27 本轮重新执行了完整自动化检查，结果为前端正式构建通过、前端测试 `234/234`、后端测试 `801 passed, 19 skipped`（共收集 `820` 项）；永久移除相关回归已纳入本轮结果，HTTP 和整套页面人工验收仍按本节后续步骤执行。
+2026-08-30 本轮重新执行了完整自动化检查，结果为前端正式构建通过、前端测试 `219/219`、后端测试 `798 passed, 19 skipped`（共收集 `817` 项）；完整平台入口回退、永久移除和源码包边界回归已纳入本轮结果，HTTP 和整套页面人工验收仍按本节后续步骤执行。
 
 ### 5.1 基础启动检查
 
@@ -947,24 +947,10 @@ if ($newBenchmarkWorkers) {
 ```powershell
 git diff --check
 git status --short
-git diff --name-only d3b5c61
+git ls-files --deleted
 ```
 
-`git diff --name-only d3b5c61` 的 expected tracked scope 为：
-
-```text
-AGENTS.md
-backend/benchmarks/adaptive_runner.py
-backend/benchmarks/adaptive_scenarios.py
-backend/tests/test_adaptive_replan_calibration.py
-docs/algorithm.md
-docs/experiments.md
-docs/superpowers/plans/2026-07-26-adaptive-calibration-evidence-fix.md
-docs/superpowers/specs/2026-07-26-adaptive-calibration-evidence-fix-design.md
-docs/testing-guide.md
-```
-
-生成的 `output/`、`.superpowers/`、依赖 junction、ACL 目录和缓存必须保持未跟踪、未暂存、未提交。
+最终源码包以 `competition/create-source-package.ps1` 的路径白名单为准；当前仓库不再保留开发过程记录。生成的 `output/`、`.venv/`、`frontend/node_modules/`、Python 缓存和本地提交材料必须保持未跟踪或被忽略，源码包构建前工作树必须干净。
 
 ## 7. 指标解释
 
@@ -1107,9 +1093,9 @@ docs/testing-guide.md
 
 ## 13. 当前验证结论
 
-截至 2026-08-27：
+截至 2026-08-30：
 
-- 完整检查通过：前端正式构建成功、前端测试 `234/234`、后端测试 `801 passed, 19 skipped`（共收集 `820` 项）。
+- 完整检查通过：前端正式构建成功、前端测试 `219/219`、后端测试 `798 passed, 19 skipped`（共收集 `817` 项）。跳过项不计入通过数。
 - 唯一固定场景仍是 `26 × 16` 的 `integrated-demo`；默认六任务、库存流转和 T=700 闭环由端到端回归保护。
 - 在线会话已经覆盖统一任务追加、动态事件、封锁、故障与恢复、任务锁、抢占、充电、指标历史、列表、删除和重置。
 - 在线会话支持在真实当前 tick 事务式接入和永久退役机器人；接入时间之前隐藏新机器人，退役时间起隐藏被退役机器人，退役前路径、事件和指标可历史回放，重置恢复初始机器人。

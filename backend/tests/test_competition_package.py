@@ -418,21 +418,48 @@ def test_headless_launcher_serves_health_on_the_requested_loopback_port() -> Non
 def test_source_package_archives_clean_head_without_git_metadata(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     required_files = {
+        ".editorconfig": "root = true\n",
         ".gitignore": ".env\n.venv/\nnode_modules/\noutput/\nsubmission/warehouse-patrol-3s/\n",
+        "README.md": "Warehouse Patrol\n",
         "package.json": "{}\n",
         "frontend/package.json": "{}\n",
         "frontend/package-lock.json": "{}\n",
+        "frontend/index.html": "<main></main>\n",
+        "frontend/vite.config.ts": "export default {};\n",
+        "frontend/tsconfig.json": "{}\n",
+        "frontend/tsconfig.app.json": "{}\n",
+        "frontend/tsconfig.node.json": "{}\n",
+        "frontend/src/main.tsx": "export {};\n",
         "backend/requirements.lock.txt": "fastapi==0.115.14\n",
-        "backend/competition/evidence.py": "print('evidence')\n",
+        "backend/requirements.txt": "fastapi\n",
+        "backend/app/main.py": "print('app')\n",
         "competition/requirements-build.lock.txt": "pyinstaller==6.16.0\n",
         "competition/BUILDING.md": "# build\n",
         "competition/build-windows-package.ps1": "Write-Output 'build'\n",
+        "competition/create-source-package.ps1": "Write-Output 'source'\n",
         "competition/launcher.py": "print('launcher')\n",
         "competition/packaging.py": "print('packaging')\n",
         "competition/warehouse_patrol.spec": "# spec\n",
         "competition/3s/manifests/main-demo.json": "{}\n",
+        "competition/3s/manifests/safety-demo.json": "{}\n",
+        "scripts/start-dev.ps1": "Write-Output 'start'\n",
+        "scripts/stop-dev.ps1": "Write-Output 'stop'\n",
+        "docs/demo.md": "# demo\n",
+        "docs/environment.md": "# environment\n",
+        "docs/algorithm.md": "# algorithm\n",
+        "docs/baseline.md": "# baseline\n",
+        "docs/testing-guide.md": "# testing\n",
     }
-    for relative_path, contents in required_files.items():
+    excluded_files = {
+        "AGENTS.md": "local instructions\n",
+        ".superpowers/sdd/report.md": "internal record\n",
+        "docs/superpowers/plans/old.md": "internal plan\n",
+        "backend/tests/test_internal.py": "internal test\n",
+        "backend/competition/evidence.py": "internal evidence runner\n",
+        "competition/3s/application-materials/form.md": "submission material\n",
+        "output/old.txt": "build output\n",
+    }
+    for relative_path, contents in {**required_files, **excluded_files}.items():
         path = repository / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents, encoding="utf-8")
@@ -478,6 +505,77 @@ def test_source_package_archives_clean_head_without_git_metadata(tmp_path: Path)
     assert set(required_files).issubset(names)
     assert not any(name.startswith(".git/") for name in names)
     assert set(ignored_files).isdisjoint(names)
+    assert set(excluded_files).isdisjoint(names)
+
+
+def test_source_package_rejects_prohibited_wording_in_an_approved_file(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    for relative_path, contents in {
+        ".editorconfig": "root = true\n",
+        ".gitignore": "output/\n",
+        "README.md": "Warehouse Patrol\n",
+        "package.json": "{}\n",
+        "frontend/package.json": "{}\n",
+        "frontend/package-lock.json": "{}\n",
+        "frontend/index.html": "<main></main>\n",
+        "frontend/vite.config.ts": "export default {};\n",
+        "frontend/tsconfig.json": "{}\n",
+        "frontend/tsconfig.app.json": "{}\n",
+        "frontend/tsconfig.node.json": "{}\n",
+        "frontend/src/main.tsx": "export {};\n",
+        "backend/requirements.lock.txt": "fastapi==0.115.14\n",
+        "backend/requirements.txt": "fastapi\n",
+        "backend/app/main.py": "print('app')\n",
+        "competition/requirements-build.lock.txt": "pyinstaller==6.16.0\n",
+        "competition/BUILDING.md": "# build\n",
+        "competition/build-windows-package.ps1": "Write-Output 'build'\n",
+        "competition/create-source-package.ps1": "Write-Output 'source'\n",
+        "competition/launcher.py": "print('launcher')\n",
+        "competition/packaging.py": "print('packaging')\n",
+        "competition/warehouse_patrol.spec": "# spec\n",
+        "competition/3s/manifests/main-demo.json": "{}\n",
+        "competition/3s/manifests/safety-demo.json": "{}\n",
+        "scripts/start-dev.ps1": "Write-Output 'start'\n",
+        "scripts/stop-dev.ps1": "Write-Output 'stop'\n",
+        "docs/demo.md": "# demo\n",
+        "docs/environment.md": "# environment\n",
+        "docs/algorithm.md": "# algorithm\n",
+        "docs/baseline.md": "# baseline\n",
+        "docs/testing-guide.md": "# testing\n",
+        "README.md": "This text contains GPT and must not ship.\n",
+    }.items():
+        path = repository / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repository, check=True)
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=repository, check=True, capture_output=True)
+    output_path = tmp_path / "WarehousePatrol-source.zip"
+
+    completed = subprocess.run(
+        [
+            str(PROJECT_PWSH),
+            "-NoLogo",
+            "-NoProfile",
+            "-File",
+            str(SOURCE_PACKAGE_SCRIPT),
+            "-RepositoryRoot",
+            str(repository),
+            "-OutputPath",
+            str(output_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert completed.returncode != 0
+    assert "受限文字" in completed.stderr
+    assert output_path.exists() is False
 
 
 def test_source_package_rejects_a_dirty_worktree(tmp_path: Path) -> None:
@@ -518,19 +616,37 @@ def test_source_package_rejects_a_dirty_worktree(tmp_path: Path) -> None:
 def test_source_package_rejects_a_tracked_windows_user_profile_path(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     required_files = {
+        ".editorconfig": "root = true\n",
+        ".gitignore": "output/\n",
+        "README.md": "Warehouse Patrol\n",
         "package.json": "{}\n",
         "frontend/package.json": "{}\n",
         "frontend/package-lock.json": "{}\n",
+        "frontend/index.html": "<main></main>\n",
+        "frontend/vite.config.ts": "export default {};\n",
+        "frontend/tsconfig.json": "{}\n",
+        "frontend/tsconfig.app.json": "{}\n",
+        "frontend/tsconfig.node.json": "{}\n",
+        "frontend/src/main.tsx": "export {};\n",
         "backend/requirements.lock.txt": "fastapi==0.115.14\n",
-        "backend/competition/evidence.py": "print('evidence')\n",
+        "backend/requirements.txt": "fastapi\n",
+        "backend/app/main.py": "print('app')\n",
         "competition/requirements-build.lock.txt": "pyinstaller==6.16.0\n",
         "competition/BUILDING.md": "# build\n",
         "competition/build-windows-package.ps1": "Write-Output 'build'\n",
+        "competition/create-source-package.ps1": "Write-Output 'source'\n",
         "competition/launcher.py": "print('launcher')\n",
         "competition/packaging.py": "print('packaging')\n",
         "competition/warehouse_patrol.spec": "# spec\n",
         "competition/3s/manifests/main-demo.json": "{}\n",
-        "docs/personal.md": "Do not package C:" + "\\Users\\Example User\\secret.txt\n",
+        "competition/3s/manifests/safety-demo.json": "{}\n",
+        "scripts/start-dev.ps1": "Write-Output 'start'\n",
+        "scripts/stop-dev.ps1": "Write-Output 'stop'\n",
+        "docs/demo.md": "Do not package C:" + "\\Users\\Example User\\secret.txt\n",
+        "docs/environment.md": "# environment\n",
+        "docs/algorithm.md": "# algorithm\n",
+        "docs/baseline.md": "# baseline\n",
+        "docs/testing-guide.md": "# testing\n",
     }
     for relative_path, contents in required_files.items():
         path = repository / relative_path

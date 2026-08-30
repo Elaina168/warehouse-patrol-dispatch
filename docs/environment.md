@@ -8,15 +8,9 @@
 - 后端：Python + FastAPI
 - 算法：后端负责任务分配、A* 路径规划、优先级避碰、冲突检测、动态重规划和指标计算
 
-## 当前机器发现
+## 构建机环境
 
-普通 `node` 命令可能优先解析到 Codex 应用目录：
-
-```text
-C:\Program Files\WindowsApps\OpenAI.Codex_26.602.4764.0_x64__2p2nqsd0c76g0\app\resources\node.exe
-```
-
-该路径此前出现过拒绝访问。机器上可用的真实 Node 位于：
+项目脚本显式使用机器上可用的 Node/npm 路径，避免把系统中其他 Node 安装误当作构建解释器：
 
 ```text
 C:\nvm4w\nodejs\node.exe
@@ -113,7 +107,7 @@ npm run backend:dev
 
 两种入口都会在首个失败阶段返回非零状态并停止后续阶段，避免把原生命令失败误报为完整检查通过。
 
-2026-08-08 的当前结果：前端构建通过、前端测试 `175/175`、后端测试 `676/676`。
+2026-08-30 的当前结果：前端构建通过、前端测试 `219/219`、后端测试 `798 passed, 19 skipped`（共收集 `817` 项）。跳过项不计入通过数。
 
 ## 依赖安装
 
@@ -134,3 +128,13 @@ python -m venv .venv
 `backend/requirements.txt` 是后端直接依赖及其版本的权威来源；`backend/requirements.lock.txt` 是从已完成全量验证的虚拟环境生成的运行、测试和传递依赖精确锁。日常或新环境安装使用 lock。只有在有意更新直接依赖、重建并验证完整环境后，才可用该环境的 `pip freeze --all` 刷新 lock；刷新时排除 `pip` 自身，并重新运行完整前后端检查。
 
 如果 `.venv` 目录存在但缺少 `Scripts\python.exe`，应将其视为未安装完成的生成目录，重新创建虚拟环境并安装锁定的后端依赖；不要修改项目脚本绕过该检查。
+
+## Windows x64 参赛包
+
+在 Windows x64、64 位 Python 和 PowerShell 7 环境中运行：
+
+```powershell
+& 'C:\nvm4w\nodejs\npm.cmd' run competition:package
+```
+
+输出目录为 `output\3s-competition-build\`。`WarehousePatrol` 子目录是可直接复制运行的便携软件目录；`WarehousePatrol-source.zip` 是仅含批准源码和构建文件的重建包。源码包不包含 `.git`、`.tools`、虚拟环境、依赖安装目录、运行输出、内部过程记录、申报材料或本机个人信息。
