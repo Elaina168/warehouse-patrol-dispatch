@@ -202,10 +202,9 @@ def test_desktop_launch_opens_loopback_url_and_exposes_stop_to_gui_boundary() ->
     assert len(stop_callbacks) == 1
 
 
-def test_pyinstaller_resource_mapping_includes_frontend_and_only_runtime_manifests() -> None:
+def test_pyinstaller_resource_mapping_includes_only_frontend_runtime_assets() -> None:
     assert PYINSTALLER_DATA_MAPPINGS == (
         ("frontend/dist", "frontend/dist"),
-        ("competition/3s/manifests", "competition/3s/manifests"),
     )
 
 
@@ -287,6 +286,9 @@ def test_source_tree_rebuilds_without_git_or_project_tools_and_rejects_x86_pe(
     repository = tmp_path / f"source-{machine:04x}"
     competition_directory = repository / "competition"
     competition_directory.mkdir(parents=True)
+    package_readme = competition_directory / "3s" / "package-README.md"
+    package_readme.parent.mkdir(parents=True)
+    package_readme.write_text("Package README\n", encoding="utf-8")
     for filename in (
         "build-windows-package.ps1",
         "packaging.py",
@@ -367,6 +369,24 @@ def test_source_tree_rebuilds_without_git_or_project_tools_and_rejects_x86_pe(
     assert (
         repository / "output" / "3s-competition-build" / "WarehousePatrol-source.zip"
     ).exists() is False
+    if expected_return_code == 0:
+        assert (
+            repository / "output" / "3s-competition-build" / "README.md"
+        ).read_text(encoding="utf-8") == "Package README\n"
+        output_entries = {
+            entry.name
+            for entry in (repository / "output" / "3s-competition-build").iterdir()
+        }
+        assert output_entries == {"WarehousePatrol", "README.md"}
+        assert not (
+            repository
+            / "output"
+            / "3s-competition-build"
+            / "WarehousePatrol"
+            / "competition"
+            / "3s"
+            / "manifests"
+        ).exists()
 
 
 def test_headless_launcher_serves_health_on_the_requested_loopback_port() -> None:
@@ -440,8 +460,7 @@ def test_source_package_archives_clean_head_without_git_metadata(tmp_path: Path)
         "competition/launcher.py": "print('launcher')\n",
         "competition/packaging.py": "print('packaging')\n",
         "competition/warehouse_patrol.spec": "# spec\n",
-        "competition/3s/manifests/main-demo.json": "{}\n",
-        "competition/3s/manifests/safety-demo.json": "{}\n",
+        "competition/3s/package-README.md": "# package readme\n",
         "scripts/start-dev.ps1": "Write-Output 'start'\n",
         "scripts/stop-dev.ps1": "Write-Output 'stop'\n",
         "docs/demo.md": "# demo\n",
@@ -506,6 +525,7 @@ def test_source_package_archives_clean_head_without_git_metadata(tmp_path: Path)
     assert not any(name.startswith(".git/") for name in names)
     assert set(ignored_files).isdisjoint(names)
     assert set(excluded_files).isdisjoint(names)
+    assert not any(name.startswith("competition/3s/manifests/") for name in names)
 
 
 def test_source_package_rejects_prohibited_wording_in_an_approved_file(tmp_path: Path) -> None:
@@ -534,8 +554,7 @@ def test_source_package_rejects_prohibited_wording_in_an_approved_file(tmp_path:
         "competition/launcher.py": "print('launcher')\n",
         "competition/packaging.py": "print('packaging')\n",
         "competition/warehouse_patrol.spec": "# spec\n",
-        "competition/3s/manifests/main-demo.json": "{}\n",
-        "competition/3s/manifests/safety-demo.json": "{}\n",
+        "competition/3s/package-README.md": "# package readme\n",
         "scripts/start-dev.ps1": "Write-Output 'start'\n",
         "scripts/stop-dev.ps1": "Write-Output 'stop'\n",
         "docs/demo.md": "# demo\n",
@@ -638,8 +657,7 @@ def test_source_package_rejects_a_tracked_windows_user_profile_path(tmp_path: Pa
         "competition/launcher.py": "print('launcher')\n",
         "competition/packaging.py": "print('packaging')\n",
         "competition/warehouse_patrol.spec": "# spec\n",
-        "competition/3s/manifests/main-demo.json": "{}\n",
-        "competition/3s/manifests/safety-demo.json": "{}\n",
+        "competition/3s/package-README.md": "# package readme\n",
         "scripts/start-dev.ps1": "Write-Output 'start'\n",
         "scripts/stop-dev.ps1": "Write-Output 'stop'\n",
         "docs/demo.md": "Do not package C:" + "\\Users\\Example User\\secret.txt\n",

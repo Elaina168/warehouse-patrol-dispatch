@@ -102,7 +102,7 @@
 
 ## Windows x64 参赛包
 
-使用 `npm run competition:package` 生成便携目录和源码 ZIP。便携目录只包含运行所需的 Windows x64 可执行文件、Python 运行时、后端、前端正式构建产物和主演示/安全专项清单；源码 ZIP 只包含前端、后端应用、构建脚本、依赖锁、启动脚本、运行说明和两个运行清单，不包含内部过程记录、申报材料、实验输出、测试目录或本机环境目录。
+使用 `npm run competition:package` 生成 Windows x64 便携目录和源码 ZIP。便携目录采用 `onedir` 结构：`WarehousePatrol/` 内含可执行文件、Python 运行时、后端和前端正式构建产物，外层同时提供 `README.md` 与源码 ZIP。源码 ZIP 包含前端、后端应用、构建脚本、依赖锁、启动脚本和运行说明，交付目录以 README 作为评委操作入口。
 
 具体构建要求和从源码 ZIP 重建方法见 `competition/BUILDING.md`。最终 ZIP 在生成时会检查批准路径、用户目录绝对路径和受限文字；发现问题会拒绝发布。
 

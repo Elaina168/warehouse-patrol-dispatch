@@ -35,7 +35,7 @@ $npmPath = (Get-Command npm.cmd -CommandType Application -ErrorAction Stop).Sour
 pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\competition\build-windows-package.ps1 -NpmPath $npmPath -PythonPath .\.venv\Scripts\python.exe -SkipSourcePackage
 ```
 
-`-SkipSourcePackage` 只跳过需要 Git 元数据的二次源码归档；前端构建、Windows/64 位 Python 前置门、PyInstaller onedir 和最终 AMD64 PE 验证仍全部执行。输出为 `output/3s-competition-build/WarehousePatrol/WarehousePatrol.exe`。如果 `py -3` 选择了 32 位解释器，脚本会在运行 npm 或 PyInstaller 前清晰拒绝；应改用已安装的 64 位 Python 重新创建 `.venv`。
+`-SkipSourcePackage` 只跳过需要 Git 元数据的二次源码归档；前端构建、Windows/64 位 Python 前置门、PyInstaller onedir 和最终 AMD64 PE 验证仍全部执行。输出为 `output/3s-competition-build/WarehousePatrol/WarehousePatrol.exe` 和同级 `README.md`。如果 `py -3` 选择了 32 位解释器，脚本会在运行 npm 或 PyInstaller 前清晰拒绝；应改用已安装的 64 位 Python 重新创建 `.venv`。
 
 生成后的可执行文件以 `127.0.0.1` 提供本机服务。自动化可使用：
 
@@ -43,8 +43,8 @@ pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\competition\build-window
 .\output\3s-competition-build\WarehousePatrol\WarehousePatrol.exe --headless --port 8123
 ```
 
-无头模式可通过 Windows `Ctrl+Break`（`CTRL_BREAK_EVENT`）正常停止，退出后会释放自己的监听端口。目标目录已包含 Python 运行时、后端、前端产物和竞赛运行清单；目标机不需要安装 Node.js、Python，也不需要联网下载依赖。
+无头模式可通过 Windows `Ctrl+Break`（`CTRL_BREAK_EVENT`）正常停止，退出后会释放自己的监听端口。目标目录已包含 Python 运行时、后端和前端正式产物；目标机可直接运行，不需要另行准备 Node.js、Python 或构建依赖。
 
-便携软件仅携带运行所需的前端产物和主演示/安全专项清单，不包含人工验收文档、申报材料、本地元数据、实验输出或源码。上述内容分别通过源码包和最终提交目录管理，避免混入面向评审运行的软件目录。
+便携软件目录采用 `onedir` 结构，`WarehousePatrol/` 内含可执行文件及 `_internal/` 运行组件，外层 README 提供平台介绍和操作说明；源码 ZIP 单独提供源代码和构建文件。
 
-正式仓库路径生成的源码包只允许来自干净 Git 工作树；路径白名单包含前端源代码、后端运行代码、前后端依赖清单、构建脚本、启动脚本、运行说明和两个竞赛运行清单。它不包含 `backend/tests`、`backend/competition`、申报材料、内部过程记录、实验输出或已填写的本地材料，并排除未跟踪或被忽略的 `.git`、`.tools`、虚拟环境、`node_modules`、缓存、运行输出、`.env`、个人元数据和用户目录绝对路径。
+正式仓库路径生成的源码包只允许来自干净 Git 工作树；路径白名单包含前端源代码、后端运行代码、前后端依赖清单、构建脚本、启动脚本、运行说明和 `competition/3s/package-README.md`。源码包保持源代码与重建所需文件的边界，评委运行说明统一使用包根目录的 README。

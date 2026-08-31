@@ -10,7 +10,6 @@ from pathlib import Path
 
 PYINSTALLER_DATA_MAPPINGS = (
     ("frontend/dist", "frontend/dist"),
-    ("competition/3s/manifests", "competition/3s/manifests"),
 )
 PE_MACHINE_AMD64 = 0x8664
 
