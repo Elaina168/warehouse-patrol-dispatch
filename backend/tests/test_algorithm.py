@@ -4309,7 +4309,7 @@ def test_dispatch_delivery_requires_capability_and_sufficient_load() -> None:
     assert assignment["tasks"][0]["id"] == "D1"
 
 
-def test_assignment_diagnostics_records_candidate_expansion_and_full_clone_work() -> None:
+def test_assignment_diagnostics_records_candidate_expansion_and_selected_clone_work() -> None:
     diagnostics = PlanningDiagnostics()
     result = dispatch_module.run_dispatch(
         build_benchmark_scenario("scale-r4-t15"),
@@ -4321,9 +4321,42 @@ def test_assignment_diagnostics_records_candidate_expansion_and_full_clone_work(
     assert diagnostics.assignment_candidate_expansion_count > 0
     assert (
         diagnostics.assignment_robot_state_copy_count
-        == diagnostics.assignment_candidate_expansion_count * 4
+        == diagnostics.assignment_candidate_expansion_count
     )
     assert 1 <= diagnostics.assignment_beam_peak_width <= 48
+
+
+def test_clone_assignment_candidate_copies_only_selected_robot_and_isolates_siblings() -> None:
+    scenario = build_benchmark_scenario("scale-r4-t15")
+    parent = dispatch_module.AssignmentCandidate(
+        robots=[
+            dispatch_module.RobotAssignmentState(
+                robot=robot,
+                cursor=robot.start,
+                battery=robot.battery,
+            )
+            for robot in scenario.robots[:2]
+        ]
+    )
+
+    left = dispatch_module.clone_assignment_candidate(parent, 0)
+    right = dispatch_module.clone_assignment_candidate(parent, 1)
+    left.robots[0].tasks.append(scenario.tasks[0])
+    right.robots[1].tasks.append(scenario.tasks[1])
+
+    assert left.robots[0] is not parent.robots[0]
+    assert left.robots[1] is parent.robots[1]
+    assert right.robots[0] is parent.robots[0]
+    assert right.robots[1] is not parent.robots[1]
+    assert parent.robots[0].tasks == []
+    assert parent.robots[1].tasks == []
+    assert left.robots[0].tasks != right.robots[0].tasks
+    assert left.robots[1].tasks != right.robots[1].tasks
+
+    with pytest.raises(IndexError, match="索引"):
+        dispatch_module.clone_assignment_candidate(parent, -1)
+    with pytest.raises(IndexError, match="索引"):
+        dispatch_module.clone_assignment_candidate(parent, len(parent.robots))
 
 
 def test_assignment_diagnostics_rejects_negative_state_copy_count() -> None:

@@ -545,21 +545,24 @@ def assignment_candidate_score(candidate: AssignmentCandidate) -> float:
     return penalty + total_distance + makespan * 2 + balance * 0.8 - assigned_task_count * 0.01
 
 
-def clone_assignment_candidate(candidate: AssignmentCandidate) -> AssignmentCandidate:
-    return AssignmentCandidate(
-        robots=[
-            RobotAssignmentState(
-                robot=state.robot,
-                cursor=state.cursor,
-                battery=state.battery,
-                time=state.time,
-                distance=state.distance,
-                penalty=state.penalty,
-                tasks=[*state.tasks],
-            )
-            for state in candidate.robots
-        ]
+def clone_assignment_candidate(
+    candidate: AssignmentCandidate,
+    robot_index: int,
+) -> AssignmentCandidate:
+    if robot_index < 0 or robot_index >= len(candidate.robots):
+        raise IndexError("机器人候选索引越界")
+    robots = list(candidate.robots)
+    state = candidate.robots[robot_index]
+    robots[robot_index] = RobotAssignmentState(
+        robot=state.robot,
+        cursor=state.cursor,
+        battery=state.battery,
+        time=state.time,
+        distance=state.distance,
+        penalty=state.penalty,
+        tasks=[*state.tasks],
     )
+    return AssignmentCandidate(robots=robots)
 
 
 def assign_tasks_beam_search(
@@ -646,9 +649,9 @@ def assign_tasks_beam_search(
 
                 if planning_diagnostics is not None:
                     planning_diagnostics.record_assignment_expansion(
-                        len(candidate.robots)
+                        1
                     )
-                next_candidate = clone_assignment_candidate(candidate)
+                next_candidate = clone_assignment_candidate(candidate, robot_index)
                 next_robot = next_candidate.robots[robot_index]
                 next_robot.tasks.append(task)
                 next_robot.time = finish_time
