@@ -7,9 +7,17 @@ import time
 
 import pytest
 
+from backend.app.dispatch import (
+    build_paths_for_order,
+    detect_conflicts,
+    repair_local_joint_conflicts,
+)
 from backend.benchmarks import solvability_runner as runner_module
 from backend.benchmarks import solvability_differential as cli_module
-from backend.benchmarks.solvability_cases import solvability_catalog
+from backend.benchmarks.solvability_cases import (
+    generate_solvability_cases,
+    solvability_catalog,
+)
 from backend.benchmarks.process_isolation import BenchmarkInfrastructureError
 from backend.benchmarks.solvability_runner import (
     build_fixed_assignment_input,
@@ -28,6 +36,14 @@ from backend.benchmarks.solvability_differential import main, parse_args
 
 def _case(case_id: str):
     return next(case for case in solvability_catalog() if case.case_id == case_id)
+
+
+def _seeded_i0007_case():
+    return next(
+        case
+        for case in generate_solvability_cases(seed=20260904, sample_count=7)
+        if case.case_id == "generated-s20260904-i0007"
+    )
 
 
 def test_fixed_assignment_adapter_preserves_agent_start_goal_and_order() -> None:
@@ -113,6 +129,106 @@ def test_no_bypass_unsolved_case_is_not_reported_as_planner_miss() -> None:
     assert run.oracle_outcome == "unsolved"
     assert run.planner_outcome in {"failed", "conflicted"}
     assert run.comparison_class == "oracleUnsolvedPlannerNoValidPlan"
+
+
+def test_seeded_i0007_is_repaired_without_execution_conflicts() -> None:
+    case = _seeded_i0007_case()
+
+    assert case.width == 3
+    assert case.height == 3
+    assert case.obstacles == ((0, 1), (1, 1))
+    assert [(agent.agent_id, agent.start, agent.goal) for agent in case.agents] == [
+        ("R1", (0, 2), (1, 0)),
+        ("R2", (1, 2), (2, 1)),
+    ]
+
+    run = execute_solvability_case(
+        case,
+        run_index=1,
+        max_expanded_states=100_000,
+    )
+
+    assert run.oracle_outcome == "solved"
+    assert run.oracle_makespan == 5
+    assert run.planner_outcome == "solved"
+    assert run.planner_failure_count == 0
+    assert run.planner_conflict_count == 0
+    assert run.comparison_class == "agreementSolved"
+
+
+def test_local_joint_repair_respects_the_finite_tick_window() -> None:
+    case = _seeded_i0007_case()
+    scenario, assignments = build_fixed_assignment_input(case)
+    candidate = build_paths_for_order(
+        scenario,
+        scenario.robots,
+        assignments,
+        True,
+        [],
+        [],
+        scenario.robots,
+    )
+
+    assert candidate.failures == []
+    assert candidate.paths["R2"] == [(1, 2), (2, 2), (2, 1)]
+    assert repair_local_joint_conflicts(
+        scenario,
+        scenario.robots,
+        assignments,
+        candidate.paths,
+        candidate.failures,
+        max_planned_path_ticks=4,
+    ) is None
+
+
+def test_local_joint_repair_rejects_late_conflicts_with_failures() -> None:
+    case = _case("catalog-side-bypass-swap-r2")
+    scenario, assignments = build_fixed_assignment_input(case)
+    paths = {
+        "R1": [(0, 0)] * 13 + [(1, 0), (2, 0)],
+        "R2": [(2, 0)] * 13 + [(1, 0), (0, 0)],
+    }
+
+    assert detect_conflicts(paths)[0].time == 13
+    assert repair_local_joint_conflicts(
+        scenario,
+        scenario.robots,
+        assignments,
+        paths,
+        ["R1 存在不可达任务"],
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("case_id", "oracle_makespan"),
+    [
+        ("generated-s20260904-i0009", 3),
+        ("generated-s20260904-i0020", 7),
+        ("generated-s20260904-i0034", 4),
+    ],
+)
+def test_remaining_seeded_misses_are_repaired_without_execution_conflicts(
+    case_id: str,
+    oracle_makespan: int,
+) -> None:
+    case = next(
+        case
+        for case in generate_solvability_cases(seed=20260904, sample_count=34)
+        if case.case_id == case_id
+    )
+
+    run = execute_solvability_case(
+        case,
+        run_index=1,
+        max_expanded_states=100_000,
+    )
+
+    assert run.oracle_outcome == "solved"
+    assert run.oracle_makespan == oracle_makespan
+    assert run.planner_outcome == "solved"
+    assert run.planner_failure_count == 0
+    assert run.planner_conflict_count == 0
+    assert run.comparison_class == "agreementSolved"
 
 
 def test_solvability_report_preserves_classification_and_limit_semantics() -> None:

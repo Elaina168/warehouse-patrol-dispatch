@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import heapq
+from itertools import product
 import math
 import time
 from dataclasses import dataclass, field
@@ -78,6 +79,14 @@ class PathPlanningCandidate:
     charging_visits: list[ChargingVisit] = field(default_factory=list)
     failureDetails: dict[str, TaskFailureDetail] = field(default_factory=dict)
     suppressedFailureTaskIds: set[str] = field(default_factory=set)
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalJointState:
+    time: int
+    positions: tuple[Cell, ...]
+    completed_mask: int
+    movement_counts: tuple[int, ...]
 
 
 DistanceCache = dict[tuple[Cell, Cell], float]
@@ -1327,6 +1336,301 @@ def path_planning_candidate_score(candidate: PathPlanningCandidate, assignments:
     )
 
 
+LOCAL_JOINT_REPAIR_MAX_ROBOTS = 3
+LOCAL_JOINT_REPAIR_MAX_TICKS = 12
+LOCAL_JOINT_REPAIR_MAX_EXPANDED_STATES = 20_000
+
+
+def _local_joint_heuristic(
+    positions: tuple[Cell, ...],
+    targets: tuple[Cell, ...],
+    completed_mask: int,
+) -> int:
+    return max(
+        (
+            manhattan(position, target)
+            for index, (position, target) in enumerate(
+                zip(positions, targets, strict=True)
+            )
+            if not (completed_mask & (1 << index))
+        ),
+        default=0,
+    )
+
+
+def _local_joint_paths(
+    state: _LocalJointState,
+    parents: dict[_LocalJointState, _LocalJointState],
+    robot_ids: tuple[str, ...],
+) -> dict[str, list[Cell]]:
+    states = [state]
+    while state in parents:
+        state = parents[state]
+        states.append(state)
+    states.reverse()
+    return {
+        robot_id: [item.positions[index] for item in states]
+        for index, robot_id in enumerate(robot_ids)
+    }
+
+
+def _local_joint_fixed_paths_clear(
+    current_positions: tuple[Cell, ...] | None,
+    next_positions: tuple[Cell, ...],
+    next_time: int,
+    fixed_paths: dict[str, list[Cell]],
+) -> bool:
+    for path in fixed_paths.values():
+        fixed_now = path_at(path, next_time)
+        if fixed_now is None:
+            continue
+        if any(position == fixed_now for position in next_positions):
+            return False
+        if current_positions is None or next_time == 0:
+            continue
+        fixed_previous = path_at(path, next_time - 1)
+        if fixed_previous is None:
+            continue
+        if any(
+            previous == fixed_now and fixed_previous == current
+            for previous, current in zip(
+                current_positions,
+                next_positions,
+                strict=True,
+            )
+        ):
+            return False
+    return True
+
+
+def _local_joint_terminal_clear(
+    positions: tuple[Cell, ...],
+    time_index: int,
+    fixed_paths: dict[str, list[Cell]],
+) -> bool:
+    fixed_horizon = max(
+        (len(path) - 1 for path in fixed_paths.values()),
+        default=0,
+    )
+    return all(
+        _local_joint_fixed_paths_clear(
+            positions,
+            positions,
+            future_time,
+            fixed_paths,
+        )
+        for future_time in range(time_index + 1, fixed_horizon + 1)
+    )
+
+
+def repair_local_joint_conflicts(
+    scenario: Scenario,
+    robots: list[Robot],
+    assignments: list[Assignment],
+    paths: dict[str, list[Cell]],
+    failures: list[str],
+    failure_details: dict[str, TaskFailureDetail] | None = None,
+    max_planned_path_ticks: int = MAX_PLANNED_PATH_TICKS,
+) -> dict[str, list[Cell]] | None:
+    """在严格受限的小窗口内联合重排一个冲突连通分量。"""
+    if failure_details:
+        return None
+    if scenario.zones.charging or not paths:
+        return None
+
+    conflicts = detect_conflicts(paths)
+    if not conflicts and not failures:
+        return None
+    if conflicts and conflicts[0].time > LOCAL_JOINT_REPAIR_MAX_TICKS:
+        return None
+
+    tasks_by_robot = {assignment.robotId: assignment.tasks for assignment in assignments}
+    if failures:
+        participant_ids = {
+            robot.id for robot in robots if tasks_by_robot.get(robot.id)
+        }
+    else:
+        participant_ids = set(conflicts[0].robots)
+        while True:
+            expanded_ids = {
+                robot_id
+                for conflict in conflicts
+                if participant_ids.intersection(conflict.robots)
+                for robot_id in conflict.robots
+            }
+            if expanded_ids <= participant_ids:
+                break
+            participant_ids.update(expanded_ids)
+    if not 1 <= len(participant_ids) <= LOCAL_JOINT_REPAIR_MAX_ROBOTS:
+        return None
+
+    participant_robots = [robot for robot in robots if robot.id in participant_ids]
+    if len(participant_robots) != len(participant_ids):
+        return None
+    targets: list[Cell] = []
+    for robot in participant_robots:
+        tasks = tasks_by_robot.get(robot.id)
+        if (
+            tasks is None
+            or len(tasks) != 1
+            or tasks[0].type != "inspection"
+            or tasks[0].targets is None
+            or len(tasks[0].targets) != 1
+            or task_release_time(tasks[0]) != 0
+            or task_service_time(tasks[0]) != 0
+            or robot.moveTicks != 1
+            or robot.id not in paths
+        ):
+            return None
+        targets.append(tasks[0].targets[0])
+
+    allowed_failures = {
+        f"{robot.id} 存在不可达任务" for robot in participant_robots
+    }
+    if any(failure not in allowed_failures for failure in failures):
+        return None
+
+    robot_ids = tuple(robot.id for robot in participant_robots)
+    fixed_paths = {
+        robot_id: path
+        for robot_id, path in paths.items()
+        if robot_id not in participant_ids
+    }
+    positions = tuple(robot.start for robot in participant_robots)
+    targets_tuple = tuple(targets)
+    completed_mask = sum(
+        1 << index
+        for index, (position, target) in enumerate(
+            zip(positions, targets_tuple, strict=True)
+        )
+        if position == target
+    )
+    all_completed_mask = (1 << len(participant_robots)) - 1
+    if not _local_joint_fixed_paths_clear(None, positions, 0, fixed_paths):
+        return None
+
+    start = _LocalJointState(
+        time=0,
+        positions=positions,
+        completed_mask=completed_mask,
+        movement_counts=(0,) * len(participant_robots),
+    )
+    parents: dict[_LocalJointState, _LocalJointState] = {}
+    visited = {start}
+    heap: list[tuple[int, int, tuple[Cell, ...], int, tuple[int, ...]]] = [
+        (
+            _local_joint_heuristic(positions, targets_tuple, completed_mask),
+            0,
+            positions,
+            completed_mask,
+            start.movement_counts,
+        )
+    ]
+    blocked = make_blocked_set(scenario)
+    max_ticks = min(LOCAL_JOINT_REPAIR_MAX_TICKS, max_planned_path_ticks)
+    expanded_states = 0
+
+    while heap:
+        _, time_index, current_positions, current_mask, movement_counts = heapq.heappop(heap)
+        current = _LocalJointState(
+            time=time_index,
+            positions=current_positions,
+            completed_mask=current_mask,
+            movement_counts=movement_counts,
+        )
+        if current_mask == all_completed_mask and _local_joint_terminal_clear(
+            current_positions,
+            time_index,
+            fixed_paths,
+        ):
+            repaired_paths = dict(paths)
+            repaired_paths.update(_local_joint_paths(current, parents, robot_ids))
+            repaired_conflicts = detect_conflicts(repaired_paths)
+            if len(repaired_conflicts) < len(conflicts) or (
+                failures and not conflicts and not repaired_conflicts
+            ):
+                return repaired_paths
+            return None
+        if time_index >= max_ticks:
+            continue
+        if expanded_states >= LOCAL_JOINT_REPAIR_MAX_EXPANDED_STATES:
+            return None
+        expanded_states += 1
+
+        action_options = [
+            neighbors(position, scenario, blocked, include_wait=True)
+            for position in current_positions
+        ]
+        for next_positions in product(*action_options):
+            if len(set(next_positions)) != len(next_positions):
+                continue
+            if any(
+                current_positions[first] == next_positions[second]
+                and current_positions[second] == next_positions[first]
+                for first in range(len(current_positions))
+                for second in range(first + 1, len(current_positions))
+            ):
+                continue
+            next_time = time_index + 1
+            if not _local_joint_fixed_paths_clear(
+                current_positions,
+                next_positions,
+                next_time,
+                fixed_paths,
+            ):
+                continue
+            next_movement_counts = tuple(
+                count + (current != following)
+                for count, current, following in zip(
+                    movement_counts,
+                    current_positions,
+                    next_positions,
+                    strict=True,
+                )
+            )
+            if any(
+                count > robot.battery
+                for count, robot in zip(
+                    next_movement_counts,
+                    participant_robots,
+                    strict=True,
+                )
+            ):
+                continue
+            next_mask = current_mask
+            for index, (position, target) in enumerate(
+                zip(next_positions, targets_tuple, strict=True)
+            ):
+                if position == target:
+                    next_mask |= 1 << index
+            next_state = _LocalJointState(
+                time=next_time,
+                positions=tuple(next_positions),
+                completed_mask=next_mask,
+                movement_counts=next_movement_counts,
+            )
+            if next_state in visited:
+                continue
+            visited.add(next_state)
+            parents[next_state] = current
+            heapq.heappush(
+                heap,
+                (
+                    next_time
+                    + _local_joint_heuristic(
+                        next_state.positions,
+                        targets_tuple,
+                        next_mask,
+                    ),
+                    next_time,
+                    next_state.positions,
+                    next_mask,
+                    next_movement_counts,
+                ),
+            )
+    return None
+
+
 def build_paths(
     scenario: Scenario,
     robots: list[Robot],
@@ -1388,6 +1692,29 @@ def build_paths(
             candidate_diagnostics,
             max_planned_path_ticks,
         )
+        if (
+            avoid_conflicts
+            and not extra_blocked
+            and not delayed_blocked
+            and delayed_block_time is None
+            and not active_charging_visits
+            and not has_dynamic_event(scenario.dynamic)
+        ):
+            repaired_paths = repair_local_joint_conflicts(
+                scenario,
+                robots,
+                assignments,
+                candidate.paths,
+                candidate.failures,
+                candidate.failureDetails,
+                max_planned_path_ticks,
+            )
+            if repaired_paths is not None:
+                candidate.paths = repaired_paths
+                if candidate.failures:
+                    candidate.failures = []
+                    candidate.failureDetails = {}
+                    candidate.suppressedFailureTaskIds = set()
         score = path_planning_candidate_score(candidate, assignments)
         if candidate_diagnostics is not None:
             candidate_diagnostics.finish(

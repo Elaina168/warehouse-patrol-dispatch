@@ -162,7 +162,7 @@ Completed and currently expected to remain in the project:
 - `scripts/test-all.ps1` and `npm run check` run `frontend:build`, `frontend:test`, and `backend:test` in that order. Reproducible backend installation uses `backend/requirements.lock.txt`.
 - Replan-window and scale experiment batches are limited to 32 entries, and replan windows must be unique. Algorithm report publication treats `results.json`, `runs.csv`, and `case-summaries.csv` as one rollback-protected bundle.
 - Benchmark isolation cleans child processes and Pipe endpoints even for cancellation `BaseException`, escalating from terminate through bounded join to kill and bounded join when needed. Real wall-clock measurements remain offline evidence rather than daily pytest gates, and dependency locks and audits have dedicated checks.
-- Current verification snapshot on 2026-09-04: frontend production build passed, frontend tests `219/219`, backend tests `836 passed, 19 skipped` (855 collected).
+- Current verification snapshot on 2026-09-04: frontend production build passed, frontend tests `219/219`, backend tests `842 passed, 19 skipped` (861 collected).
 
 Recently removed because they are not needed yet:
 
@@ -171,7 +171,7 @@ Recently removed because they are not needed yet:
 
 ## Current Plan
 
-The project is no longer in a from-scratch build phase. Current work should strengthen the runnable system itself. The bounded offline small-scale exact solvability reference and differential benchmark has been selected and completed. The next implementation item remains unselected: first manually review real `oracleSolvedPlannerMiss` cases, then separately confirm a bounded local joint-repair design before any second-stage design or coding.
+The project is no longer in a from-scratch build phase. Current work should strengthen the runnable system itself. The bounded offline small-scale exact solvability reference and differential benchmark has been selected and completed. A bounded local joint-repair cut-in has now been selected and completed for all four reviewed counterexamples (`generated-s20260904-i0007`, `generated-s20260904-i0009`, `generated-s20260904-i0020`, and `generated-s20260904-i0034`); broader repair expansion or planner redesign remains a separately confirmed decision.
 
 System-complete means the current online dispatch workflow is credible, safe within its documented boundary, maintainable, and protected by regression tests. It does not imply product-grade persistence, authentication, or industrial MAPF guarantees.
 
@@ -212,8 +212,10 @@ Current module status:
    - Online execution safety is now a code-enforced invariant for `avoidConflicts=true`: the first predicted vertex or reverse-edge conflict tick causes a full-fleet hold, is returned early through `SessionResult.safetyIntervention`, and never writes the conflicting action into actual path history. Baseline comparison, direct dispatch, and experiments intentionally remain prediction/comparison paths and can still return or execute conflicts.
    - The offline algorithm boundary benchmark is implemented with deterministic scale, density, and online bottleneck cases, isolated per-run timeouts, JSON/CSV result reports, and stability summaries. It records planning forecasts separately from online execution safety evidence; it does not establish complete MAPF or full-horizon zero-conflict guarantees.
    - The bounded offline solvability differential benchmark is implemented with a joint-state A* reference for static `1..5`-axis, at most `25`-cell, `1..4`-robot cases. It fixes `Assignment` before calling the production path planner, emits `schemaVersion=1` JSON/CSV reports, and distinguishes exact `unsolved` from resource-limited `limit`; it does not enter online sessions or change production scheduling.
+   - The four reviewed real counterexamples (`generated-s20260904-i0007`, `generated-s20260904-i0009`, `generated-s20260904-i0020`, and `generated-s20260904-i0034`) now use the same bounded local joint-repair cut-in: at most 3 connected or reservation-coupled task robots, a first conflict through T=12 when a conflict exists, one zero-service unit-step inspection target per participant, no charging/dynamic/runtime-block context, at most 12 local ticks and 20,000 expanded states. It keeps non-participant paths fixed where applicable, only clears ordinary reservation failures after a valid joint result, and falls back to the existing candidate otherwise; it is not complete MAPF/CBS.
    - Known boundaries remain beyond the current heuristic planner, including arbitrary-input route solvability, larger-instance performance, portable adaptive thresholds, and full-horizon zero-conflict guarantees. These are documented boundaries, not an approved next task. The safety gate prevents unsafe execution but does not guarantee that every input has a zero-conflict route.
-   - The next candidate is to manually review real `oracleSolvedPlannerMiss` cases from the differential reports and only then separately confirm a bounded local joint-repair design; this does not approve the second stage or replace the production planner.
+   - The post-repair default 68-case rerun produced `agreementSolved=67` and `oracleUnsolvedPlannerNoValidPlan=1`, with `oracleSolvedPlannerMiss=0`, `oracleUnsolvedPlannerSolved=0`, `oracleLimit=0`, `timeout=0`, and `error=0`. All four reviewed candidates now have fixed regressions and no candidate remains in the default report; any broader repair scope still requires separate confirmation and does not approve a planner replacement or complete MAPF claim.
+   - The next candidate remains unselected; future work must start from a newly reproduced boundary rather than automatically expanding this local repair.
    - The density benchmark performance anomaly has been attributed to a timed A* candidate whose goal remained vertex-reserved for the complete search horizon. The planner now rejects that candidate before state expansion, records deterministic planning-work diagnostics in benchmark schema v2, and preserves the existing candidate order and result semantics.
    - 同机 density x5 优化证据的 `medianReplanTimeMs` / P95 为：`density-r8-t31` 150.85 / 155.90 ms、`density-r8-t43` 213.56 / 214.37 ms、`density-r8-t55` 231.33 / 235.45 ms；31/43 的全预留目标拒绝不再进入 exhausted 搜索，55 保持首个候选成功。
    - The offline adaptive-window calibration compares fixed `4T`/`24T`/`48T` with the current adaptive `24T` baseline on three deterministic online cases. It records real replan decisions, correctness outcomes, execution-safety evidence, and deterministic planning work without changing production `60/40ms`, latest-5/minimum-3 latency sampling, or the `2×` pressure rule.
@@ -491,7 +493,7 @@ Before reporting implementation complete, run:
 & 'C:\nvm4w\nodejs\npm.cmd' run check
 ```
 
-Latest full verification snapshot on 2026-09-04: frontend production build passed, frontend tests `219/219`, backend tests `836 passed, 19 skipped` (855 collected).
+Latest full verification snapshot on 2026-09-04: frontend production build passed, frontend tests `219/219`, backend tests `842 passed, 19 skipped` (861 collected).
 
 For frontend behavior changes, also verify in a browser when practical:
 

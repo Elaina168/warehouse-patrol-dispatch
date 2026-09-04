@@ -309,6 +309,8 @@ npm run benchmark:solvability -- --sample-count 64 --seed 20260904 --repetitions
 
 每次最终发布包含三个文件：`results.json` 保存 `schemaVersion = 1`、配置、完整案例输入、逐次运行、逐案例汇总和候选反例 ID；`runs.csv` 展开每次重复，路径、失败和冲突字段以紧凑 JSON 保存；`case-summaries.csv` 保存每个案例的运行数、五类计数、`timeout/error` 计数、稳定性和耗时汇总。JSON 使用 UTF-8 无 BOM，两份 CSV 使用带 BOM 的 UTF-8。运行期间逐步更新 `results.partial.json`，最终三个文件按事务 bundle 发布；超时、异常和 `oracleLimit` 记录都必须保留。
 
+2026-09-04 在四个候选固定回归和有限窗口局部联合修复接入后重跑默认 68-case 配置，结果目录为 `output/solvability-differential/20260904T103757Z`：`agreementSolved=67`、`oracleSolvedPlannerMiss=0`、`oracleUnsolvedPlannerNoValidPlan=1`，`oracleUnsolvedPlannerSolved=0`、`oracleLimit=0`、`timeout=0`、`error=0`。`generated-s20260904-i0007`、`generated-s20260904-i0009`、`generated-s20260904-i0020` 和 `generated-s20260904-i0034` 均已从候选集合移除。该结果只证明本地受限切口对已复核案例有效，不证明一般输入的完整 MAPF 能力。
+
 ## 离线自适应窗口校准
 
 自适应窗口校准是独立命令行取证流程，不新增实验 API，也不允许 HTTP 调用方传入内部 `AdaptiveReplanPolicy`。在项目根目录运行默认完整校准：
