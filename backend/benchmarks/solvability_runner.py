@@ -1,8 +1,15 @@
+import traceback
+from collections.abc import Callable
 from dataclasses import replace
 from time import perf_counter
 
 from backend.app.dispatch import build_paths, detect_conflicts
 from backend.app.schemas import Assignment, Scenario
+from backend.benchmarks.process_isolation import (
+    BenchmarkInfrastructureError,
+    run_isolated_process,
+    sanitize_error_text,
+)
 from backend.benchmarks.solvability_cases import SolvabilityCase
 from backend.benchmarks.solvability_oracle import OracleOutcome, solve_exact
 from backend.benchmarks.solvability_results import (
@@ -163,3 +170,71 @@ def execute_solvability_case(
         comparison_class=classify_comparison(oracle.outcome, planner_outcome),
         wall_clock_ms=round((perf_counter() - started_at) * 1_000, 2),
     )
+
+
+def run_isolated_solvability_case(
+    case: SolvabilityCase,
+    run_index: int,
+    max_expanded_states: int,
+    timeout_seconds: float,
+    worker_callable: Callable = execute_solvability_case,
+) -> SolvabilityRun:
+    execution = run_isolated_process(
+        worker_callable,
+        (case, run_index, max_expanded_states),
+        timeout_seconds,
+    )
+    if execution.outcome == "timeout":
+        return SolvabilityRun.timeout(case, run_index, execution.wall_clock_ms)
+    if execution.outcome == "error":
+        return SolvabilityRun.error(
+            case,
+            run_index,
+            execution.error_type or "ChildProcessError",
+            execution.error_message or "子进程未返回错误信息",
+            execution.wall_clock_ms,
+        )
+    if not isinstance(execution.value, SolvabilityRun):
+        return SolvabilityRun.error(
+            case,
+            run_index,
+            "ChildProcessError",
+            "子进程返回了无效的可解性差分结果载荷",
+            execution.wall_clock_ms,
+        )
+    return replace(execution.value, wall_clock_ms=execution.wall_clock_ms)
+
+
+def run_solvability_cases(
+    cases: tuple[SolvabilityCase, ...],
+    repetitions: int,
+    max_expanded_states: int,
+    timeout_seconds: float,
+    on_result: Callable[[list[SolvabilityRun]], None] | None = None,
+) -> list[SolvabilityRun]:
+    runs: list[SolvabilityRun] = []
+    for case in cases:
+        for run_index in range(1, repetitions + 1):
+            started_at = perf_counter()
+            try:
+                run = run_isolated_solvability_case(
+                    case,
+                    run_index,
+                    max_expanded_states,
+                    timeout_seconds,
+                )
+            except BenchmarkInfrastructureError:
+                raise
+            except Exception as exc:
+                traceback.print_exc()
+                run = SolvabilityRun.error(
+                    case,
+                    run_index,
+                    type(exc).__name__,
+                    sanitize_error_text(str(exc)),
+                    round((perf_counter() - started_at) * 1000, 2),
+                )
+            runs.append(run)
+            if on_result is not None:
+                on_result(list(runs))
+    return runs

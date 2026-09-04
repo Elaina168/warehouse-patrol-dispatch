@@ -1,11 +1,17 @@
 from dataclasses import replace
+import time
+
+import pytest
 
 from backend.benchmarks import solvability_runner as runner_module
 from backend.benchmarks.solvability_cases import solvability_catalog
+from backend.benchmarks.process_isolation import BenchmarkInfrastructureError
 from backend.benchmarks.solvability_runner import (
     build_fixed_assignment_input,
     classify_comparison,
     execute_solvability_case,
+    run_isolated_solvability_case,
+    run_solvability_cases,
 )
 from backend.benchmarks.solvability_results import SolvabilityReport
 
@@ -136,3 +142,80 @@ def test_solvability_report_preserves_classification_and_limit_semantics() -> No
     assert report.to_record()["cases"][0]["caseId"] == solved_case.case_id
     assert report.case_summaries[0].run_count == 2
     assert report.case_summaries[0].oracle_solved_planner_miss_count == 1
+
+
+def _sleeping_worker(case, run_index, max_expanded_states):
+    time.sleep(0.2)
+
+
+def _failing_worker(case, run_index, max_expanded_states):
+    raise RuntimeError("worker failed\nwith second line")
+
+
+def test_isolated_solvability_case_preserves_timeout() -> None:
+    run = run_isolated_solvability_case(
+        _case("catalog-solo-straight"),
+        1,
+        100_000,
+        0.05,
+        worker_callable=_sleeping_worker,
+    )
+
+    assert run.outcome == "timeout"
+    assert run.error_type == "TimeoutError"
+    assert run.comparison_class is None
+
+
+def test_isolated_solvability_case_sanitizes_worker_error() -> None:
+    run = run_isolated_solvability_case(
+        _case("catalog-solo-straight"),
+        1,
+        100_000,
+        5,
+        worker_callable=_failing_worker,
+    )
+
+    assert run.outcome == "error"
+    assert run.error_type == "RuntimeError"
+    assert "\n" not in run.error_message
+
+
+def test_solvability_batch_reports_cumulative_copies(monkeypatch) -> None:
+    observed = []
+
+    def fake_isolated(case, run_index, max_expanded_states, timeout_seconds):
+        return execute_solvability_case(case, run_index, max_expanded_states)
+
+    monkeypatch.setattr(runner_module, "run_isolated_solvability_case", fake_isolated)
+    cases = (_case("catalog-solo-straight"), _case("catalog-independent-r2"))
+
+    runs = run_solvability_cases(
+        cases,
+        repetitions=2,
+        max_expanded_states=100_000,
+        timeout_seconds=5,
+        on_result=lambda current: observed.append(current),
+    )
+
+    assert len(runs) == 4
+    assert [len(item) for item in observed] == [1, 2, 3, 4]
+    assert observed[-1] is not runs
+
+
+def test_solvability_batch_propagates_infrastructure_error(monkeypatch) -> None:
+    def failing_isolated(case, run_index, max_expanded_states, timeout_seconds):
+        raise BenchmarkInfrastructureError("worker cleanup failed")
+
+    monkeypatch.setattr(
+        runner_module,
+        "run_isolated_solvability_case",
+        failing_isolated,
+    )
+
+    with pytest.raises(BenchmarkInfrastructureError, match="worker cleanup failed"):
+        run_solvability_cases(
+            (_case("catalog-solo-straight"),),
+            repetitions=1,
+            max_expanded_states=100_000,
+            timeout_seconds=5,
+        )
