@@ -162,6 +162,16 @@ def _execute_direct(case: BenchmarkCase, run_index: int) -> BenchmarkRun:
         timed_astar_goal_fully_reserved_reject_count=(
             planning_diagnostics.timed_astar_goal_fully_reserved_reject_count
         ),
+        runtime_task_count=case.runtime_task_count,
+        runtime_mutation_count=0,
+        replan_observation_count=0,
+        assignment_candidate_expansion_count=(
+            planning_diagnostics.assignment_candidate_expansion_count
+        ),
+        assignment_robot_state_copy_count=(
+            planning_diagnostics.assignment_robot_state_copy_count
+        ),
+        assignment_beam_peak_width=planning_diagnostics.assignment_beam_peak_width,
     )
 
 
@@ -245,4 +255,10 @@ def _execute_online(case: BenchmarkCase, run_index: int) -> BenchmarkRun:
         max_timed_astar_expanded_state_count=None,
         timed_astar_exhausted_search_count=None,
         timed_astar_goal_fully_reserved_reject_count=None,
+        runtime_task_count=case.runtime_task_count,
+        runtime_mutation_count=0,
+        replan_observation_count=0,
+        assignment_candidate_expansion_count=None,
+        assignment_robot_state_copy_count=None,
+        assignment_beam_peak_width=None,
     )

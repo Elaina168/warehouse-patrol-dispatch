@@ -172,6 +172,9 @@ def _benchmark_run(case_id: str, run_index: int, **updates) -> BenchmarkRun:
         "robot_count": 4,
         "task_count": 15,
         "dynamic_task_count": 3,
+        "runtime_task_count": 0,
+        "runtime_mutation_count": 0,
+        "replan_observation_count": 0,
         "obstacle_count": 0,
         "tick_target": None,
         "outcome": "completed",
@@ -205,6 +208,9 @@ def _benchmark_run(case_id: str, run_index: int, **updates) -> BenchmarkRun:
         "max_timed_astar_expanded_state_count": 8,
         "timed_astar_exhausted_search_count": 0,
         "timed_astar_goal_fully_reserved_reject_count": 0,
+        "assignment_candidate_expansion_count": 20,
+        "assignment_robot_state_copy_count": 80,
+        "assignment_beam_peak_width": 12,
     }
     values.update(updates)
     return BenchmarkRun(**values)
@@ -383,7 +389,7 @@ def test_algorithm_benchmark_summary_uses_null_timings_without_completed_runs() 
 
 
 def test_algorithm_benchmark_failed_run_factories_preserve_case_metadata() -> None:
-    case = BenchmarkCase("bottleneck-r4-t4", "bottleneck", "online", None, 4, 4, 0, 120)
+    case = BenchmarkCase("bottleneck-r4-t4", "bottleneck", "online", None, 4, 4, 0, 0, 120)
     timeout = BenchmarkRun.timeout(case, 1, 30)
     error = BenchmarkRun.error(case, 2, "ValueError", "无效输入", 20)
 
@@ -396,6 +402,9 @@ def test_algorithm_benchmark_failed_run_factories_preserve_case_metadata() -> No
         "robotCount": 4,
         "taskCount": 4,
         "dynamicTaskCount": 0,
+        "runtimeTaskCount": 0,
+        "runtimeMutationCount": None,
+        "replanObservationCount": None,
         "obstacleCount": None,
         "tickTarget": 120,
         "outcome": "timeout",
@@ -429,6 +438,9 @@ def test_algorithm_benchmark_failed_run_factories_preserve_case_metadata() -> No
         "maxTimedAStarExpandedStateCount": None,
         "timedAStarExhaustedSearchCount": None,
         "timedAStarGoalFullyReservedRejectCount": None,
+        "assignmentCandidateExpansionCount": None,
+        "assignmentRobotStateCopyCount": None,
+        "assignmentBeamPeakWidth": None,
     }
     assert error.error_type == "ValueError"
     assert error.error_message == "无效输入"
@@ -439,7 +451,7 @@ def test_algorithm_benchmark_report_serializes_runs_and_summaries() -> None:
     report = BenchmarkReport.create({"repetitions": 5}, [_benchmark_run("scale-r4-t15", 1)])
     record = report.to_record()
 
-    assert record["schemaVersion"] == 2
+    assert record["schemaVersion"] == 3
     assert record["generatedAt"].endswith("Z")
     assert record["config"] == {"repetitions": 5}
     assert record["runs"][0]["caseId"] == "scale-r4-t15"
@@ -491,6 +503,41 @@ def test_algorithm_benchmark_summary_aggregates_planning_work() -> None:
     assert summary.max_timed_astar_goal_fully_reserved_reject_count == 1
 
 
+def test_algorithm_benchmark_summary_aggregates_assignment_work() -> None:
+    summary = summarize_runs(
+        [
+            _benchmark_run(
+                "scale-r4-t15",
+                1,
+                assignment_candidate_expansion_count=10,
+                assignment_robot_state_copy_count=40,
+                assignment_beam_peak_width=8,
+            ),
+            _benchmark_run(
+                "scale-r4-t15",
+                2,
+                assignment_candidate_expansion_count=20,
+                assignment_robot_state_copy_count=80,
+                assignment_beam_peak_width=12,
+            ),
+            _benchmark_run(
+                "scale-r4-t15",
+                3,
+                assignment_candidate_expansion_count=30,
+                assignment_robot_state_copy_count=120,
+                assignment_beam_peak_width=10,
+            ),
+        ]
+    )[0]
+
+    assert summary.median_replan_observation_count == 0
+    assert summary.median_assignment_candidate_expansion_count == 20
+    assert summary.p95_assignment_candidate_expansion_count == 30
+    assert summary.median_assignment_robot_state_copy_count == 80
+    assert summary.p95_assignment_robot_state_copy_count == 120
+    assert summary.max_assignment_beam_peak_width == 12
+
+
 def test_algorithm_benchmark_summary_uses_null_planning_work_without_diagnostics() -> None:
     summary = summarize_runs(
         [
@@ -525,14 +572,20 @@ def test_algorithm_benchmark_catalog_has_exact_cases_and_options() -> None:
         "density-r8-t31",
         "density-r8-t43",
         "density-r8-t55",
+        "seeded-s17-r4-t15",
+        "seeded-s29-r6-t23",
+        "seeded-s31-r8-t27",
         "bottleneck-r4-t4",
         "bottleneck-r6-t6",
         "bottleneck-r8-t8",
+        "online-pressure-s17-r4-t17",
     ]
     assert [(case.family, case.mode) for case in cases] == [
         *(("scale", "direct") for _ in range(3)),
         *(("density", "direct") for _ in range(3)),
+        *(("seeded", "direct") for _ in range(3)),
         *(("bottleneck", "online") for _ in range(3)),
+        ("online-pressure", "online"),
     ]
     assert benchmark_options().model_dump(mode="json") == {
         "avoidConflicts": True,
@@ -550,6 +603,17 @@ def test_algorithm_benchmark_catalog_filters_scale_family_exactly() -> None:
     ]
 
 
+def test_algorithm_benchmark_catalog_filters_seeded_and_online_pressure_families() -> None:
+    assert [case.case_id for case in benchmark_cases(("seeded",))] == [
+        "seeded-s17-r4-t15",
+        "seeded-s29-r6-t23",
+        "seeded-s31-r8-t27",
+    ]
+    assert [case.case_id for case in benchmark_cases(("online-pressure",))] == [
+        "online-pressure-s17-r4-t17",
+    ]
+
+
 def test_algorithm_benchmark_catalog_rejects_unknown_family() -> None:
     with pytest.raises(ValueError, match="^未知基准场景族: unknown$"):
         benchmark_cases(("unknown",))
@@ -561,7 +625,10 @@ def test_algorithm_benchmark_scenarios_match_catalog_and_are_deterministic() -> 
         second = build_benchmark_scenario(case.case_id)
         assert first.model_dump(mode="json") == second.model_dump(mode="json")
         assert len(first.robots) == case.robot_count
-        assert len(first.tasks) + len(first.dynamic.tasks) == case.task_count
+        assert (
+            len(first.tasks) + len(first.dynamic.tasks) + case.runtime_task_count
+            == case.task_count
+        )
         assert len(first.dynamic.tasks) == case.dynamic_task_count
         assert len({robot.id for robot in first.robots}) == len(first.robots)
         assert len({robot.start for robot in first.robots}) == len(first.robots)
@@ -682,6 +749,12 @@ def test_direct_algorithm_benchmark_maps_existing_metrics() -> None:
     assert run.actual_completion_rate_percent is None
     assert run.predicted_conflict_count is not None
     assert run.planning_diagnostics_evaluated is True
+    assert run.runtime_task_count == 0
+    assert run.runtime_mutation_count == 0
+    assert run.replan_observation_count == 0
+    assert run.assignment_candidate_expansion_count is not None
+    assert run.assignment_robot_state_copy_count is not None
+    assert run.assignment_beam_peak_width is not None
     assert run.path_candidate_count is not None
     assert run.selected_path_candidate_index is not None
     assert run.timed_astar_call_count is not None
@@ -754,7 +827,7 @@ def test_algorithm_benchmark_writes_utf8_json_and_csv(tmp_path) -> None:
     write_final_report(tmp_path, report)
 
     payload = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
-    assert payload["schemaVersion"] == 2
+    assert payload["schemaVersion"] == 3
     assert payload["runs"][0]["caseId"] == "scale-r4-t15"
     assert payload["caseSummaries"][0]["runCount"] == 1
     with (tmp_path / "runs.csv").open(encoding="utf-8-sig", newline="") as handle:
@@ -1322,9 +1395,20 @@ def test_algorithm_benchmark_rejects_non_finite_timeout_before_creating_output(
 
 
 def test_algorithm_benchmark_parse_args_splits_and_trims_families() -> None:
-    args = parse_args(["--families", " scale, density ,,bottleneck "])
+    args = parse_args(
+        [
+            "--families",
+            " scale, density ,,seeded,bottleneck, online-pressure ",
+        ]
+    )
 
-    assert args.families == ("scale", "density", "bottleneck")
+    assert args.families == (
+        "scale",
+        "density",
+        "seeded",
+        "bottleneck",
+        "online-pressure",
+    )
 
 
 def test_algorithm_benchmark_main_uses_unique_timestamp_directory_and_exact_config(

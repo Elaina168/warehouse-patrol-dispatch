@@ -4,7 +4,13 @@ from typing import Literal
 from backend.app.schemas import DispatchOptions, Scenario
 from backend.app.seeded_scenarios import seeded_pressure_scenario
 
-BenchmarkFamily = Literal["scale", "density", "bottleneck"]
+BenchmarkFamily = Literal[
+    "scale",
+    "density",
+    "seeded",
+    "bottleneck",
+    "online-pressure",
+]
 BenchmarkMode = Literal["direct", "online"]
 
 
@@ -17,19 +23,34 @@ class BenchmarkCase:
     robot_count: int
     task_count: int
     dynamic_task_count: int
+    runtime_task_count: int
     tick_target: int | None
 
 
 _CASES = (
-    BenchmarkCase("scale-r4-t15", "scale", "direct", None, 4, 15, 3, None),
-    BenchmarkCase("scale-r8-t27", "scale", "direct", None, 8, 27, 3, None),
-    BenchmarkCase("scale-r12-t39", "scale", "direct", None, 12, 39, 3, None),
-    BenchmarkCase("density-r8-t31", "density", "direct", 43, 8, 31, 3, None),
-    BenchmarkCase("density-r8-t43", "density", "direct", 43, 8, 43, 3, None),
-    BenchmarkCase("density-r8-t55", "density", "direct", 43, 8, 55, 3, None),
-    BenchmarkCase("bottleneck-r4-t4", "bottleneck", "online", None, 4, 4, 0, 120),
-    BenchmarkCase("bottleneck-r6-t6", "bottleneck", "online", None, 6, 6, 0, 120),
-    BenchmarkCase("bottleneck-r8-t8", "bottleneck", "online", None, 8, 8, 0, 120),
+    BenchmarkCase("scale-r4-t15", "scale", "direct", None, 4, 15, 3, 0, None),
+    BenchmarkCase("scale-r8-t27", "scale", "direct", None, 8, 27, 3, 0, None),
+    BenchmarkCase("scale-r12-t39", "scale", "direct", None, 12, 39, 3, 0, None),
+    BenchmarkCase("density-r8-t31", "density", "direct", 43, 8, 31, 3, 0, None),
+    BenchmarkCase("density-r8-t43", "density", "direct", 43, 8, 43, 3, 0, None),
+    BenchmarkCase("density-r8-t55", "density", "direct", 43, 8, 55, 3, 0, None),
+    BenchmarkCase("seeded-s17-r4-t15", "seeded", "direct", 17, 4, 15, 3, 0, None),
+    BenchmarkCase("seeded-s29-r6-t23", "seeded", "direct", 29, 6, 23, 3, 0, None),
+    BenchmarkCase("seeded-s31-r8-t27", "seeded", "direct", 31, 8, 27, 3, 0, None),
+    BenchmarkCase("bottleneck-r4-t4", "bottleneck", "online", None, 4, 4, 0, 0, 120),
+    BenchmarkCase("bottleneck-r6-t6", "bottleneck", "online", None, 6, 6, 0, 0, 120),
+    BenchmarkCase("bottleneck-r8-t8", "bottleneck", "online", None, 8, 8, 0, 0, 120),
+    BenchmarkCase(
+        "online-pressure-s17-r4-t17",
+        "online-pressure",
+        "online",
+        17,
+        4,
+        17,
+        3,
+        2,
+        20,
+    ),
 )
 
 
@@ -45,7 +66,10 @@ def benchmark_options() -> DispatchOptions:
 def benchmark_cases(families: tuple[str, ...] | None = None) -> tuple[BenchmarkCase, ...]:
     if families is None:
         return _CASES
-    unknown = sorted(set(families) - {"scale", "density", "bottleneck"})
+    unknown = sorted(
+        set(families)
+        - {"scale", "density", "seeded", "bottleneck", "online-pressure"}
+    )
     if unknown:
         raise ValueError(f"未知基准场景族: {', '.join(unknown)}")
     return tuple(case for case in _CASES if case.family in families)
@@ -183,4 +207,25 @@ def build_benchmark_scenario(case_id: str) -> Scenario:
             "density-r8-t55": 52,
         }[case.case_id]
         return seeded_pressure_scenario(case.case_id, 43, 8, base_task_count)
+    if case.family == "seeded":
+        base_task_count = {
+            "seeded-s17-r4-t15": 12,
+            "seeded-s29-r6-t23": 20,
+            "seeded-s31-r8-t27": 24,
+        }[case.case_id]
+        assert case.seed is not None
+        return seeded_pressure_scenario(
+            case.case_id,
+            case.seed,
+            case.robot_count,
+            base_task_count,
+        )
+    if case.family == "online-pressure":
+        assert case.seed is not None
+        return seeded_pressure_scenario(
+            case.case_id,
+            case.seed,
+            case.robot_count,
+            12,
+        )
     return _bottleneck_scenario(case)

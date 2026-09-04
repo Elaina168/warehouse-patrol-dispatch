@@ -53,6 +53,12 @@ class BenchmarkRun:
     max_timed_astar_expanded_state_count: int | None
     timed_astar_exhausted_search_count: int | None
     timed_astar_goal_fully_reserved_reject_count: int | None
+    runtime_task_count: int
+    runtime_mutation_count: int | None
+    replan_observation_count: int | None
+    assignment_candidate_expansion_count: int | None
+    assignment_robot_state_copy_count: int | None
+    assignment_beam_peak_width: int | None
 
     @classmethod
     def timeout(cls, case: BenchmarkCase, run_index: int, wall_clock_ms: Number) -> "BenchmarkRun":
@@ -121,6 +127,12 @@ class BenchmarkRun:
             max_timed_astar_expanded_state_count=None,
             timed_astar_exhausted_search_count=None,
             timed_astar_goal_fully_reserved_reject_count=None,
+            runtime_task_count=case.runtime_task_count,
+            runtime_mutation_count=None,
+            replan_observation_count=None,
+            assignment_candidate_expansion_count=None,
+            assignment_robot_state_copy_count=None,
+            assignment_beam_peak_width=None,
         )
 
     def to_record(self) -> dict[str, object]:
@@ -168,6 +180,14 @@ class BenchmarkRun:
             "timedAStarGoalFullyReservedRejectCount": (
                 self.timed_astar_goal_fully_reserved_reject_count
             ),
+            "runtimeTaskCount": self.runtime_task_count,
+            "runtimeMutationCount": self.runtime_mutation_count,
+            "replanObservationCount": self.replan_observation_count,
+            "assignmentCandidateExpansionCount": (
+                self.assignment_candidate_expansion_count
+            ),
+            "assignmentRobotStateCopyCount": self.assignment_robot_state_copy_count,
+            "assignmentBeamPeakWidth": self.assignment_beam_peak_width,
         }
 
 
@@ -188,6 +208,12 @@ class BenchmarkCaseSummary:
     median_timed_astar_expanded_state_count: Number | None
     p95_timed_astar_expanded_state_count: Number | None
     max_timed_astar_goal_fully_reserved_reject_count: int | None
+    median_replan_observation_count: Number | None
+    median_assignment_candidate_expansion_count: Number | None
+    p95_assignment_candidate_expansion_count: Number | None
+    median_assignment_robot_state_copy_count: Number | None
+    p95_assignment_robot_state_copy_count: Number | None
+    max_assignment_beam_peak_width: int | None
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -212,6 +238,20 @@ class BenchmarkCaseSummary:
             "maxTimedAStarGoalFullyReservedRejectCount": (
                 self.max_timed_astar_goal_fully_reserved_reject_count
             ),
+            "medianReplanObservationCount": self.median_replan_observation_count,
+            "medianAssignmentCandidateExpansionCount": (
+                self.median_assignment_candidate_expansion_count
+            ),
+            "p95AssignmentCandidateExpansionCount": (
+                self.p95_assignment_candidate_expansion_count
+            ),
+            "medianAssignmentRobotStateCopyCount": (
+                self.median_assignment_robot_state_copy_count
+            ),
+            "p95AssignmentRobotStateCopyCount": (
+                self.p95_assignment_robot_state_copy_count
+            ),
+            "maxAssignmentBeamPeakWidth": self.max_assignment_beam_peak_width,
         }
 
 
@@ -226,7 +266,7 @@ class BenchmarkReport:
     @classmethod
     def create(cls, config: dict[str, object], runs: list[BenchmarkRun]) -> "BenchmarkReport":
         generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        return cls(2, generated_at, config, list(runs), summarize_runs(runs))
+        return cls(3, generated_at, config, list(runs), summarize_runs(runs))
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -272,6 +312,35 @@ def summarize_runs(runs: list[BenchmarkRun]) -> list[BenchmarkCaseSummary]:
             for run in planning_runs
             if run.timed_astar_goal_fully_reserved_reject_count is not None
         ]
+        assignment_runs = [
+            run
+            for run in completed
+            if run.planning_diagnostics_evaluated
+            and run.replan_observation_count is not None
+            and run.assignment_candidate_expansion_count is not None
+            and run.assignment_robot_state_copy_count is not None
+            and run.assignment_beam_peak_width is not None
+        ]
+        replan_observations = [
+            run.replan_observation_count
+            for run in assignment_runs
+            if run.replan_observation_count is not None
+        ]
+        assignment_expansions = [
+            run.assignment_candidate_expansion_count
+            for run in assignment_runs
+            if run.assignment_candidate_expansion_count is not None
+        ]
+        assignment_copies = [
+            run.assignment_robot_state_copy_count
+            for run in assignment_runs
+            if run.assignment_robot_state_copy_count is not None
+        ]
+        assignment_beam_widths = [
+            run.assignment_beam_peak_width
+            for run in assignment_runs
+            if run.assignment_beam_peak_width is not None
+        ]
         stable_run_count = sum(run.correctness_stable for run in case_runs)
         summaries.append(
             BenchmarkCaseSummary(
@@ -295,6 +364,24 @@ def summarize_runs(runs: list[BenchmarkRun]) -> list[BenchmarkCaseSummary]:
                 p95_timed_astar_expanded_state_count=nearest_rank_p95(expanded_states),
                 max_timed_astar_goal_fully_reserved_reject_count=(
                     max(fully_reserved_rejects) if fully_reserved_rejects else None
+                ),
+                median_replan_observation_count=(
+                    median(replan_observations) if replan_observations else None
+                ),
+                median_assignment_candidate_expansion_count=(
+                    median(assignment_expansions) if assignment_expansions else None
+                ),
+                p95_assignment_candidate_expansion_count=nearest_rank_p95(
+                    assignment_expansions
+                ),
+                median_assignment_robot_state_copy_count=(
+                    median(assignment_copies) if assignment_copies else None
+                ),
+                p95_assignment_robot_state_copy_count=nearest_rank_p95(
+                    assignment_copies
+                ),
+                max_assignment_beam_peak_width=(
+                    max(assignment_beam_widths) if assignment_beam_widths else None
                 ),
             )
         )

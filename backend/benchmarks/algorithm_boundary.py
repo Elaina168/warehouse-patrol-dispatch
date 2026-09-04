@@ -10,7 +10,13 @@ from backend.benchmarks.runner import run_benchmark_cases
 from backend.benchmarks.scenarios import benchmark_cases, benchmark_options
 
 
-DEFAULT_FAMILIES = ("scale", "density", "bottleneck")
+DEFAULT_FAMILIES = (
+    "scale",
+    "density",
+    "seeded",
+    "bottleneck",
+    "online-pressure",
+)
 
 
 def _parse_families(value: str) -> tuple[str, ...]:

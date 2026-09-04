@@ -49,6 +49,12 @@ RUN_FIELD_NAMES = (
     "maxTimedAStarExpandedStateCount",
     "timedAStarExhaustedSearchCount",
     "timedAStarGoalFullyReservedRejectCount",
+    "runtimeTaskCount",
+    "runtimeMutationCount",
+    "replanObservationCount",
+    "assignmentCandidateExpansionCount",
+    "assignmentRobotStateCopyCount",
+    "assignmentBeamPeakWidth",
 )
 
 CASE_SUMMARY_FIELD_NAMES = (
@@ -67,6 +73,12 @@ CASE_SUMMARY_FIELD_NAMES = (
     "medianTimedAStarExpandedStateCount",
     "p95TimedAStarExpandedStateCount",
     "maxTimedAStarGoalFullyReservedRejectCount",
+    "medianReplanObservationCount",
+    "medianAssignmentCandidateExpansionCount",
+    "p95AssignmentCandidateExpansionCount",
+    "medianAssignmentRobotStateCopyCount",
+    "p95AssignmentRobotStateCopyCount",
+    "maxAssignmentBeamPeakWidth",
 )
 
 
