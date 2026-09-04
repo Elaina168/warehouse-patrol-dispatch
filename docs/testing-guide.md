@@ -461,7 +461,7 @@ http://127.0.0.1:8011/health
 
 ### 6.1 离线算法边界基准人工复核
 
-离线基准用于记录当前系统范围内的规模、密度和瓶颈边界；它不替代在线界面的人工操作测试，也不证明完整 MAPF 能力。先运行聚焦回归和完整项目检查：
+离线基准用于记录当前系统范围内的规模、密度、随机种子、瓶颈和在线压力边界；它不替代在线界面的人工操作测试，也不证明完整 MAPF/CBS 能力。基准不新增业务 API 或前端入口。先运行聚焦回归和完整项目检查：
 
 ```powershell
 & '.\.venv\Scripts\python.exe' -m pytest backend/tests/test_schema_constraints.py backend/tests/test_experiments.py backend/tests/test_benchmark_process_isolation.py backend/tests/test_algorithm_benchmark.py -q
@@ -490,7 +490,25 @@ http://127.0.0.1:8011/health
 4. 只在相同机器和无并发重型任务下比较前后 `medianReplanTimeMs`、P95 和扩展状态数。
 5. 日常 pytest 不断言真实墙钟阈值。`test_dispatch_handles_deterministic_scale_pressure_family`、`test_dispatch_handles_fixed_seed_pressure_family`、`test_seeded_pressure_experiment_returns_compact_performance_cases` 和 `test_seeded_pressure_experiment_can_run_extended_stability_cases` 只验证固定输入的分配、冲突、失败、案例标签/数量及 `replanTimeMs` 的类型和非负域；前两个直接调度测试还固定已有规划诊断。`planningTimeBudgetMs == 2000` 仅保留为实验 API 元数据。真实耗时上限、分布和前后比较只属于本节的离线重复基准证据，不作为日常 pytest 的通过/失败条件。
 
-命令会在 `output/algorithm-boundary-benchmark` 下创建一个 UTC 时间戳结果目录。最终目录必须同时包含 `results.json`、`runs.csv` 和 `case-summaries.csv`；`runs.csv` 与 `case-summaries.csv` 使用 UTF-8 with BOM，可直接按 UTF-8 打开。默认九个案例为 `scale-r4-t15`、`scale-r8-t27`、`scale-r12-t39`、`density-r8-t31`、`density-r8-t43`、`density-r8-t55`、`bottleneck-r4-t4`、`bottleneck-r6-t6`、`bottleneck-r8-t8`，各运行五次。
+命令会在 `output/algorithm-boundary-benchmark` 下创建一个 UTC 时间戳结果目录。当前 schema 为 `3`，默认有五个 family、十三个固定顺序 case，各运行五次，即 `65` 条 run 和 `13` 条 summary：
+
+| family | case ID |
+| --- | --- |
+| `scale` | `scale-r4-t15`、`scale-r8-t27`、`scale-r12-t39` |
+| `density` | `density-r8-t31`、`density-r8-t43`、`density-r8-t55` |
+| `seeded` | `seeded-s17-r4-t15`、`seeded-s29-r6-t23`、`seeded-s31-r8-t27` |
+| `bottleneck` | `bottleneck-r4-t4`、`bottleneck-r6-t6`、`bottleneck-r8-t8` |
+| `online-pressure` | `online-pressure-s17-r4-t17` |
+
+最终目录必须同时包含 `results.json`、`runs.csv` 和 `case-summaries.csv`；JSON 使用 UTF-8 无 BOM，两份 CSV 使用 UTF-8 with BOM，可直接按 UTF-8 打开。
+
+新增 run 字段为 `runtimeTaskCount`、`runtimeMutationCount`、`replanObservationCount`、`assignmentCandidateExpansionCount`、`assignmentRobotStateCopyCount` 和 `assignmentBeamPeakWidth`。直接 run 的前三项为 `0`，分配工作量来自一次 `PlanningDiagnostics`；在线 run 逐 tick 汇总每次真实 `ReplanObservation`，次数、候选数、失败候选数、时空 A* 调用数、扩展数、耗尽/目标全预留拒绝数、任务分配扩展数和机器人状态复制数求和，最大单次扩展数与峰值束宽取最大值，`selectedPathCandidateIndex` 为 `null`。没有观察值时 `planningDiagnosticsEvaluated=false`，规划工作量字段为 `null`。
+
+新增 summary 字段为 `medianReplanObservationCount`、`medianAssignmentCandidateExpansionCount`、`p95AssignmentCandidateExpansionCount`、`medianAssignmentRobotStateCopyCount`、`p95AssignmentRobotStateCopyCount` 和 `maxAssignmentBeamPeakWidth`，只从 completed 且已评价规划诊断的 run 计算。timeout/error 记录保留，不能被过滤或伪装成成功。
+
+在线压力 case `online-pressure-s17-r4-t17` 使用 seed 17、4 台机器人和 12 个基础任务：从 T=0 逐 tick 到 T=8，依次成功添加 `RUNTIME-SEED-17`、封锁 `[3,9]`、标记 `R4` 故障、恢复 `R4`、解除 `[3,9]`；逐 tick 到 T=18，成功添加目标为第一个巡检区域坐标且截止 T=42 的 `G-SEED-17`；最后逐 tick 到 T=20。这是六次成功的运行时 API 变更，故 `runtimeTaskCount=2`、`runtimeMutationCount=6`；后者不等于当前活动事件数。每个在线 run 使用独立 `SessionRegistry(max_sessions=1)`，并在 `finally` 删除会话。
+
+任务分配优化的边界是候选机器人列表浅复制，并只复制当前被选中、即将修改的机器人状态；未选状态作为只读共享对象。每个候选必须保持自己的修改，不得回写父候选或污染兄弟候选。收尾报告中优化后每条 run 的 `assignmentRobotStateCopyCount` 等于 `assignmentCandidateExpansionCount`，而且严格低于优化前。
 
 三个最终文件按一个 bundle 发布。`test_algorithm_final_report_rollback*` 覆盖每个文件的备份和发布失败：已有 bundle 必须完整恢复，原来没有 bundle 时不得留下半套最终文件，`results.partial.json` 必须保留；恢复失败时可恢复的 `.backup` 也必须保留并出现在错误中。隔离进程测试同时要求先接收 Pipe 大载荷再 join，并覆盖超时或 `BaseException` 取消后的 `terminate -> bounded join -> kill -> bounded join` 清理、Pipe 关闭和无残留 worker；无法确认清理成功应按基础设施失败处理。
 
@@ -498,11 +516,12 @@ http://127.0.0.1:8011/health
 
 人工复核清单：
 
-1. `results.json.runs`、`runs.csv` 和 `case-summaries.csv` 的案例数、运行数、完成数、超时数和错误数一致；默认完整基准应有 45 条运行记录和 9 条案例汇总。
+1. `results.json.runs`、`runs.csv` 和 `case-summaries.csv` 的 case 集合、run 数、完成数、稳定数、超时数和错误数一致；默认完整基准应有 65 条 run 和 13 条 summary，且五个 family 与上表一致。
 2. 逐案例记录 `completed`、`timeout`、`error`、`stableRunCount`、`stableRunRatePercent`、中位数和 P95；`timeout` 或 `error` 是边界结果，不能不经排查直接认定为代码缺陷。
-3. 复核在线 `bottleneck-*` 案例的 `executionSafetyEvaluated`、`activeConflictCount` 和 `safetyInterventionCount` 字段均存在，并将安全门介入次数写入人工结论。
-4. 以 UTF-8 打开两份 CSV，确认表头和记录可读；不要只凭自动汇总生成报告结论，也不要把预测零冲突写成完整 MAPF 保证。
-5. 运行 `git status --short`，确认 `output/` 基准证据未跟踪且未暂存，不提交结果目录。
+3. 复核在线 `online-pressure-s17-r4-t17` 的 `executionSafetyEvaluated`、`activeConflictCount` 和 `safetyInterventionCount` 字段，确认六次变更序列及 `runtimeTaskCount=2`、`runtimeMutationCount=6`。
+4. 以 UTF-8 打开两份 CSV，确认表头和记录可读；从 JSON 和两份 CSV 重新计数并逐字段交叉核对。不要只凭自动汇总生成报告结论，也不要把预测零冲突写成完整 MAPF 保证。
+5. 复核本次收尾报告：优化前绝对目录为 `C:\Users\zytx\.codex\worktrees\07aa\summer\output\scale-congestion-performance\baseline\20260904T132339Z`，优化后绝对目录为 `C:\Users\zytx\.codex\worktrees\07aa\summer\output\scale-congestion-performance\optimized\20260904T132811Z`；两者都应为 65 条 completed/stable、13 条 summary、timeout/error 为 0。复制总量应为 `4,182,195` 对 `489,605`，减少 `3,692,590`（`88.293109%`）。报告中的 wall-clock 只能作为同机观察；本次总和为 `35,146.19ms` 对 `33,139ms`，不支持跨机器性能结论。
+6. 运行 `git status --short`，确认 `output/` 基准证据未跟踪且未暂存，不提交结果目录。该优化没有业务 API 或前端变更，也不提供任意输入、跨机器性能、完整 MAPF/CBS 或全规划时域零冲突保证。
 
 ### 6.1.1 小规模可解性参照与差分基准人工复核
 

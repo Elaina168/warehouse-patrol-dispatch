@@ -2,7 +2,7 @@
 
 本文档记录当前已经实现并通过测试的调度规则，用于稳定化和展示验收。
 
-截至 2026-08-30，本文档只描述已经进入主线的算法与运行时规则。当前没有选定下一项算法升级；离线基准和自适应校准仅提供内部诊断证据，不自动形成生产改动。
+截至 2026-09-04，本文档只描述已经进入主线的算法与运行时规则。当前没有选定下一项算法升级；离线基准和自适应校准仅提供内部诊断证据，不自动形成生产改动。
 
 ## 调度入口
 
@@ -145,6 +145,28 @@ emergency
 离线自适应窗口校准中的墙钟耗时只用于同一机器、无并发重型任务时的人工比较。报告中的候选范围是供后续单独审批决策使用的证据，不会自动写回生产配置；在另行批准并验证生产改动前，`60/40ms`、最近 `5` 个样本且至少 `3` 个样本、`2×` 压力规则均保持不变。该校准不证明跨机器阈值可移植性，也不证明完整 MAPF 或任意输入下的全规划时域零冲突。
 
 2026-07-26 修复前的默认 60-run 同机复核中，低负载与过渡案例的全部变体均稳定，但压力案例的全部变体均出现相同的任务覆盖、截止时间和失败问题；因此报告没有产生候选 envelope。该 completed-but-unstable 结果作为历史诊断原样保留。校准 fixture 修复后的 fresh 60-run 全部 completed 且 stable，并产生了非空同机候选范围；它仍没有自动修改生产策略。最新 fresh 结果目录为 `output/adaptive-replan-calibration/20260726T150547Z`，其同机候选范围依次为慢状态退出 `9.71–31.05ms`、进入 `31.05–69.47ms`、任务压力倍数 `1.75–3.38`；这些值仅是证据，不应用于生产阈值。
+
+## 规模与拥堵性能基准
+
+`benchmark:algorithm` 是不改变业务 API 或前端入口的离线取证命令。当前 schema 版本为 `3`，默认目录按以下五个场景族、十三个固定顺序案例运行；默认 `--repetitions 5` 产生 `13 × 5 = 65` 条运行和 13 条案例汇总：
+
+| 场景族 | 案例 ID |
+| --- | --- |
+| `scale` | `scale-r4-t15`、`scale-r8-t27`、`scale-r12-t39` |
+| `density` | `density-r8-t31`、`density-r8-t43`、`density-r8-t55` |
+| `seeded` | `seeded-s17-r4-t15`、`seeded-s29-r6-t23`、`seeded-s31-r8-t27` |
+| `bottleneck` | `bottleneck-r4-t4`、`bottleneck-r6-t6`、`bottleneck-r8-t8` |
+| `online-pressure` | `online-pressure-s17-r4-t17` |
+
+直接案例的 `runtimeTaskCount`、`runtimeMutationCount` 和 `replanObservationCount` 均为 `0`；其规划工作量来自一次 `PlanningDiagnostics`。在线案例逐 tick 执行独立 `SessionRegistry(max_sessions=1)` 会话，并通过 `ReplanObservation` 收集每次真实重规划：`replanObservationCount` 是观察次数，候选数、失败候选数、时空 A* 调用数、扩展数、拒绝数和任务分配扩展/复制数求和，最大单次扩展数与峰值束宽取最大值，`selectedPathCandidateIndex` 保持 `null`。没有观察值时 `planningDiagnosticsEvaluated=false`，所有规划工作量字段均为 `null`。
+
+在线压力案例 `online-pressure-s17-r4-t17` 使用 seed 17、4 台机器人和 12 个基础任务：逐 tick 到 T=8，依次添加 `RUNTIME-SEED-17`、封锁 `[3,9]`、标记 `R4` 故障、恢复 `R4`、解除 `[3,9]`；逐 tick 到 T=18，添加目标为第一个巡检区域坐标且截止 T=42 的 `G-SEED-17`，再逐 tick 到 T=20。`runtimeTaskCount=2`，`runtimeMutationCount=6` 只统计六次成功的运行时 API 变更，不读取表示当前活动封锁/故障数的 `SessionResult.runtimeEventCount`。
+
+报告的案例汇总新增 `medianReplanObservationCount`、`medianAssignmentCandidateExpansionCount`、`p95AssignmentCandidateExpansionCount`、`medianAssignmentRobotStateCopyCount`、`p95AssignmentRobotStateCopyCount` 和 `maxAssignmentBeamPeakWidth`；它们只从 completed 且 `planningDiagnosticsEvaluated=true` 的运行计算。所有报告保留 timeout/error，不以墙钟阈值判定通过。
+
+当前收尾证据目录为：优化前 `C:\Users\zytx\.codex\worktrees\07aa\summer\output\scale-congestion-performance\baseline\20260904T132339Z`，优化后 `C:\Users\zytx\.codex\worktrees\07aa\summer\output\scale-congestion-performance\optimized\20260904T132811Z`。两者均为 65 条 completed/stable 运行、13 条汇总、无 timeout/error，JSON 与两份 CSV 已逐字段交叉核对。逐运行比较中任务分配、冲突、失败、超期、总距离、makespan 和候选扩展数完全一致；基线 `assignmentRobotStateCopyCount` 总和为 `4,182,195`，优化后为 `489,605`，实际减少 `3,692,590`（`88.293109%`）。优化后每条运行的 `assignmentRobotStateCopyCount` 等于扩展数且严格低于优化前。优化采用“候选机器人列表浅复制 + 仅复制被修改的机器人状态”的写时复制方式，父候选和兄弟候选保持隔离。
+
+两份报告中的 `wallClockMs` 总和实际为基线 `35,146.19ms`、优化后 `33,139ms`，但 `wallClockMs` 和 `replanTimeMs` 只属于同一机器、同一参数、无并发重型任务条件下的辅助观察，不支持跨机器性能结论。该基准不证明完整 MAPF/CBS、全局最优、任意输入零冲突或更大规模性能；本次范围也没有修改束宽、任务顺序、评分、路径规划顺序、滚动窗口阈值、业务 API 或前端。
 
 ## 锁定任务
 

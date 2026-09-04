@@ -588,9 +588,13 @@ def test_original_algorithm_boundary_catalog_is_unchanged() -> None:
         "density-r8-t31",
         "density-r8-t43",
         "density-r8-t55",
+        "seeded-s17-r4-t15",
+        "seeded-s29-r6-t23",
+        "seeded-s31-r8-t27",
         "bottleneck-r4-t4",
         "bottleneck-r6-t6",
         "bottleneck-r8-t8",
+        "online-pressure-s17-r4-t17",
     ]
 
 

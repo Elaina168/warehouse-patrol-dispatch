@@ -260,7 +260,7 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 & 'C:\nvm4w\nodejs\npm.cmd' run benchmark:algorithm -- --repetitions 5 --timeout-seconds 30 --output-dir output/algorithm-boundary-benchmark
 ```
 
-默认场景族共九个案例：`scale-r4-t15`、`scale-r8-t27`、`scale-r12-t39`、`density-r8-t31`、`density-r8-t43`、`density-r8-t55`、`bottleneck-r4-t4`、`bottleneck-r6-t6`、`bottleneck-r8-t8`。每个案例默认运行五次，结果写入命令输出目录下按 UTC 时间创建的子目录。
+默认场景族有五类、十三个固定顺序案例：`scale-r4-t15`、`scale-r8-t27`、`scale-r12-t39`、`density-r8-t31`、`density-r8-t43`、`density-r8-t55`、`seeded-s17-r4-t15`、`seeded-s29-r6-t23`、`seeded-s31-r8-t27`、`bottleneck-r4-t4`、`bottleneck-r6-t6`、`bottleneck-r8-t8`、`online-pressure-s17-r4-t17`。每个案例默认运行五次，因此默认报告有 `65` 条运行记录和 `13` 条案例汇总；结果写入命令输出目录下按 UTC 时间创建的子目录。
 
 报告中的 `predictedConflictCount` 对应直接规划或在线最终规划的 `Metrics.conflictCount`，是规划预测，不表示冲突动作已经执行。在线案例还以 `activeConflictCount` 和 `safetyInterventionCount` 提供实际执行安全证据：前者是最终指标快照中的活动冲突数，后者是执行过程中安全门的介入次数。直接规划案例的 `executionSafetyEvaluated` 为 `false`，在线案例为 `true`。
 
@@ -268,7 +268,7 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 
 `medianWallClockMs` 和 `p95WallClockMs` 仅用于观察当前机器上的离线运行分布。真实 wall-clock 只属于同机离线证据，日常 pytest 不以它设置通过或失败阈值；应与正确性、稳定运行率及案例上下文一起人工复核。
 
-算法边界报告 `schemaVersion = 2`。直接规划运行设置 `planningDiagnosticsEvaluated = true`，并记录：
+算法边界报告 `schemaVersion = 3`。直接规划运行设置 `planningDiagnosticsEvaluated = true`，并记录：
 
 - `pathCandidateCount`
 - `selectedPathCandidateIndex`
@@ -279,7 +279,22 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 - `timedAStarExhaustedSearchCount`
 - `timedAStarGoalFullyReservedRejectCount`
 
-在线、超时和异常记录不伪造规划工作量；未评价时 `planningDiagnosticsEvaluated = false`，其余字段为 `null`。扩展状态数是确定性工作量指标，墙钟中位数和 P95 仍只用于同机人工比较。
+- `runtimeTaskCount`
+- `runtimeMutationCount`
+- `replanObservationCount`
+- `assignmentCandidateExpansionCount`
+- `assignmentRobotStateCopyCount`
+- `assignmentBeamPeakWidth`
+
+直接案例的运行时三个字段均为 `0`，任务分配工作量来自一次 `PlanningDiagnostics`。在线案例逐 tick 执行独立会话并汇总真实 `ReplanObservation`：观察次数、候选数、失败候选数、时空 A* 调用数、扩展数、耗尽/目标全预留拒绝数、任务分配扩展数和机器人状态复制数求和；最大单次 A* 扩展数与峰值束宽取最大值，`selectedPathCandidateIndex` 为 `null`。没有观察值时 `planningDiagnosticsEvaluated = false`，所有规划工作量字段为 `null`。在线压力案例只在六次运行时 API 变更成功后将 `runtimeMutationCount` 累加，不能用当前活动事件数 `SessionResult.runtimeEventCount` 代替。
+
+案例汇总新增 `medianReplanObservationCount`、`medianAssignmentCandidateExpansionCount`、`p95AssignmentCandidateExpansionCount`、`medianAssignmentRobotStateCopyCount`、`p95AssignmentRobotStateCopyCount` 和 `maxAssignmentBeamPeakWidth`，只从 completed 且已评价规划诊断的运行计算。超时和异常仍保留在报告中，未评价字段为 `null`；schema 2 的旧输出不修改，新基准运行写 schema 3。
+
+十三个案例中，`seeded` 三例分别使用 seed 17/29/31、4/6/8 台机器人和 12/20/24 个基础任务；`online-pressure-s17-r4-t17` 使用 seed 17、4 台机器人和 12 个基础任务。该在线压力流程从 T=0 逐 tick 到 T=8，依次添加 `RUNTIME-SEED-17`、封锁 `[3,9]`、故障/恢复 `R4`、解除 `[3,9]`；逐 tick 到 T=18 后添加 `G-SEED-17`（第一个巡检区域坐标，截止 T=42），最后到 T=20。其报告应为 `runtimeTaskCount=2`、`runtimeMutationCount=6`。所有在线案例都通过独立 registry 在 `finally` 删除会话。
+
+本次收尾的本地证据目录为 `C:\Users\zytx\.codex\worktrees\07aa\summer\output\scale-congestion-performance\baseline\20260904T132339Z`（优化前）和 `C:\Users\zytx\.codex\worktrees\07aa\summer\output\scale-congestion-performance\optimized\20260904T132811Z`（优化后）。两份报告均为 65 条 completed/stable 运行、13 条汇总、无 timeout/error，且 JSON 与两份 CSV 已逐字段交叉重算。对应运行的任务分配、冲突、失败、超期、总距离、makespan 和候选扩展数完全相同；基线复制总量为 `4,182,195`，优化后为 `489,605`，实际减少 `3,692,590`（`88.293109%`）。优化后复制数逐条等于扩展数并严格低于优化前。优化范围只有候选写时复制：浅复制机器人列表，只复制本次被修改的一个机器人状态，未选状态与父/兄弟候选共享为只读对象。
+
+两份报告的 `wallClockMs` 总和分别为 `35,146.19ms`（优化前）和 `33,139ms`（优化后），下降 `2,007.19ms`（`5.710975%`）。这只是同一机器、同一参数且无并发重型任务条件下的 wall-clock 观察，不是跨机器性能结论或自动阈值。
 
 最终 `results.json`、`runs.csv` 和 `case-summaries.csv` 按一个报告 bundle 发布：先完整写入临时文件，再备份同名旧文件，最后逐一替换。任一备份或发布步骤失败时，会删除本轮已发布文件并恢复旧 bundle；原来没有 bundle 时则不留下半套最终文件，`results.partial.json` 继续保留。若恢复本身失败，可恢复的 `.backup` 会保留，异常同时报告最初发布错误、恢复错误和备份路径，避免把新旧三文件混成一次成功报告。
 
