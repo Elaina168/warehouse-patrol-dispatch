@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from backend.benchmarks import algorithm_boundary as algorithm_boundary_module
+from backend.benchmarks import online_flow as online_flow_module
 from backend.benchmarks import process_isolation as process_isolation_module
 from backend.benchmarks import runner as runner_module
 from backend.benchmarks.algorithm_boundary import main, parse_args
@@ -18,8 +19,17 @@ from backend.benchmarks.results import BenchmarkReport, BenchmarkRun, nearest_ra
 from backend.benchmarks.runner import execute_benchmark_case, run_benchmark_cases, run_isolated_case
 from backend.app.dispatch import astar, run_dispatch
 from backend.app.planning_diagnostics import PlanningDiagnostics
-from backend.app.schemas import SessionTickRequest
+from backend.app.schemas import (
+    AddBlockRequest,
+    AddTaskRequest,
+    FailRobotRequest,
+    RemoveBlockRequest,
+    RestoreRobotRequest,
+    SessionTickRequest,
+    Task,
+)
 from backend.app import sessions as sessions_module
+from backend.benchmarks.online_flow import execute_online_flow
 
 
 def _sleeping_benchmark_worker(case_id: str, run_index: int):
@@ -762,6 +772,66 @@ def test_direct_algorithm_benchmark_maps_existing_metrics() -> None:
     assert run.wall_clock_ms is not None and run.wall_clock_ms >= 0
 
 
+def test_online_flow_collects_bottleneck_observations_and_cleans_registry() -> None:
+    case = benchmark_cases(("bottleneck",))[0]
+    registry = sessions_module.SessionRegistry(max_sessions=1)
+
+    execution = execute_online_flow(
+        case,
+        build_benchmark_scenario(case.case_id),
+        benchmark_options(),
+        registry=registry,
+    )
+
+    assert execution.session.currentTime == 120
+    assert execution.observations
+    assert execution.runtime_mutation_count == 0
+    assert registry.sessions == {}
+
+
+def test_online_flow_executes_pressure_mutations_and_cleans_registry() -> None:
+    case = benchmark_cases(("online-pressure",))[0]
+    registry = sessions_module.SessionRegistry(max_sessions=1)
+
+    execution = execute_online_flow(
+        case,
+        build_benchmark_scenario(case.case_id),
+        benchmark_options(),
+        registry=registry,
+    )
+
+    assert execution.session.currentTime == 20
+    assert execution.session.runtimeTaskCount == 2
+    assert execution.runtime_mutation_count == 6
+    assert {"RUNTIME-SEED-17", "G-SEED-17"} <= {
+        task.id for task in execution.session.result.tasks
+    }
+    assert execution.observations
+    assert execution.session.result.metrics.failureCount == 0
+    assert execution.session.metricsHistory[-1].activeConflictCount == 0
+    assert registry.sessions == {}
+
+
+def test_online_flow_cleans_registry_when_execution_raises(monkeypatch) -> None:
+    case = benchmark_cases(("bottleneck",))[0]
+    registry = sessions_module.SessionRegistry(max_sessions=1)
+
+    def fail_tick(session_id: str, request: SessionTickRequest, *, registry=None):
+        raise RuntimeError("online flow tick failed")
+
+    monkeypatch.setattr(online_flow_module, "tick_session", fail_tick)
+
+    with pytest.raises(RuntimeError, match="online flow tick failed"):
+        execute_online_flow(
+            case,
+            build_benchmark_scenario(case.case_id),
+            benchmark_options(),
+            registry=registry,
+        )
+
+    assert registry.sessions == {}
+
+
 def _assert_history_collision_free(history: dict[str, list[tuple[int, int]]]) -> None:
     robot_ids = sorted(history)
     horizon = max((len(history[robot_id]) for robot_id in robot_ids), default=0)
@@ -786,35 +856,73 @@ def _assert_history_collision_free(history: dict[str, list[tuple[int, int]]]) ->
 
 
 def test_online_algorithm_benchmark_uses_execution_safety(monkeypatch) -> None:
-    real_delete = sessions_module.delete_session
-    real_tick = sessions_module.tick_session
+    real_delete = online_flow_module.delete_session
+    real_tick = online_flow_module.tick_session
     captured_histories = []
     observed_safety_interventions = []
 
-    def capture_tick(session_id: str, request: SessionTickRequest):
-        session = real_tick(session_id, request)
+    def capture_tick(
+        session_id: str,
+        request: SessionTickRequest,
+        *,
+        registry: sessions_module.SessionRegistry,
+    ):
+        session = real_tick(session_id, request, registry=registry)
         if session.safetyIntervention is not None:
             observed_safety_interventions.append(session.safetyIntervention)
         return session
 
-    def capture_delete(session_id: str):
-        session = sessions_module._sessions[session_id]
+    def capture_delete(
+        session_id: str,
+        *,
+        registry: sessions_module.SessionRegistry,
+    ):
+        session = registry.sessions[session_id]
         captured_histories.append({key: list(value) for key, value in session.robot_path_history.items()})
-        return real_delete(session_id)
+        return real_delete(session_id, registry=registry)
 
-    monkeypatch.setattr("backend.benchmarks.runner.tick_session", capture_tick)
-    monkeypatch.setattr("backend.benchmarks.runner.delete_session", capture_delete)
+    monkeypatch.setattr(online_flow_module, "tick_session", capture_tick)
+    monkeypatch.setattr(online_flow_module, "delete_session", capture_delete)
     run = execute_benchmark_case("bottleneck-r4-t4", 1)
     assert run.outcome == "completed"
     assert run.mode == "online"
     assert run.execution_safety_evaluated is True
     assert run.active_conflict_count == 0
     assert run.safety_intervention_count == len(observed_safety_interventions)
-    assert run.planning_diagnostics_evaluated is False
-    assert run.path_candidate_count is None
-    assert run.timed_astar_expanded_state_count is None
+    assert run.planning_diagnostics_evaluated is True
+    assert run.path_candidate_count is not None
+    assert run.timed_astar_expanded_state_count is not None
+    assert run.replan_observation_count is not None
+    assert run.replan_observation_count > 0
+    assert run.assignment_candidate_expansion_count is not None
+    assert run.assignment_robot_state_copy_count is not None
     assert captured_histories
     _assert_history_collision_free(captured_histories[0])
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "bottleneck-r4-t4",
+        "bottleneck-r6-t6",
+        "bottleneck-r8-t8",
+        "online-pressure-s17-r4-t17",
+    ],
+)
+def test_online_algorithm_benchmark_maps_real_replan_diagnostics(case_id: str) -> None:
+    run = execute_benchmark_case(case_id, 1)
+
+    assert run.outcome == "completed"
+    assert run.correctness_stable is True
+    assert run.planning_diagnostics_evaluated is True
+    assert run.replan_observation_count is not None
+    assert run.replan_observation_count > 0
+    assert run.active_conflict_count == 0
+    assert run.failure_count == 0
+    assert run.deadline_miss_count == 0
+    if case_id == "online-pressure-s17-r4-t17":
+        assert run.runtime_task_count == 2
+        assert run.runtime_mutation_count == 6
 
 
 def test_algorithm_benchmark_writes_utf8_json_and_csv(tmp_path) -> None:

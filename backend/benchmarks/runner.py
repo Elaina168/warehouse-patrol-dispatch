@@ -5,13 +5,12 @@ from time import perf_counter
 
 from backend.app.dispatch import run_dispatch
 from backend.app.planning_diagnostics import PlanningDiagnostics
-from backend.app.schemas import CreateSessionRequest, SessionTickRequest
-from backend.app.sessions import create_session, delete_session, tick_session
 from backend.benchmarks.process_isolation import (
     BenchmarkInfrastructureError,
     run_isolated_process,
     sanitize_error_text,
 )
+from backend.benchmarks.online_flow import execute_online_flow
 from backend.benchmarks.results import BenchmarkRun, percent
 from backend.benchmarks.scenarios import (
     BenchmarkCase,
@@ -177,23 +176,11 @@ def _execute_direct(case: BenchmarkCase, run_index: int) -> BenchmarkRun:
 
 def _execute_online(case: BenchmarkCase, run_index: int) -> BenchmarkRun:
     scenario = build_benchmark_scenario(case.case_id)
-    session_id: str | None = None
-    safety_count = 0
     started_at = perf_counter()
-    try:
-        session = create_session(CreateSessionRequest(scenario=scenario, options=benchmark_options()))
-        session_id = session.sessionId
-        while case.tick_target is not None and session.currentTime < case.tick_target:
-            session = tick_session(
-                session_id,
-                SessionTickRequest(currentTime=session.currentTime + 1),
-            )
-            if session.safetyIntervention is not None:
-                safety_count += 1
-    finally:
-        if session_id is not None:
-            delete_session(session_id)
+    execution = execute_online_flow(case, scenario, benchmark_options())
     wall_clock_ms = (perf_counter() - started_at) * 1000
+    session = execution.session
+    observations = execution.observations
 
     metrics = session.result.metrics
     released_task_count = sum(
@@ -213,6 +200,50 @@ def _execute_online(case: BenchmarkCase, run_index: int) -> BenchmarkRun:
         and metrics.deadlineMissCount == 0
         and metrics.failureCount == 0
     )
+    diagnostics_evaluated = bool(observations)
+    if diagnostics_evaluated:
+        path_candidate_count = sum(
+            item.path_candidate_count for item in observations
+        )
+        failed_path_candidate_count = sum(
+            item.failed_path_candidate_count for item in observations
+        )
+        timed_astar_call_count = sum(
+            item.timed_astar_call_count for item in observations
+        )
+        timed_astar_expanded_state_count = sum(
+            item.timed_astar_expanded_state_count for item in observations
+        )
+        max_timed_astar_expanded_state_count = max(
+            item.max_timed_astar_expanded_state_count for item in observations
+        )
+        timed_astar_exhausted_search_count = sum(
+            item.timed_astar_exhausted_search_count for item in observations
+        )
+        timed_astar_goal_fully_reserved_reject_count = sum(
+            item.timed_astar_goal_fully_reserved_reject_count
+            for item in observations
+        )
+        assignment_candidate_expansion_count = sum(
+            item.assignment_candidate_expansion_count for item in observations
+        )
+        assignment_robot_state_copy_count = sum(
+            item.assignment_robot_state_copy_count for item in observations
+        )
+        assignment_beam_peak_width = max(
+            item.assignment_beam_peak_width for item in observations
+        )
+    else:
+        path_candidate_count = None
+        failed_path_candidate_count = None
+        timed_astar_call_count = None
+        timed_astar_expanded_state_count = None
+        max_timed_astar_expanded_state_count = None
+        timed_astar_exhausted_search_count = None
+        timed_astar_goal_fully_reserved_reject_count = None
+        assignment_candidate_expansion_count = None
+        assignment_robot_state_copy_count = None
+        assignment_beam_peak_width = None
     return BenchmarkRun(
         case_id=case.case_id,
         family=case.family,
@@ -238,7 +269,7 @@ def _execute_online(case: BenchmarkCase, run_index: int) -> BenchmarkRun:
         predicted_conflict_count=metrics.conflictCount,
         active_conflict_count=active_conflict_count,
         execution_safety_evaluated=True,
-        safety_intervention_count=safety_count,
+        safety_intervention_count=execution.safety_intervention_count,
         deadline_miss_count=metrics.deadlineMissCount,
         failure_count=metrics.failureCount,
         total_distance=metrics.totalDistance,
@@ -246,19 +277,21 @@ def _execute_online(case: BenchmarkCase, run_index: int) -> BenchmarkRun:
         replan_time_ms=metrics.replanTimeMs,
         max_snapshot_replan_time_ms=max_snapshot_replan_time_ms,
         wall_clock_ms=wall_clock_ms,
-        planning_diagnostics_evaluated=False,
-        path_candidate_count=None,
+        planning_diagnostics_evaluated=diagnostics_evaluated,
+        path_candidate_count=path_candidate_count,
         selected_path_candidate_index=None,
-        failed_path_candidate_count=None,
-        timed_astar_call_count=None,
-        timed_astar_expanded_state_count=None,
-        max_timed_astar_expanded_state_count=None,
-        timed_astar_exhausted_search_count=None,
-        timed_astar_goal_fully_reserved_reject_count=None,
+        failed_path_candidate_count=failed_path_candidate_count,
+        timed_astar_call_count=timed_astar_call_count,
+        timed_astar_expanded_state_count=timed_astar_expanded_state_count,
+        max_timed_astar_expanded_state_count=max_timed_astar_expanded_state_count,
+        timed_astar_exhausted_search_count=timed_astar_exhausted_search_count,
+        timed_astar_goal_fully_reserved_reject_count=(
+            timed_astar_goal_fully_reserved_reject_count
+        ),
         runtime_task_count=case.runtime_task_count,
-        runtime_mutation_count=0,
-        replan_observation_count=0,
-        assignment_candidate_expansion_count=None,
-        assignment_robot_state_copy_count=None,
-        assignment_beam_peak_width=None,
+        runtime_mutation_count=execution.runtime_mutation_count,
+        replan_observation_count=len(observations),
+        assignment_candidate_expansion_count=assignment_candidate_expansion_count,
+        assignment_robot_state_copy_count=assignment_robot_state_copy_count,
+        assignment_beam_peak_width=assignment_beam_peak_width,
     )
