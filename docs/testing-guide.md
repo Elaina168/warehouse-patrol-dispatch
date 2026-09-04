@@ -504,6 +504,27 @@ http://127.0.0.1:8011/health
 4. 以 UTF-8 打开两份 CSV，确认表头和记录可读；不要只凭自动汇总生成报告结论，也不要把预测零冲突写成完整 MAPF 保证。
 5. 运行 `git status --short`，确认 `output/` 基准证据未跟踪且未暂存，不提交结果目录。
 
+### 6.1.1 小规模可解性参照与差分基准人工复核
+
+先运行专门的参照求解器和差分适配聚焦测试，再运行默认固定种子基准：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest backend/tests/test_solvability_oracle.py backend/tests/test_solvability_differential.py
+npm run benchmark:solvability -- --sample-count 64 --seed 20260904 --repetitions 1 --max-expanded-states 100000 --timeout-seconds 5
+```
+
+命令成功时最后一行会打印本次 UTC 结果目录。将它记为 `$solvabilityPath`，逐项检查：
+
+1. 目录同时存在 `results.json`、`runs.csv` 和 `case-summaries.csv`；运行中生成的 `results.partial.json` 在最终发布成功后应被删除。默认 `sample-count = 64` 时，`results.json.cases` 有 `68` 个案例（4 个目录案例加 64 个生成案例），`results.json.runs` 有 `68` 条记录，`results.json.caseSummaries` 有 `68` 条记录。
+2. 用 UTF-8 读取 `results.json`，确认顶层 `schemaVersion` 为 `1`，并按 `caseId` 分组 `runs`。每个案例的运行数应等于 `repetitions`；不要只查看汇总中的完成数而忽略 `timeout` 或 `error`。
+3. 用 `utf-8-sig` 读取两份 CSV。`runs.csv` 数据行数（不含表头）必须等于 `results.json.runs` 数量；`case-summaries.csv` 数据行数必须等于 `results.json.caseSummaries` 数量。两份 CSV 的 `caseId` 集合和每案例运行数应与 JSON 对应数组一致。
+4. 从 JSON 的 `runs` 重新计数：先按 `outcome` 核对 `completed`、`timeout`、`error`，再只对 `completed` 运行按 `comparisonClass` 核对 `agreementSolved`、`oracleSolvedPlannerMiss`、`oracleUnsolvedPlannerNoValidPlan`、`oracleUnsolvedPlannerSolved`、`oracleLimit`。逐案例对照 `case-summaries.csv` 的 `runCount`、`completedRunCount`、`timeoutCount`、`errorCount` 和五个分类计数；所有计数都应能从 `runs.csv` 重新得到。
+5. 重新生成候选 ID 集合：取 `comparisonClass` 恰为 `oracleSolvedPlannerMiss` 的运行，按 `results.json.cases` 原顺序去重，结果必须等于顶层 `candidateCounterexampleCaseIds`。其他四类、`timeout` 和 `error` 不得进入候选集合。
+6. 单独检查不利结果没有被过滤：`outcome = timeout` 和 `outcome = error` 的运行仍在 JSON 与 `runs.csv`；`comparisonClass = oracleLimit` 的完成运行仍在 JSON、`runs.csv` 和对应案例汇总中。`oracleLimit` 只能表示达到扩展上限，不能被重写成 `unsolved`。
+7. 检查编码：`results.json` 不应带 UTF-8 BOM；`runs.csv` 和 `case-summaries.csv` 应带 UTF-8 BOM，且中文案例或错误文本可读。反例、超时和异常属于正常证据记录，不因其出现就修改结果或把命令结论扩大为完整 MAPF 保证。
+
+8. 当前有限窗口局部联合修复的固定回归位于 `backend/tests/test_solvability_differential.py`：`generated-s20260904-i0007` 必须保持 3×3 障碍布局、参照最小 makespan T=5，生产侧失败数和冲突数均为 0；`i0009`、`i0020`、`i0034` 也必须保持各自参照 makespan 3、7、4 且生产侧无失败、无冲突。将 `max_planned_path_ticks` 限制为 4 时，局部修复必须返回“不适用”，不能伪造成功。
+
 ### 6.2 离线自适应窗口校准人工复核
 
 该流程比较固定 `4T`、`24T`、`48T` 与当前自适应 `24T`，只记录真实在线重规划。它用于同机候选范围取证，不自动修改生产 `60/40ms`、最近 5 个样本且至少 3 个样本或 `2×` 压力规则，也不证明完整 MAPF 或跨机器阈值。
@@ -1093,9 +1114,9 @@ git ls-files --deleted
 
 ## 13. 当前验证结论
 
-截至 2026-08-30：
+截至 2026-09-04：
 
-- 完整检查通过：前端正式构建成功、前端测试 `219/219`、后端测试 `798 passed, 19 skipped`（共收集 `817` 项）。跳过项不计入通过数。
+- 完整检查通过：前端正式构建成功、前端测试 `219/219`、后端测试 `842 passed, 19 skipped`（共收集 `861` 项）。跳过项不计入通过数。
 - 唯一固定场景仍是 `26 × 16` 的 `integrated-demo`；默认六任务、库存流转和 T=700 闭环由端到端回归保护。
 - 在线会话已经覆盖统一任务追加、动态事件、封锁、故障与恢复、任务锁、抢占、充电、指标历史、列表、删除和重置。
 - 在线会话支持在真实当前 tick 事务式接入和永久退役机器人；接入时间之前隐藏新机器人，退役时间起隐藏被退役机器人，退役前路径、事件和指标可历史回放，重置恢复初始机器人。
@@ -1103,4 +1124,4 @@ git ls-files --deleted
 - 开启避碰的在线执行安全门不会写入顶点或反向边冲突动作；连续三次相同拦截通过 `safetyStall` 提供诊断，但不等于求解器能够解除所有停滞。
 - 路径规划仍是优先级时空 A* 加多候选顺序；目标全时域预留预检只消除确定性无效搜索，不是完整 MAPF/CBS 证明。
 - 生产自适应规则仍为 `60/40ms`、最近5个真实重规划样本且至少3个样本以及 `2×` 任务压力；离线候选范围未应用。
-- 实验和校准工具保留为内部诊断与回归能力。当前优先完善系统本体，但尚未确定下一项具体工作。
+- 实验和校准工具保留为内部诊断与回归能力；小规模可解性差分基准的默认 68-case 运行也已完成 JSON/CSV 交叉核对，四个已复核 `oracleSolvedPlannerMiss` 均已由有限窗口局部联合修复和固定回归覆盖，默认报告不再留下候选。下一项生产算法工作仍需基于新的可复现边界另行确认。

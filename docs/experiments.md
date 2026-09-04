@@ -285,6 +285,32 @@ POST http://127.0.0.1:8011/api/experiments/online-pressure
 
 算法边界基准和自适应校准共用隔离子进程清理。父进程先通过 Pipe 的 `poll`/`recv` 接收完整载荷，再等待或清理 worker；超时、`KeyboardInterrupt` 等 `BaseException` 和父进程异常都会进入 `finally`，按“终止、有限等待、必要时强制终止、再次有限等待”的顺序确认退出并关闭进程与 Pipe 端点。普通取消在清理后重新抛出原对象；若无法确认 worker 已停止或资源关闭失败，则升级为基础设施错误并保留原异常链。
 
+### 小规模可解性参照与差分基准
+
+这是与六个实验 API、在线会话和前端完全隔离的离线取证命令。默认完整运行命令为：
+
+```powershell
+npm run benchmark:solvability -- --sample-count 64 --seed 20260904 --repetitions 1 --max-expanded-states 100000 --timeout-seconds 5
+```
+
+命令默认把四个固定目录案例与 `--sample-count` 个生成案例合并，因此上面的默认运行包含 `68` 个案例、每案例 `1` 次重复。结果写入 `output/solvability-differential/<UTC时间戳>/`；同一秒重复运行时目录名会追加递增后缀。参数约束为：`--sample-count` 在 `0..512`，`--repetitions` 为正整数，`--max-expanded-states` 为正整数，`--timeout-seconds` 为有限正数；`--seed` 和 `--output-dir` 可显式指定。`--sample-count 0` 只运行固定目录案例。
+
+固定目录案例覆盖四个对照：`catalog-solo-straight`、`catalog-independent-r2`、有侧向空间的 `catalog-side-bypass-swap-r2`，以及无侧向空间的 `catalog-no-bypass-swap-r2`。生成器使用局部 `random.Random(seed)`，按 `3×3/2台`、`4×3/2台`、`4×4/3台` 配置循环生成，障碍数从 `0..3` 中确定性采样，并用忽略其他机器人的静态可达性检查排除显然不可达案例；案例键去重，无法在尝试上限内生成足量样本时报告错误。无旁路的一维两机器人换位是 `unsolved` 对照，不是当前规划器漏解证据。
+
+完成运行使用以下五类差分分类：
+
+- `agreementSolved`：联合状态参照和当前固定分配规划器都给出有效、无冲突路径。
+- `oracleSolvedPlannerMiss`：参照有解，但当前规划器结果为 `failed` 或 `conflicted`；只有这一类进入 `candidateCounterexampleCaseIds`，作为后续局部联合修复的候选来源。
+- `oracleUnsolvedPlannerNoValidPlan`：参照在有限状态图中无解，当前规划器也没有有效路径。
+- `oracleUnsolvedPlannerSolved`：参照无解，但当前规划器被判为有效；应先排查运动语义、适配或实现错误，不能直接当作算法进步。
+- `oracleLimit`：参照达到扩展状态上限；不能把它解释为无解或漏解。
+
+`timeout` 和 `error` 保留为运行级 `outcome`，不强行归入五类。发现 `oracleSolvedPlannerMiss` 是正常的研究产出，不会单独导致命令非零退出；参数、进程隔离、目录创建或报告发布失败才是命令失败条件。
+
+每次最终发布包含三个文件：`results.json` 保存 `schemaVersion = 1`、配置、完整案例输入、逐次运行、逐案例汇总和候选反例 ID；`runs.csv` 展开每次重复，路径、失败和冲突字段以紧凑 JSON 保存；`case-summaries.csv` 保存每个案例的运行数、五类计数、`timeout/error` 计数、稳定性和耗时汇总。JSON 使用 UTF-8 无 BOM，两份 CSV 使用带 BOM 的 UTF-8。运行期间逐步更新 `results.partial.json`，最终三个文件按事务 bundle 发布；超时、异常和 `oracleLimit` 记录都必须保留。
+
+2026-09-04 在四个候选固定回归和有限窗口局部联合修复接入后重跑默认 68-case 配置，结果目录为 `output/solvability-differential/20260904T103757Z`：`agreementSolved=67`、`oracleSolvedPlannerMiss=0`、`oracleUnsolvedPlannerNoValidPlan=1`，`oracleUnsolvedPlannerSolved=0`、`oracleLimit=0`、`timeout=0`、`error=0`。`generated-s20260904-i0007`、`generated-s20260904-i0009`、`generated-s20260904-i0020` 和 `generated-s20260904-i0034` 均已从候选集合移除。该结果只证明本地受限切口对已复核案例有效，不证明一般输入的完整 MAPF 能力。
+
 ## 离线自适应窗口校准
 
 自适应窗口校准是独立命令行取证流程，不新增实验 API，也不允许 HTTP 调用方传入内部 `AdaptiveReplanPolicy`。在项目根目录运行默认完整校准：

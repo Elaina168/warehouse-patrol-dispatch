@@ -14,6 +14,7 @@
     "backend:dev": ".\\.tools\\powershell\\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev-backend.ps1",
     "backend:test": ".\\.venv\\Scripts\\python.exe -m pytest backend/tests",
     "benchmark:algorithm": ".\\.venv\\Scripts\\python.exe -m backend.benchmarks.algorithm_boundary",
+    "benchmark:solvability": ".\\.venv\\Scripts\\python.exe -m backend.benchmarks.solvability_differential",
     "benchmark:adaptive-replan": ".\\.venv\\Scripts\\python.exe -m backend.benchmarks.adaptive_replan_calibration",
     "competition:evidence": ".\\.venv\\Scripts\\python.exe -m backend.competition.evidence",
     "competition:package": ".\\.tools\\powershell\\pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./competition/build-windows-package.ps1",
