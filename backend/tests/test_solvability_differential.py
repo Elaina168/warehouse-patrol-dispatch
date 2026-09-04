@@ -1,3 +1,4 @@
+import datetime as datetime_module
 from dataclasses import replace
 import csv
 import json
@@ -7,6 +8,7 @@ import time
 import pytest
 
 from backend.benchmarks import solvability_runner as runner_module
+from backend.benchmarks import solvability_differential as cli_module
 from backend.benchmarks.solvability_cases import solvability_catalog
 from backend.benchmarks.process_isolation import BenchmarkInfrastructureError
 from backend.benchmarks.solvability_runner import (
@@ -21,6 +23,7 @@ from backend.benchmarks.solvability_reporting import (
     write_partial_report,
 )
 from backend.benchmarks.solvability_results import SolvabilityReport
+from backend.benchmarks.solvability_differential import main, parse_args
 
 
 def _case(case_id: str):
@@ -289,3 +292,140 @@ def test_solvability_report_rolls_back_all_files_when_runs_publish_fails(
     } == original_files
     assert (tmp_path / "results.partial.json").read_bytes() == partial_content
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_solvability_cli_has_exact_defaults() -> None:
+    args = parse_args([])
+
+    assert args.sample_count == 64
+    assert args.seed == 20260904
+    assert args.repetitions == 1
+    assert args.max_expanded_states == 100_000
+    assert args.timeout_seconds == 5
+    assert args.output_dir == "output/solvability-differential"
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--sample-count", "-1"),
+        ("--sample-count", "513"),
+        ("--repetitions", "0"),
+        ("--max-expanded-states", "0"),
+        ("--timeout-seconds", "0"),
+        ("--timeout-seconds", "nan"),
+        ("--timeout-seconds", "inf"),
+    ],
+)
+def test_solvability_cli_rejects_invalid_parameters_before_creating_output(
+    tmp_path,
+    option,
+    value,
+) -> None:
+    assert main([option, value, "--output-dir", str(tmp_path)]) == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_solvability_cli_uses_unique_timestamp_directory(monkeypatch, tmp_path) -> None:
+    class FixedDatetime:
+        @classmethod
+        def now(cls, timezone_value):
+            assert timezone_value is cli_module.timezone.utc
+            return datetime_module.datetime(2026, 9, 4, 1, 2, 3, tzinfo=timezone_value)
+
+    existing_path = tmp_path / "20260904T010203Z"
+    existing_path.mkdir()
+    monkeypatch.setattr(cli_module, "datetime", FixedDatetime)
+    monkeypatch.setattr(
+        cli_module,
+        "run_solvability_cases",
+        lambda cases, repetitions, max_expanded_states, timeout_seconds, on_result: [],
+    )
+
+    assert main(["--sample-count", "0", "--output-dir", str(tmp_path)]) == 0
+    result_path = tmp_path / "20260904T010203Z-2"
+    assert result_path.exists()
+    assert not (result_path / "results.partial.json").exists()
+
+
+def test_solvability_cli_writes_exact_config_and_keeps_planner_miss_successful(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    case = _case("catalog-solo-straight")
+    run = replace(
+        execute_solvability_case(case, 1, 100_000),
+        comparison_class="oracleSolvedPlannerMiss",
+    )
+    observed = {}
+
+    def fake_run_solvability_cases(
+        cases,
+        repetitions,
+        max_expanded_states,
+        timeout_seconds,
+        on_result,
+    ):
+        observed["case_count"] = len(cases)
+        observed["repetitions"] = repetitions
+        observed["max_expanded_states"] = max_expanded_states
+        observed["timeout_seconds"] = timeout_seconds
+        on_result([run])
+        return [run]
+
+    monkeypatch.setattr(cli_module, "run_solvability_cases", fake_run_solvability_cases)
+    output_base = tmp_path / "results"
+
+    assert (
+        main(
+            [
+                "--sample-count",
+                "2",
+                "--seed",
+                "11",
+                "--repetitions",
+                "1",
+                "--max-expanded-states",
+                "500",
+                "--timeout-seconds",
+                "3",
+                "--output-dir",
+                str(output_base),
+            ]
+        )
+        == 0
+    )
+
+    result_path = next(output_base.iterdir())
+    payload = json.loads((result_path / "results.json").read_text(encoding="utf-8"))
+    assert observed == {
+        "case_count": 6,
+        "repetitions": 1,
+        "max_expanded_states": 500,
+        "timeout_seconds": 3.0,
+    }
+    assert payload["config"] == {
+        "seed": 11,
+        "sampleCount": 2,
+        "catalogCaseCount": 4,
+        "caseCount": 6,
+        "repetitions": 1,
+        "maxExpandedStates": 500,
+        "timeoutSeconds": 3.0,
+        "outputDir": str(result_path.resolve()),
+        "oracle": {
+            "objective": "minimumMakespan",
+            "moves": ["wait", "up", "right", "down", "left"],
+            "forbidVertexConflicts": True,
+            "forbidReverseEdgeConflicts": True,
+            "goalSemantics": "visitOnceThenMayReposition",
+            "terminalOccupancy": "persistentAtFinalPositions",
+        },
+        "planner": {
+            "entrypoint": "backend.app.dispatch.build_paths",
+            "fixedAssignments": True,
+            "avoidConflicts": True,
+        },
+    }
+    assert payload["candidateCounterexampleCaseIds"] == [case.case_id]
+    assert not (result_path / "results.partial.json").exists()
