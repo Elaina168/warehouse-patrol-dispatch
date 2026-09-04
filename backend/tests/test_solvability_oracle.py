@@ -2,6 +2,7 @@ import random
 
 import pytest
 
+from backend.app.dispatch import detect_conflicts
 from backend.benchmarks.solvability_cases import (
     SolvabilityAgent,
     SolvabilityCase,
@@ -9,6 +10,7 @@ from backend.benchmarks.solvability_cases import (
     solvability_catalog,
     solvability_cases,
 )
+from backend.benchmarks.solvability_oracle import solve_exact
 
 
 def test_solvability_catalog_has_exact_ids_and_expected_outcomes() -> None:
@@ -88,3 +90,74 @@ def test_generated_solvability_cases_do_not_change_global_random_state() -> None
 
 def test_solvability_cases_prepends_catalog_and_accepts_zero_samples() -> None:
     assert solvability_cases(20260904, 0) == solvability_catalog()
+
+
+def _catalog_case(case_id: str) -> SolvabilityCase:
+    return next(case for case in solvability_catalog() if case.case_id == case_id)
+
+
+def test_exact_oracle_solves_catalog_cases_with_minimum_makespan() -> None:
+    solo = solve_exact(_catalog_case("catalog-solo-straight"), 100_000)
+    independent = solve_exact(_catalog_case("catalog-independent-r2"), 100_000)
+    bypass = solve_exact(_catalog_case("catalog-side-bypass-swap-r2"), 100_000)
+
+    assert (solo.outcome, solo.makespan) == ("solved", 2)
+    assert (independent.outcome, independent.makespan) == ("solved", 2)
+    assert (bypass.outcome, bypass.makespan) == ("solved", 4)
+    for result in (solo, independent, bypass):
+        assert result.paths is not None
+        assert detect_conflicts(result.paths) == []
+
+
+def test_exact_oracle_reports_no_bypass_swap_as_unsolved() -> None:
+    result = solve_exact(_catalog_case("catalog-no-bypass-swap-r2"), 100_000)
+
+    assert result.outcome == "unsolved"
+    assert result.makespan is None
+    assert result.paths is None
+
+
+def test_exact_oracle_reports_limit_instead_of_unsolved() -> None:
+    result = solve_exact(_catalog_case("catalog-side-bypass-swap-r2"), 1)
+
+    assert result.outcome == "limit"
+    assert result.expanded_state_count == 1
+    assert result.paths is None
+
+
+def test_exact_oracle_handles_initial_goal_and_is_deterministic() -> None:
+    case = SolvabilityCase(
+        "already-there",
+        "generated",
+        1,
+        1,
+        (),
+        (SolvabilityAgent("R1", (0, 0), (0, 0)),),
+    )
+    first = solve_exact(case, 100)
+    second = solve_exact(case, 100)
+
+    assert first == second
+    assert first.makespan == 0
+    assert first.expanded_state_count == 0
+    assert first.paths == {"R1": [(0, 0)]}
+
+
+def test_exact_oracle_rejects_non_positive_expansion_limit() -> None:
+    with pytest.raises(ValueError, match="max_expanded_states"):
+        solve_exact(_catalog_case("catalog-solo-straight"), 0)
+
+
+def test_exact_oracle_solved_paths_visit_targets_and_share_horizon() -> None:
+    for case_id in (
+        "catalog-solo-straight",
+        "catalog-independent-r2",
+        "catalog-side-bypass-swap-r2",
+    ):
+        case = _catalog_case(case_id)
+        result = solve_exact(case, 100_000)
+        assert result.paths is not None
+        for agent in case.agents:
+            assert result.paths[agent.agent_id][0] == agent.start
+            assert agent.goal in result.paths[agent.agent_id]
+        assert len({len(path) for path in result.paths.values()}) == 1
