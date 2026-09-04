@@ -1,4 +1,7 @@
 from dataclasses import replace
+import csv
+import json
+from pathlib import Path
 import time
 
 import pytest
@@ -12,6 +15,10 @@ from backend.benchmarks.solvability_runner import (
     execute_solvability_case,
     run_isolated_solvability_case,
     run_solvability_cases,
+)
+from backend.benchmarks.solvability_reporting import (
+    write_final_report,
+    write_partial_report,
 )
 from backend.benchmarks.solvability_results import SolvabilityReport
 
@@ -219,3 +226,66 @@ def test_solvability_batch_propagates_infrastructure_error(monkeypatch) -> None:
             max_expanded_states=100_000,
             timeout_seconds=5,
         )
+
+
+def test_solvability_report_writes_utf8_json_and_bom_csv(tmp_path) -> None:
+    case = _case("catalog-solo-straight")
+    run = execute_solvability_case(case, 1, 100_000)
+    report = SolvabilityReport.create({"seed": 20260904}, [case], [run])
+
+    write_partial_report(tmp_path, report)
+    assert (tmp_path / "results.partial.json").exists()
+
+    write_final_report(tmp_path, report)
+
+    assert not (tmp_path / "results.partial.json").exists()
+    assert (tmp_path / "results.json").read_bytes().startswith(b"{")
+    assert (tmp_path / "runs.csv").read_bytes().startswith(b"\xef\xbb\xbf")
+    assert (tmp_path / "case-summaries.csv").read_bytes().startswith(b"\xef\xbb\xbf")
+    payload = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
+    assert payload["schemaVersion"] == 1
+    with (tmp_path / "runs.csv").open(
+        "r", encoding="utf-8-sig", newline=""
+    ) as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["caseId"] == case.case_id
+    assert json.loads(rows[0]["oraclePaths"])["R1"][-1] == [2, 0]
+
+
+def test_solvability_report_rolls_back_all_files_when_runs_publish_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    case = _case("catalog-solo-straight")
+    run = execute_solvability_case(case, 1, 100_000)
+    report = SolvabilityReport.create({"seed": 20260904}, [case], [run])
+    write_partial_report(tmp_path, report)
+    partial_content = (tmp_path / "results.partial.json").read_bytes()
+    original_files = {
+        "results.json": b"old results",
+        "runs.csv": b"old runs",
+        "case-summaries.csv": b"old summaries",
+    }
+    for name, content in original_files.items():
+        (tmp_path / name).write_bytes(content)
+
+    real_replace = Path.replace
+
+    def fail_runs_publish(source, target):
+        source_path = Path(source)
+        target_path = Path(target)
+        if source_path.suffix == ".tmp" and target_path.name == "runs.csv":
+            raise OSError("runs publish failed")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_runs_publish)
+
+    with pytest.raises(OSError, match="runs publish failed"):
+        write_final_report(tmp_path, report)
+
+    assert {
+        name: (tmp_path / name).read_bytes()
+        for name in ("results.json", "runs.csv", "case-summaries.csv")
+    } == original_files
+    assert (tmp_path / "results.partial.json").read_bytes() == partial_content
+    assert not list(tmp_path.glob("*.tmp"))
