@@ -7,6 +7,7 @@ from backend.app.dispatch import build_paths, build_paths_for_order, path_planni
 from backend.app.main import app
 from backend.app.planning_diagnostics import PathCandidateDiagnostics, PlanningDiagnostics
 from backend.app.schemas import Assignment, DispatchOptions, Scenario, TaskFailureDetail
+from backend.benchmarks.scenarios import benchmark_options, build_benchmark_scenario
 from backend.tests.helpers import scenario_payload, seeded_pressure_scenario
 
 
@@ -4306,3 +4307,34 @@ def test_dispatch_delivery_requires_capability_and_sufficient_load() -> None:
     assignment = next(item for item in response.json()["assignments"] if item["tasks"])
     assert assignment["robotId"] == "R-VALID"
     assert assignment["tasks"][0]["id"] == "D1"
+
+
+def test_assignment_diagnostics_records_candidate_expansion_and_full_clone_work() -> None:
+    diagnostics = PlanningDiagnostics()
+    result = dispatch_module.run_dispatch(
+        build_benchmark_scenario("scale-r4-t15"),
+        benchmark_options(),
+        planning_diagnostics=diagnostics,
+    )
+
+    assert result.metrics.failureCount == 0
+    assert diagnostics.assignment_candidate_expansion_count > 0
+    assert (
+        diagnostics.assignment_robot_state_copy_count
+        == diagnostics.assignment_candidate_expansion_count * 4
+    )
+    assert 1 <= diagnostics.assignment_beam_peak_width <= 48
+
+
+def test_assignment_diagnostics_rejects_negative_state_copy_count() -> None:
+    diagnostics = PlanningDiagnostics()
+
+    with pytest.raises(ValueError, match="复制"):
+        diagnostics.record_assignment_expansion(-1)
+
+
+def test_assignment_diagnostics_rejects_negative_beam_width() -> None:
+    diagnostics = PlanningDiagnostics()
+
+    with pytest.raises(ValueError, match="束宽"):
+        diagnostics.record_assignment_beam_width(-1)

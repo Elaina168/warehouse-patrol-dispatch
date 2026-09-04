@@ -2038,6 +2038,15 @@ def _notify_replan_observer(
             timed_astar_goal_fully_reserved_reject_count=(
                 diagnostics.timed_astar_goal_fully_reserved_reject_count
             ),
+            assignment_candidate_expansion_count=(
+                diagnostics.assignment_candidate_expansion_count
+            ),
+            assignment_robot_state_copy_count=(
+                diagnostics.assignment_robot_state_copy_count
+            ),
+            assignment_beam_peak_width=(
+                diagnostics.assignment_beam_peak_width
+            ),
         )
     )
 

@@ -6365,6 +6365,9 @@ def test_replan_observer_maps_all_planning_diagnostics_fields(
         max_timed_astar_expanded_state_count=31,
         timed_astar_exhausted_search_count=2,
         timed_astar_goal_fully_reserved_reject_count=5,
+        assignment_candidate_expansion_count=101,
+        assignment_robot_state_copy_count=404,
+        assignment_beam_peak_width=12,
     )
     real_run_dispatch = sessions_module.run_dispatch
 
@@ -6406,6 +6409,9 @@ def test_replan_observer_maps_all_planning_diagnostics_fields(
             observation.timed_astar_goal_fully_reserved_reject_count
             == 5
         )
+        assert observation.assignment_candidate_expansion_count == 101
+        assert observation.assignment_robot_state_copy_count == 404
+        assert observation.assignment_beam_peak_width == 12
     finally:
         sessions_module.delete_session(created.sessionId)
 

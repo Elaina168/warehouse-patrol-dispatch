@@ -78,6 +78,23 @@ class PathCandidateDiagnostics:
 class PlanningDiagnostics:
     path_candidates: list[PathCandidateDiagnostics] = field(default_factory=list)
     selected_path_candidate_index: int | None = None
+    assignment_candidate_expansion_count: int = 0
+    assignment_robot_state_copy_count: int = 0
+    assignment_beam_peak_width: int = 0
+
+    def record_assignment_expansion(self, copied_robot_state_count: int) -> None:
+        if copied_robot_state_count < 0:
+            raise ValueError("复制的机器人状态数不能为负数")
+        self.assignment_candidate_expansion_count += 1
+        self.assignment_robot_state_copy_count += copied_robot_state_count
+
+    def record_assignment_beam_width(self, width: int) -> None:
+        if width < 0:
+            raise ValueError("束宽不能为负数")
+        self.assignment_beam_peak_width = max(
+            self.assignment_beam_peak_width,
+            width,
+        )
 
     def start_path_candidate(
         self,

@@ -185,6 +185,9 @@ def _observation(time: int, window: int, reason: str = "固定窗口") -> Replan
         max_timed_astar_expanded_state_count=8,
         timed_astar_exhausted_search_count=0,
         timed_astar_goal_fully_reserved_reject_count=0,
+        assignment_candidate_expansion_count=0,
+        assignment_robot_state_copy_count=0,
+        assignment_beam_peak_width=0,
     )
 
 

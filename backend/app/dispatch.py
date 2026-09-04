@@ -574,6 +574,7 @@ def assign_tasks_beam_search(
     delayed_unavailable_time: int | None = None,
     assignment_replan_window: int = ASSIGNMENT_REPLAN_WINDOW,
     task_limit_per_robot: int | None = None,
+    planning_diagnostics: PlanningDiagnostics | None = None,
 ) -> list[Assignment]:
     locked_task_robot_ids = locked_task_robot_ids or {}
     preferred_task_robot_ids = preferred_task_robot_ids or {}
@@ -591,6 +592,8 @@ def assign_tasks_beam_search(
             robots=[RobotAssignmentState(robot=robot, cursor=robot.start, battery=robot.battery) for robot in active_robots]
         )
     ]
+    if planning_diagnostics is not None:
+        planning_diagnostics.record_assignment_beam_width(len(candidates))
     locked_task_order = {task_id: index for index, task_id in enumerate(locked_task_robot_ids)}
     sorted_tasks = sorted(
         tasks,
@@ -641,6 +644,10 @@ def assign_tasks_beam_search(
                 switch_penalty = assignment_switch_penalty(task, robot.id, preferred_task_robot_ids, active_robot_ids)
                 waypoints = task_waypoints(task)
 
+                if planning_diagnostics is not None:
+                    planning_diagnostics.record_assignment_expansion(
+                        len(candidate.robots)
+                    )
                 next_candidate = clone_assignment_candidate(candidate)
                 next_robot = next_candidate.robots[robot_index]
                 next_robot.tasks.append(task)
@@ -654,6 +661,8 @@ def assign_tasks_beam_search(
 
         if expanded:
             candidates = sorted(expanded, key=assignment_candidate_score)[:beam_width]
+            if planning_diagnostics is not None:
+                planning_diagnostics.record_assignment_beam_width(len(candidates))
 
     best_candidate = min(candidates, key=assignment_candidate_score)
     return [
@@ -2579,6 +2588,7 @@ def run_dispatch(
         delayed_unavailable_time,
         assignment_replan_window,
         task_limit_per_robot,
+        planning_diagnostics,
     )
     (
         paths,

@@ -64,6 +64,9 @@ class ReplanObservation:
     max_timed_astar_expanded_state_count: int
     timed_astar_exhausted_search_count: int
     timed_astar_goal_fully_reserved_reject_count: int
+    assignment_candidate_expansion_count: int
+    assignment_robot_state_copy_count: int
+    assignment_beam_peak_width: int
 
 
 def recent_replan_latency_median(
